@@ -19,7 +19,6 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using Cysharp.Threading.Tasks;
-using UnityEngine.InputSystem.Android;
 
 
 namespace MoleculeLogic

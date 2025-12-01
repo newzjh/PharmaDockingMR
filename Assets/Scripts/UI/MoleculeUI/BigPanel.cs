@@ -386,7 +386,7 @@ namespace MoleculeUI
 
                     }
                     if (auto)
-                        SearchInZINCALL(id);
+                        CmdSearchInZINCALL(id);
                 }
                 else if (bname.Contains("LoadZINC"))
                 {
@@ -397,26 +397,51 @@ namespace MoleculeUI
             }
         }
 
-        public async void SearchInZINCALL(string receptorid)
+        Dictionary<string, bool> searchingids = new Dictionary<string, bool>();
+        [Command(requiresAuthority = false)]
+        public async void CmdSearchInZINCALL(string receptorid)
         {
+            if (searchingids.ContainsKey(receptorid))
+                return;
+
+            searchingids[receptorid] = true;
+
             var task1 = SearchInZINC(receptorid, "doubao-seed-1-6-lite-251015");
             var task2 = SearchInZINC(receptorid, "deepseek-v3-1-terminus");
             var ret = await UniTask.WhenAll<List<string>>(new UniTask<List<string>>[] { task1, task2 });
 
             Dictionary<string, bool> ids = new Dictionary<string, bool>();
-            foreach(var each in ret)
+            foreach (var each in ret)
             {
                 foreach (var item in each)
                 {
                     var id = item;
                     if (id.Length == 12)
                         id = id.Substring(0, 4) + "0000" + id.Substring(4);
-                    ids[id] = true;
+                    var id2 = id;
+                    if (id2.Length == 16)
+                        id2 = id2.Substring(0, 4) + id2.Substring(8);
+                    int index = -1;
+                    int.TryParse(id2.Replace("ZINC", ""), out index);
+                    if (index < 100)
+                        continue;
+                    ids[id2] = true;
                 }
             }
 
-            ZINCPanel.Instance.RefreshByIDS(ids.Keys.ToList());
+            searchingids.Remove(receptorid);
+
+            RefreshByIDS(ids.Keys.ToList());
         }
+
+
+        [ClientRpc]
+        public void RefreshByIDS(List<string> ids)
+        {
+            ZINCPanel.Instance.RefreshByIDS(ids);
+        }
+
+
 
         public async UniTask<List<string>> SearchInZINC(string id, string model)
         {
