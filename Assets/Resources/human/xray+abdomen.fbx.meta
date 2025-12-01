@@ -1,0 +1,139 @@
+fileFormatVersion: 2
+guid: 53290ebfc8651994ba33b24025c82a16
+timeCreated: 1475936980
+licenseType: Pro
+ModelImporter:
+  serializedVersion: 19
+  fileIDToRecycleName:
+    100000: Bile
+    100002: Diaphragm
+    100004: Esophagus_stomach_smallintestine
+    100006: Heart
+    100008: Kidneys
+    100010: Large_Intestine
+    100012: Ligaments_of_liver
+    100014: Liver
+    100016: Lungs
+    100018: Pancreas
+    100020: Skeleton
+    100022: Skin
+    100024: Urinary_bladder
+    100026: //RootNode
+    400000: Bile
+    400002: Diaphragm
+    400004: Esophagus_stomach_smallintestine
+    400006: Heart
+    400008: Kidneys
+    400010: Large_Intestine
+    400012: Ligaments_of_liver
+    400014: Liver
+    400016: Lungs
+    400018: Pancreas
+    400020: Skeleton
+    400022: Skin
+    400024: Urinary_bladder
+    400026: //RootNode
+    2300000: Bile
+    2300002: Diaphragm
+    2300004: Esophagus_stomach_smallintestine
+    2300006: Heart
+    2300008: Kidneys
+    2300010: Large_Intestine
+    2300012: Ligaments_of_liver
+    2300014: Liver
+    2300016: Lungs
+    2300018: Pancreas
+    2300020: Skeleton
+    2300022: Skin
+    2300024: Urinary_bladder
+    3300000: Bile
+    3300002: Diaphragm
+    3300004: Esophagus_stomach_smallintestine
+    3300006: Heart
+    3300008: Kidneys
+    3300010: Large_Intestine
+    3300012: Ligaments_of_liver
+    3300014: Liver
+    3300016: Lungs
+    3300018: Pancreas
+    3300020: Skeleton
+    3300022: Skin
+    3300024: Urinary_bladder
+    4300000: Skin
+    4300002: Lungs
+    4300004: Urinary_bladder
+    4300006: Kidneys
+    4300008: Heart
+    4300010: Diaphragm
+    4300012: Pancreas
+    4300014: Liver
+    4300016: Bile
+    4300018: Ligaments_of_liver
+    4300020: Esophagus_stomach_smallintestine
+    4300022: Large_Intestine
+    4300024: Skeleton
+    9500000: //RootNode
+  materials:
+    importMaterials: 1
+    materialName: 0
+    materialSearch: 1
+  animations:
+    legacyGenerateAnimations: 4
+    bakeSimulation: 0
+    resampleCurves: 1
+    optimizeGameObjects: 0
+    motionNodeName: 
+    animationImportErrors: 
+    animationImportWarnings: 
+    animationRetargetingWarnings: 
+    animationDoRetargetingWarnings: 0
+    animationCompression: 1
+    animationRotationError: 0.5
+    animationPositionError: 0.5
+    animationScaleError: 0.5
+    animationWrapMode: 0
+    extraExposedTransformPaths: []
+    clipAnimations: []
+    isReadable: 1
+  meshes:
+    lODScreenPercentages: []
+    globalScale: 0.001
+    meshCompression: 0
+    addColliders: 0
+    importBlendShapes: 1
+    swapUVChannels: 0
+    generateSecondaryUV: 0
+    useFileUnits: 1
+    optimizeMeshForGPU: 1
+    keepQuads: 0
+    weldVertices: 1
+    secondaryUVAngleDistortion: 8
+    secondaryUVAreaDistortion: 15.000001
+    secondaryUVHardAngle: 88
+    secondaryUVPackMargin: 4
+    useFileScale: 1
+  tangentSpace:
+    normalSmoothAngle: 60
+    normalImportMode: 0
+    tangentImportMode: 3
+  importAnimation: 1
+  copyAvatar: 0
+  humanDescription:
+    human: []
+    skeleton: []
+    armTwist: 0.5
+    foreArmTwist: 0.5
+    upperLegTwist: 0.5
+    legTwist: 0.5
+    armStretch: 0.05
+    legStretch: 0.05
+    feetSpacing: 0
+    rootMotionBoneName: 
+    hasTranslationDoF: 0
+  lastHumanDescriptionAvatarSource: {instanceID: 0}
+  animationType: 2
+  humanoidOversampling: 1
+  additionalBone: 0
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 

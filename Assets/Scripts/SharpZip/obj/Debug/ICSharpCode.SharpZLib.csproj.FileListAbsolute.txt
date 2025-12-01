@@ -1,0 +1,10 @@
+C:\Users\zhangjh.zhangjh-PC\Downloads\SharpZipLib_0860_SourceSamples (1)\SrcSamples\bin\ICSharpCode.SharpZipLib.xml
+C:\Users\zhangjh.zhangjh-PC\Downloads\SharpZipLib_0860_SourceSamples (1)\SrcSamples\bin\ICSharpCode.SharpZipLib.dll
+C:\Users\zhangjh.zhangjh-PC\Downloads\SharpZipLib_0860_SourceSamples (1)\SrcSamples\bin\ICSharpCode.SharpZipLib.pdb
+C:\Users\zhangjh.zhangjh-PC\Downloads\SharpZipLib_0860_SourceSamples (1)\SrcSamples\src\obj\Debug\ICSharpCode.SharpZipLib.dll
+C:\Users\zhangjh.zhangjh-PC\Downloads\SharpZipLib_0860_SourceSamples (1)\SrcSamples\src\obj\Debug\ICSharpCode.SharpZipLib.pdb
+C:\Users\zhangjh.zhangjh-PC\Downloads\SharpZipLib_0860_SourceSamples (1)\bin\ICSharpCode.SharpZipLib.xml
+C:\Users\zhangjh.zhangjh-PC\Downloads\SharpZipLib_0860_SourceSamples (1)\bin\ICSharpCode.SharpZipLib.dll
+C:\Users\zhangjh.zhangjh-PC\Downloads\SharpZipLib_0860_SourceSamples (1)\bin\ICSharpCode.SharpZipLib.pdb
+C:\Users\zhangjh.zhangjh-PC\Downloads\SharpZipLib_0860_SourceSamples (1)\src\obj\Debug\ICSharpCode.SharpZipLib.dll
+C:\Users\zhangjh.zhangjh-PC\Downloads\SharpZipLib_0860_SourceSamples (1)\src\obj\Debug\ICSharpCode.SharpZipLib.pdb
