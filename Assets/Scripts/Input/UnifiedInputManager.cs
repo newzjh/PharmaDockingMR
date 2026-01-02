@@ -68,6 +68,10 @@ namespace UnifiedInput
         private void Start()
         {
             goXRDeviceSimulator = GameObject.Find("MRTKInputSimulator");
+#if UNITY_ANDROID || UNITY_IOS
+            if (goXRDeviceSimulator && (Application.isMobilePlatform))
+                goXRDeviceSimulator.SetActive(false);
+#endif
 
             goXRRig = GameObject.Find("XR Rig");
             if (goXRRig == null)
@@ -116,7 +120,7 @@ namespace UnifiedInput
             //            }
 
             //#endif
-            bGazeMode = true;
+            bGazeMode = false;
 
             //bGazeMode = false;
             //if (Application.platform == RuntimePlatform.WSAPlayerX64 ||
@@ -489,7 +493,7 @@ namespace UnifiedInput
                 bPressing[k] = false;
             }
 
-            if (bGazeMode)
+            //if (bGazeMode)
             {
                 if (LeftHandController && LeftHandController.isActiveAndEnabled)
                 {
@@ -523,7 +527,7 @@ namespace UnifiedInput
                 //    bDown[1] = bUp[1] = true;
                 //}
             }
-            else
+            //else
             {
 #if ENABLE_INPUT_SYSTEM
                 

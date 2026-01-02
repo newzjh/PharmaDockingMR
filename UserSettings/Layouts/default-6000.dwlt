@@ -19,7 +19,7 @@ MonoBehaviour:
     width: 1920
     height: 998
   m_ShowMode: 4
-  m_Title: Inspector
+  m_Title: Hierarchy
   m_RootView: {fileID: 2}
   m_MinSize: {x: 875, y: 300}
   m_MaxSize: {x: 10000, y: 10000}
@@ -168,8 +168,8 @@ MonoBehaviour:
     y: 0
     width: 962
     height: 440
-  m_MinSize: {x: 200, y: 200}
-  m_MaxSize: {x: 4000, y: 4000}
+  m_MinSize: {x: 201, y: 226}
+  m_MaxSize: {x: 4001, y: 4026}
   m_ActualView: {fileID: 13}
   m_Panes:
   - {fileID: 13}
@@ -272,8 +272,8 @@ MonoBehaviour:
     y: 0
     width: 436.5
     height: 942
-  m_MinSize: {x: 275, y: 50}
-  m_MaxSize: {x: 4000, y: 4000}
+  m_MinSize: {x: 276, y: 76}
+  m_MaxSize: {x: 4001, y: 4026}
   m_ActualView: {fileID: 16}
   m_Panes:
   - {fileID: 16}
@@ -1016,9 +1016,9 @@ MonoBehaviour:
   m_SceneHierarchy:
     m_TreeViewState:
       scrollPos: {x: 0, y: 0}
-      m_SelectedIDs: 22f50300
-      m_LastClickedID: 259362
-      m_ExpandedIDs: 5c63feff7463feff7a7cfeff9c99feffb499feffccb2feff6492ffff7c92ffff30abffff34c7ffff4cc7ffff52e0ffff18fbfffff4ffffffd6b70100d4c40100286903008cf30300
+      m_SelectedIDs: 68a40000
+      m_LastClickedID: 42088
+      m_ExpandedIDs: 02a9000056b000009ab70000
       m_RenameOverlay:
         m_UserAcceptedRename: 0
         m_Name: 
@@ -1090,7 +1090,7 @@ MonoBehaviour:
     m_SkipHidden: 0
     m_SearchArea: 1
     m_Folders:
-    - Assets/Scripts/idock
+    - Assets/Scripts/UI/MoleculeUI
     m_Globs: []
     m_ProductIds: 
     m_AnyWithAssetOrigin: 0
@@ -1100,16 +1100,16 @@ MonoBehaviour:
   m_ViewMode: 1
   m_StartGridSize: 64
   m_LastFolders:
-  - Assets/Scripts/idock
+  - Assets/Scripts/UI/MoleculeUI
   m_LastFoldersGridSize: -1
   m_LastProjectPath: E:\Projects\PharmaDockingMR3
   m_LockTracker:
     m_IsLocked: 0
   m_FolderTreeState:
     scrollPos: {x: 0, y: 0}
-    m_SelectedIDs: b2da0000
-    m_LastClickedID: 55986
-    m_ExpandedIDs: 00000000b6d90000b8d90000bad90000bcd90000bed90000c0d9000032da000000ca9a3bffffff7f
+    m_SelectedIDs: 3e020100
+    m_LastClickedID: 66110
+    m_ExpandedIDs: 00000000c0d90000c2d90000c4d90000c6d90000c8d90000cad90000feda000000ca9a3bffffff7f
     m_RenameOverlay:
       m_UserAcceptedRename: 0
       m_Name: 
@@ -1138,7 +1138,7 @@ MonoBehaviour:
     scrollPos: {x: 0, y: 0}
     m_SelectedIDs: 
     m_LastClickedID: 0
-    m_ExpandedIDs: 00000000b6d90000b8d90000bad90000bcd90000bed90000c0d90000
+    m_ExpandedIDs: 00000000c0d90000c2d90000c4d90000c6d90000c8d90000cad90000
     m_RenameOverlay:
       m_UserAcceptedRename: 0
       m_Name: 
@@ -1166,7 +1166,7 @@ MonoBehaviour:
   m_ListAreaState:
     m_SelectedInstanceIDs: 
     m_LastClickedInstanceID: 0
-    m_HadKeyboardFocusLastEvent: 0
+    m_HadKeyboardFocusLastEvent: 1
     m_ExpandedInstanceIDs: 429b00004a9b000086f80000000000000ac10000c8c0000056c10000
     m_RenameOverlay:
       m_UserAcceptedRename: 0
@@ -1192,7 +1192,7 @@ MonoBehaviour:
       m_Icon: {fileID: 0}
       m_ResourceFile: 
     m_NewAssetIndexInList: -1
-    m_ScrollPosition: {x: 0, y: 0}
+    m_ScrollPosition: {x: 0, y: 826}
     m_GridSize: 64
   m_SkipHiddenPackages: 0
   m_DirectoriesAreaWidth: 175.5
