@@ -517,11 +517,11 @@ namespace UnifiedInput
                     if (refobj && refobj.SelectAction.action.triggered)
                         bDown[1] = bUp[1] = true;
                 }
-                if (Input.GetKeyDown(KeyCode.JoystickButton1) || Input.GetKeyDown(KeyCode.JoystickButton2))
-                {
-                    bDown[0] = bUp[0] = true;
-                    bDown[1] = bUp[1] = true;
-                }
+                //if (Input.GetKeyDown(KeyCode.JoystickButton1) || Input.GetKeyDown(KeyCode.JoystickButton2))
+                //{
+                //    bDown[0] = bUp[0] = true;
+                //    bDown[1] = bUp[1] = true;
+                //}
             }
             else
             {

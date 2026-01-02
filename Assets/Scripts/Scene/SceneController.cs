@@ -38,6 +38,7 @@ public class SceneController : Singleton<SceneController>
         if (curscene == index)
             return;
 
+        return;
 
         CameraScan cs = CameraScan.Instance;
         if (index == SceneScheme.HouseScene)

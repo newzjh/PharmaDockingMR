@@ -3,15 +3,16 @@ using UnityEngine.Events;
 using UnityEngine.UI;
 using UnifiedInput;
 using Mirror;
+using MoleculeUI;
 
 public class DynamicPanel : BasePanelEx<DynamicPanel>
 {
 
-    private GameObject DynamicMenuButton;
+    //private GameObject DynamicMenuButton;
 
     public void Start()
     {
-        DynamicMenuButton = this.transform.Find("DynamicMenuButton").gameObject;
+        //DynamicMenuButton = this.transform.Find("DynamicMenuButton").gameObject;
 
         SetAllVis(true);
     }
@@ -26,6 +27,57 @@ public class DynamicPanel : BasePanelEx<DynamicPanel>
         {
             SwitchAllVis();
         }
+    }
+
+    public void SetLeftVis(bool vis)
+    {
+        CmdSetLeftVis(vis);
+    }
+
+    [Command(requiresAuthority = false)]
+    public void CmdSetLeftVis(bool vis)
+    {
+        RpcSetLeftVis(vis);
+    }
+
+    [ClientRpc]
+    public void RpcSetLeftVis(bool vis)
+    {
+        BigPanel.Instance.SetVisible(vis);
+    }
+
+    public void SetRightVis(bool vis)
+    {
+        CmdSetRightVis(vis);
+    }
+
+    [Command(requiresAuthority = false)]
+    public void CmdSetRightVis(bool vis)
+    {
+        RpcSetRightVis(vis);
+    }
+
+    [ClientRpc]
+    public void RpcSetRightVis(bool vis)
+    {
+        RightPanel.Instance.SetVisible(vis);
+    }
+
+    public void SetZINCVis(bool vis)
+    {
+        CmdSetZINCVis(vis);
+    }
+
+    [Command(requiresAuthority = false)]
+    public void CmdSetZINCVis(bool vis)
+    {
+        RpcSetZINCVis(vis);
+    }
+
+    [ClientRpc]
+    public void RpcSetZINCVis(bool vis)
+    {
+        ZINCPanel.Instance.SetVisible(vis);
     }
 
     public void SetAllVis(bool vis)
@@ -95,6 +147,24 @@ public class DynamicPanel : BasePanelEx<DynamicPanel>
 
     }
 
+    public void OnButtonAll()
+    {
+        SwitchAllVis();
+    }
 
+    public void OnButtonLeft()
+    {
+        SetLeftVis(!BigPanel.Instance.GetVisible());
+    }
+
+    public void OnButtonRight()
+    {
+        SetRightVis(!RightPanel.Instance.GetVisible());
+    }
+
+    public void OnButtonZINC()
+    {
+        SetZINCVis(!ZINCPanel.Instance.GetVisible());
+    }
 
 }

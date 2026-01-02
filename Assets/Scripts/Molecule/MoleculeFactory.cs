@@ -204,6 +204,7 @@ namespace MoleculeLogic
 
             var r = UnityWebRequest.Get(url);
             r.redirectLimit = 10;
+            r.timeout = 0;
             r.certificateHandler = new WebRequestCertificate();
             r.SetRequestHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0");
             //r.SetRequestHeader("Referer", "https://zinc.docking.org/");
