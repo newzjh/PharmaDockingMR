@@ -84,21 +84,21 @@ namespace UnifiedInput
 
         void Update()
         {
-            var inputmodule = EventSystem.current.GetComponent<XRUIInputModule>();
+            //var inputmodule = EventSystem.current.GetComponent<XRUIInputModule>();
 
-            for (int i = 0; i < 3; i++)
-            {
-                //EventSystem.current.GetComponent<XRUIInputModule>().submitButton!=string.Empty
-                if (UnifiedInput.UnifiedInputManager.GetMouseButtonDown(i))
-                {
-                    if (i < this.transform.childCount)
-                    {
-                        ParticleSystem ps = this.transform.GetChild(i).GetComponent<ParticleSystem>();
-                        if (ps != null)
-                            ps.Play();
-                    }
-                }
-            }
+            //for (int i = 0; i < 3; i++)
+            //{
+            //    //EventSystem.current.GetComponent<XRUIInputModule>().submitButton!=string.Empty
+            //    if (UnifiedInput.UnifiedInputManager.GetMouseButtonDown(i))
+            //    {
+            //        if (i < this.transform.childCount)
+            //        {
+            //            ParticleSystem ps = this.transform.GetChild(i).GetComponent<ParticleSystem>();
+            //            if (ps != null)
+            //                ps.Play();
+            //        }
+            //    }
+            //}
         }
     }
 }

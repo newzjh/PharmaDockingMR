@@ -41415,7 +41415,7 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 2336946911857554150, guid: 941cb42ebfe742d419cd1d61b6c206a5, type: 3}
       propertyPath: m_IsActive
-      value: 1
+      value: 0
       objectReference: {fileID: 0}
     - target: {fileID: 4318558116800915943, guid: 941cb42ebfe742d419cd1d61b6c206a5, type: 3}
       propertyPath: 'm_Materials.Array.data[0]'
@@ -71275,14 +71275,10 @@ PrefabInstance:
       propertyPath: m_Name
       value: VRNetworkDiscovery
       objectReference: {fileID: 0}
-    m_RemovedComponents:
-    - {fileID: 1815383773422179065, guid: d3f7cb26fb8614984bff2f8d34044e00, type: 3}
+    m_RemovedComponents: []
     m_RemovedGameObjects: []
     m_AddedGameObjects: []
     m_AddedComponents:
-    - targetCorrespondingSourceObject: {fileID: 1815383773422179070, guid: d3f7cb26fb8614984bff2f8d34044e00, type: 3}
-      insertIndex: 1
-      addedObject: {fileID: 1878155888}
     - targetCorrespondingSourceObject: {fileID: 1815383773422179070, guid: d3f7cb26fb8614984bff2f8d34044e00, type: 3}
       insertIndex: -1
       addedObject: {fileID: 1878155887}
@@ -71308,42 +71304,23 @@ MonoBehaviour:
   BroadcastAddress: 
   serverBroadcastListenPort: 47777
   ActiveDiscoveryInterval: 3
-  transport: {fileID: 1878155888}
+  transport: {fileID: 1878155891}
   OnServerFound:
     m_PersistentCalls:
       m_Calls: []
   secretHandshake: 2800387570312107332
   vrCanvasHUD: {fileID: 1894734943}
---- !u!114 &1878155888
+--- !u!114 &1878155891 stripped
 MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
+  m_CorrespondingSourceObject: {fileID: 1815383773422179065, guid: d3f7cb26fb8614984bff2f8d34044e00, type: 3}
+  m_PrefabInstance: {fileID: 1878155885}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1878155886}
   m_Enabled: 1
   m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 0110f245bfcfc7d459681f7bd9ebc590, type: 3}
+  m_Script: {fileID: 11500000, guid: 6b0fecffa3f624585964b0d0eb21b18e, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  maxMessageSize: 524288
-  maxHandshakeSize: 16384
-  serverMaxMsgsPerTick: 10000
-  clientMaxMsgsPerTick: 1000
-  sendTimeout: 60000
-  receiveTimeout: 60000
-  noDelay: 1
-  sslEnabled: 0
-  sslProtocols: 3072
-  sslCertJson: ./cert.json
-  port: 27777
-  batchSend: 1
-  waitBeforeSend: 1
-  clientUseWss: 0
-  clientWebsocketSettings:
-    ClientPortOption: 0
-    CustomClientPort: 7777
-  minimumLogLevel: 3
 --- !u!224 &1879620513 stripped
 RectTransform:
   m_CorrespondingSourceObject: {fileID: 224000012622952312, guid: d912d12fe484ee849a94628034b8cacf, type: 3}

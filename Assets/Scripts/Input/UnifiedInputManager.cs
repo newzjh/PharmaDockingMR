@@ -10,6 +10,7 @@ using UnityEngine.XR;
 using UnityEngine.XR.Interaction.Toolkit;
 using UnityEngine.XR.Interaction.Toolkit.UI;
 using MixedReality.Toolkit.Input;
+using UnityEngine.InputSystem.UI;
 
 namespace UnifiedInput
 {
@@ -65,8 +66,13 @@ namespace UnifiedInput
         private GameObject goXRDeviceSimulator;
         public HandModel LeftHandController = null;
         public HandModel RightHandController = null;
+
+        InputSystemUIInputModule commonuiinputmodule = null;
+
         private void Start()
         {
+            commonuiinputmodule = GameObject.FindFirstObjectByType<InputSystemUIInputModule>(FindObjectsInactive.Include);
+
             goXRDeviceSimulator = GameObject.Find("MRTKInputSimulator");
 #if UNITY_ANDROID || UNITY_IOS
             if (goXRDeviceSimulator && (Application.isMobilePlatform))
@@ -209,6 +215,11 @@ namespace UnifiedInput
 
         private void Update()
         {
+            if (commonuiinputmodule != null)
+            {
+                commonuiinputmodule.enabled = !(XRSettings.isDeviceActive && XRSettings.enabled);
+            }
+
 #if ENABLE_INPUT_SYSTEM
             //if (KeyboardEnable)
             if (Keyboard.current!=null)

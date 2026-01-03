@@ -643,7 +643,8 @@ namespace MoleculeUI
                         }
                     }
 
-                    SwitchToMC(curselectmc);
+                    if (curlockmc != curselectmc)
+                        SwitchToMC(curselectmc);
                 }
             }
 
