@@ -167,4 +167,9 @@ public class DynamicPanel : BasePanelEx<DynamicPanel>
         SetZINCVis(!ZINCPanel.Instance.GetVisible());
     }
 
+    public void OnButtonExit()
+    {
+        Application.Quit();
+    }
+
 }

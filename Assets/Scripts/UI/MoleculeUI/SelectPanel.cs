@@ -643,7 +643,7 @@ namespace MoleculeUI
                         }
                     }
 
-                    curlockmc = curselectmc;
+                    SwitchToMC(curselectmc);
                 }
             }
 
@@ -667,7 +667,10 @@ namespace MoleculeUI
 
         public void SwitchToMC(MoleculeController mc)
         {
-            CmdSwitchToMC(mc.name);
+            if (mc)
+                CmdSwitchToMC(mc.name);
+            else
+                CmdSwitchToMC("");
         }
 
 
@@ -680,12 +683,19 @@ namespace MoleculeUI
         [ClientRpc]
         public void RpcSwitchToMC(string name)
         {
-            var mcs=GameObject.FindObjectsOfType<MoleculeController>(true);
-            var mc = mcs.Where(_ => _.name == name).FirstOrDefault();
-            if (mc == null)
-                return;
+            if (name == "")
+            {
+                curlockmc = null;
+            }
+            else
+            {
+                var mcs = GameObject.FindObjectsOfType<MoleculeController>(true);
+                var mc = mcs.Where(_ => _.name == name).FirstOrDefault();
+                if (mc == null)
+                    return;
 
-            curlockmc = mc;
+                curlockmc = mc;
+            }
 
             if (curlockmc != lastlockmc)
             {
