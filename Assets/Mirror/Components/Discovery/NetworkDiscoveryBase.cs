@@ -71,11 +71,76 @@ namespace Mirror.Discovery
         }
 #endif
 
+        // 标记是否已申请过权限
+        private bool _isPermissionRequested = false;
+
+
+        /// <summary>
+        /// 申请iOS本地网络权限（触发系统弹窗）
+        /// </summary>
+        public void RequestLocalNetworkPermission()
+        {
+            if (_isPermissionRequested) return;
+            _isPermissionRequested = true;
+
+            try
+            {
+                // 核心：创建Bonjour监听（空服务名即可触发权限弹窗）
+                // 使用UDP监听模拟Bonjour行为，不会实际占用端口
+                using (var udpClient = new UdpClient())
+                {
+                    udpClient.EnableBroadcast = true;
+                    // 绑定到本地任意端口，触发系统权限检查
+                    udpClient.Client.Bind(new IPEndPoint(IPAddress.Any, 5353)); // 5353是Bonjour默认端口
+                    udpClient.Close();
+                }
+
+                Debug.Log("本地网络权限申请触发成功");
+            }
+            catch (Exception e)
+            {
+                // 捕获异常（如用户已拒绝权限），不影响流程
+                Debug.LogWarning($"本地网络权限申请触发失败：{e.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 检查是否已获得本地网络权限（可选）
+        /// </summary>
+        /// <returns>是否有权限</returns>
+        public bool CheckLocalNetworkPermission()
+        {
+#if UNITY_IOS && !UNITY_EDITOR
+        // iOS没有直接的C# API检查权限，需通过原生交互（见方式2）
+        // 此处简化：尝试发送广播，能发送则代表有权限
+        try
+        {
+            using (var udpClient = new UdpClient())
+            {
+                udpClient.EnableBroadcast = true;
+                udpClient.Send(new byte[1], 1, new IPEndPoint(IPAddress.Broadcast, 0));
+                return true;
+            }
+        }
+        catch
+        {
+            return false;
+        }
+#else
+            return true;
+#endif
+        }
+
         /// <summary>
         /// virtual so that inheriting classes' Start() can call base.Start() too
         /// </summary>
         public virtual void Start()
         {
+            // 仅在iOS平台触发
+#if UNITY_IOS && !UNITY_EDITOR
+            RequestLocalNetworkPermission();
+#endif
+
             ServerId = RandomLong();
 
             // active transport gets initialized in Awake

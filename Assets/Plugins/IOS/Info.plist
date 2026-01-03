@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- 本地网络权限说明（必填） -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>需要访问本地网络以扫描和连接周边设备</string>
+    
+    <!-- 声明Bonjour服务（触发弹窗必需，_any._tcp 匹配所有TCP服务） -->
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_any._tcp</string>
+        <string>_any._udp</string>
+    </array>
+    
+    <!-- 允许本地网络访问（iOS 14+） -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsLocalNetworking</key>
+        <true/>
+    </dict>
+</dict>
+</plist>
