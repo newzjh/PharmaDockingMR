@@ -1,5 +1,7 @@
 using System;
+using System.Linq;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Threading.Tasks;
 using UnityEngine;
@@ -446,6 +448,71 @@ namespace Mirror.Discovery
         }
 
         /// <summary>
+        /// 获取 iOS 兼容的广播地址（优先子网定向广播，降级为有限广播）
+        /// </summary>
+        /// <returns>有效的广播 IPAddress</returns>
+        public static IPAddress GetIOSCompatibleBroadcastAddress()
+        {
+            try
+            {
+                System.Collections.Generic.List<IPAddress> addresss = new ();
+
+                // 步骤 1：获取本机活跃网卡的子网信息（优先 WiFi/蜂窝网）
+                foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    // 过滤有效网卡：启用、非回环、支持 IPv4
+                    if (!ni.OperationalStatus.Equals(OperationalStatus.Up) ||
+                        ni.NetworkInterfaceType == NetworkInterfaceType.Loopback ||
+                        !ni.Supports(NetworkInterfaceComponent.IPv4))
+                        continue;
+
+                    foreach (var ua in ni.GetIPProperties().UnicastAddresses)
+                    {
+                        // 仅处理 IPv4 地址
+                        if (ua.Address.AddressFamily != AddressFamily.InterNetwork)
+                            continue;
+
+                        // 计算子网定向广播地址（IP + 子网掩码 取反）
+                        var ipBytes = ua.Address.GetAddressBytes();
+                        var maskBytes = ua.IPv4Mask?.GetAddressBytes();
+                        if (maskBytes == null || maskBytes.Length != 4)
+                            continue;
+
+                        // 计算广播地址：(IP & 掩码) | (~掩码)
+                        byte[] broadcastBytes = new byte[4];
+                        for (int i = 0; i < 4; i++)
+                        {
+                            broadcastBytes[i] = (byte)(ipBytes[i] | ~maskBytes[i]);
+                        }
+
+                        addresss.Add(new IPAddress(broadcastBytes));
+                    }
+                }
+
+                foreach(var address in addresss)
+                {
+                    byte[] bytes = address.GetAddressBytes();
+                    if (bytes!=null && bytes.Length>=4)
+                    {
+                        if (bytes[0] == 192 && bytes[1] == 168)
+                            return address;
+                    }
+                }
+
+                if (addresss.Count>0)
+                    return addresss.FirstOrDefault();
+            }
+            catch (Exception ex)
+            {
+                // 异常时降级为 255.255.255.255
+                Console.WriteLine($"获取子网广播地址失败：{ex.Message}");
+            }
+
+            // 降级方案：返回有限广播地址（255.255.255.255）
+            return IPAddress.Broadcast;
+        }
+
+        /// <summary>
         /// Sends discovery request from client
         /// </summary>
         public void BroadcastDiscoveryRequest()
@@ -472,6 +539,20 @@ namespace Mirror.Discovery
                     Debug.LogException(ex);
                 }
             }
+
+//#if UNITY_IOS
+            if (string.IsNullOrWhiteSpace(BroadcastAddress))
+            {
+                try
+                {
+                    endPoint = new IPEndPoint(GetIOSCompatibleBroadcastAddress(), serverBroadcastListenPort);
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogException(ex);
+                }
+            }
+//#endif
 
             using (NetworkWriterPooled writer = NetworkWriterPool.Get())
             {
@@ -533,6 +614,6 @@ namespace Mirror.Discovery
         /// <param name="endpoint">Address of the server that replied</param>
         protected abstract void ProcessResponse(Response response, IPEndPoint endpoint);
 
-        #endregion
+#endregion
     }
 }
