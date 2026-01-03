@@ -19,8 +19,8 @@ namespace MoleculeUI
         {
     	    base.OnShow();
 
-            if (SelectPanel.Instance)
-                SelectPanel.Instance.SetVisible(false);
+            //if (SelectPanel.Instance)
+            //    SelectPanel.Instance.SetVisible(false);
 
             RefreshMoleculeFactory();
         }
@@ -29,8 +29,8 @@ namespace MoleculeUI
         {
             base.OnHide();
 
-            if (SelectPanel.Instance)
-                SelectPanel.Instance.SetVisible(true);
+            //if (SelectPanel.Instance)
+            //    SelectPanel.Instance.SetVisible(true);
 
             if (KeyboardPanelEx.Instance)
                 KeyboardPanelEx.Instance.SetVisible(false);
