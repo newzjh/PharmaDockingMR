@@ -1,0 +1,133 @@
+#pragma kernel CSComputeMorganFPFromSMILES
+
+// 全局参数
+int batchSize;          // 分子批次大小
+//int fpSize;             // 指纹长度（512/256）
+int radius;             // 指纹半径（推荐2）
+//int smilesMaxLength;    // 单个SMILES最大长度
+
+
+#define MAX_ATOM_COUNT 50 // 分子最大原子数
+#define smilesMaxLength 256
+#define fpSize 512
+
+// 输入：ForwardDiffusion 输出的 SMILES Buffer
+StructuredBuffer<int> smilesInputBuffer;
+// 输出：Morgan 指纹 Buffer（每个分子对应 fpSize 个 bool）
+RWStructuredBuffer<bool> fpOutputBuffer;
+
+
+// 原子类型枚举（与SMILES解析结果对应）
+//enum AtomType { C, O, N, S, UNKNOWN }
+#define AtomTypeC 0
+#define AtomTypeO 1
+#define AtomTypeN 2
+#define AtomTypeS 3
+#define AtomTypeUNKNOWN 4
+
+// 哈希函数：将原子邻域特征映射为指纹索引
+uint Hash(uint3 feature)
+{
+    feature = feature * 1664525u + 1013904223u;
+    feature.x += feature.y * feature.z;
+    feature.y += feature.z * feature.x;
+    feature.z += feature.x * feature.y;
+    feature ^= feature >> 16u;
+    feature.x += feature.y * feature.z;
+    feature.y += feature.z * feature.x;
+    feature.z += feature.x * feature.y;
+    return feature.z % fpSize;
+}
+
+// 核心函数1：GPU端轻量级SMILES解析
+void ParseSMILES(in int smilesChars[smilesMaxLength], out int atomTypes[MAX_ATOM_COUNT], out int atomCount)
+{
+    atomCount = 0;
+    //atomTypes = new AtomType[smilesMaxLength]; // 预分配最大长度
+
+    for (int i = 0; i < smilesMaxLength; i++)
+    {
+        int c = smilesChars[i];
+        if (c == 0)
+            break; // 到达SMILES字符串末尾
+        if (c == '-' || c == '=' || c == '(' || c == ')')
+            continue; // 跳过键符和括号
+
+        // 解析原子类型（简化版，支持常见药物原子）
+        switch(c)
+        {
+            case 'C':
+                atomTypes[atomCount++] = AtomTypeC;
+                break;
+            case 'O': atomTypes[atomCount++] = AtomTypeO; 
+                break;
+            case 'N': atomTypes[atomCount++] = AtomTypeN; 
+                break;
+            case 'S': atomTypes[atomCount++] = AtomTypeS; 
+                break;
+            default: atomTypes[atomCount++] = AtomTypeUNKNOWN; 
+                break;
+        }
+    }
+}
+
+// 核心函数2：基于解析的原子类型计算Morgan指纹
+void ComputeFingerprint(in int atomTypes[MAX_ATOM_COUNT], in int atomCount, out bool fp[fpSize])
+{
+    // 初始化指纹为false
+    for (int i = 0; i < fpSize; i++) fp[i] = false;
+
+    // 遍历每个原子，计算半径r内的邻域特征
+    for (int a = 0; a < atomCount; a++)
+    {
+        for (int r = 0; r <= radius; r++)
+        {
+            // 简化版：邻域特征 = 原子类型 + 半径 + 相邻原子数
+            uint atomType = (uint)atomTypes[a];
+            uint neighborCount = 0u;
+
+            // 统计半径r内的相邻原子（简化为前后r个原子）
+            for (int na = max(0, a - r); na <= min(atomCount-1, a + r); na++)
+            {
+                if (na == a) continue;
+                neighborCount++;
+            }
+
+            uint3 feature = uint3(atomType, r, neighborCount);
+            uint fpIdx = Hash(feature);
+            fp[fpIdx] = true;
+        }
+    }
+}
+
+// 主Kernel：批量处理SMILES生成指纹
+[numthreads(32, 1, 1)]
+void CSComputeMorganFPFromSMILES(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    int molIdx = dispatchThreadID.x;
+    if (molIdx >= batchSize) return;
+
+    // 1. 从SMILES Buffer中读取当前分子的字符数组
+    int smilesChars[smilesMaxLength];
+    for (int i = 0; i < smilesMaxLength; i++)
+    {
+        smilesChars[i] = smilesInputBuffer[molIdx * smilesMaxLength + i];
+    }
+
+    // 2. 解析SMILES得到原子类型
+    int atomTypes[MAX_ATOM_COUNT];
+    int atomCount = 0;
+    ParseSMILES(smilesChars, atomTypes, atomCount);
+
+    if (atomCount == 0) return; // 无效分子，跳过
+
+    // 3. 计算Morgan指纹
+    bool fp[fpSize];
+    ComputeFingerprint(atomTypes, atomCount, fp);
+
+    // 4. 写入指纹输出Buffer
+    for (int i = 0; i < fpSize; i++)
+    {
+        fpOutputBuffer[molIdx * fpSize + i] = fp[i];
+    }
+}

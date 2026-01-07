@@ -1,0 +1,63 @@
+// HeatmapConvCS.hlsl
+#pragma kernel CSSparseConv
+
+// 常量缓冲区：卷积参数
+cbuffer ConvParams : register(b0) {
+    int heatmapSize;        // 32×32
+    int kernelSize;         // 3×3
+    float padding;          // 1
+    float stride;           // 1
+    int inChannels;         // 4
+    int outChannels;        // 4
+};
+
+int batchSize; // 批量大小
+
+// 输入：原始热力图（分布式多卡按batch拆分）
+StructuredBuffer<float4> heatmapInput : register(t0);
+// 输入：卷积核权重（3×3×4×4）
+StructuredBuffer<float> kernelWeights : register(t1);
+// 输出：卷积后的热力图
+RWStructuredBuffer<float4> heatmapOutput : register(u0);
+
+[numthreads(32, 32, 1)]
+void CSSparseConv(uint3 dispatchThreadID : SV_DispatchThreadID) {
+    int outX = dispatchThreadID.x;
+    int outY = dispatchThreadID.y;
+    int batchIdx = dispatchThreadID.z;
+
+    if (outX >= heatmapSize || outY >= heatmapSize || batchIdx >= batchSize) return;
+
+    // 步骤1：计算输入坐标（考虑padding/stride）
+    int inX = (outX * stride) - padding;
+    int inY = (outY * stride) - padding;
+
+    float4 output = float4(0.0, 0.0, 0.0, 0.0);
+    bool isSparse = true; // 标记是否为稀疏区域（无原子）
+
+    // 步骤2：3×3卷积核遍历（仅计算非零像素）
+    for (int ky = 0; ky < kernelSize; ky++) {
+        for (int kx = 0; kx < kernelSize; kx++) {
+            int currX = inX + kx;
+            int currY = inY + ky;
+            if (currX >= 0 && currX < heatmapSize && currY >= 0 && currY < heatmapSize) {
+                // 读取输入像素
+                float4 inputPixel = heatmapInput[batchIdx * heatmapSize * heatmapSize + currY * heatmapSize + currX];
+                if (length(inputPixel) > 1e-6) { // 非稀疏区域（有原子）
+                    isSparse = false;
+                    // 读取卷积核权重
+                    int weightIdx = ky * kernelSize * inChannels * outChannels + kx * inChannels * outChannels + 0 * outChannels + 0;
+                    float weight = kernelWeights[weightIdx];
+                    output += inputPixel * weight;
+                }
+            }
+        }
+    }
+
+    // 步骤3：稀疏区域直接输出0，避免无效计算
+    if (!isSparse) {
+        heatmapOutput[batchIdx * heatmapSize * heatmapSize + outY * heatmapSize + outX] = output;
+    } else {
+        heatmapOutput[batchIdx * heatmapSize * heatmapSize + outY * heatmapSize + outX] = float4(0,0,0,0);
+    }
+}

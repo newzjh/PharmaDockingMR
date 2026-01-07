@@ -1,0 +1,193 @@
+#pragma kernel CSForwardDiffusion
+
+
+#define MAX_ATOM_COUNT 50 // 分子最大原子数
+#define smilesMaxLength 256
+#define fpSize 512
+
+// 通用扩散参数（适配任意大分子）
+int batchSize;
+int timesteps;
+float heatmapWeight;
+int maxAtoms;
+float minFeatureScore;
+int heatmapSize; // 热力图尺寸（兼容不同分辨率）
+
+
+// 输入资源
+Texture2D<float4> proteinHeatmap; // 通用大分子热力图
+//SamplerState sampler_proteinHeatmap;
+//SamplerState pointSampler
+//{
+//    Filter = MIN_MAG_MIP_POINT;
+//    AddressU = Clamp;
+//    AddressV = Clamp;
+//};
+
+// 输入Buffer
+StructuredBuffer<float> betaBuffer;
+StructuredBuffer<float> alphaCumprodBuffer;
+StructuredBuffer<float> atomWeightBuffer; // 原子类型权重
+StructuredBuffer<float3> activeCenterBuffer; // 大分子活性中心
+
+// 输出Buffer
+RWStructuredBuffer<int> smilesOutputBuffer;
+
+// 哈希函数（生成随机数）
+uint Hash(uint2 seed)
+{
+    seed = uint2(seed.x ^ seed.y * 16807, seed.y ^ seed.x * 48271);
+    return seed.x * 2654435769 + seed.y * 1234567;
+}
+
+// 随机数生成（0-1）
+float Random(uint2 seed)
+{
+    return frac(Hash(seed) * 0.00000000023283064365386962890625);
+}
+
+// 通用特征约束函数（基于大分子热力图）
+float GetProteinFeatureConstraint(int molIdx, float3 atomPos, float3 activeCenter)
+{
+    // 将原子坐标映射到热力图UV（适配任意热力图尺寸）
+    //float2 uv = float2(
+    //    (atomPos.x - activeCenter.x + heatmapSize * 0.5f) / heatmapSize,
+    //    (atomPos.z - activeCenter.z + heatmapSize * 0.5f) / heatmapSize
+    //);
+    //uv = saturate(uv); // 限制UV在0-1范围内
+
+    //// 采样热力图4通道特征（原子类型/电荷/疏水性/氢键）
+    //float4 heatmapFeat = proteinHeatmap.SampleLevel(pointSampler, uv, 0);
+    
+    int2 uv2 = int2(atomPos.xz - activeCenter.xz + heatmapSize * 0.5f);
+    uv2 = clamp(uv2, 0, int2(heatmapSize-1, heatmapSize-1));
+    float4 heatmapFeat = proteinHeatmap.Load(int3(uv2, 0));
+    
+    // 加权求和得到特征匹配分数
+    float featureScore = dot(heatmapFeat, float4(0.3f, 0.2f, 0.3f, 0.2f));
+    return featureScore * heatmapWeight;
+}
+
+// 通用SMILES编码函数
+void EncodeSMILES(int molIdx, int atomCount, in int atomTypes[MAX_ATOM_COUNT], in float3 atomPositions[MAX_ATOM_COUNT], out int smilesChars[256])
+{
+    smilesChars[0] = 'C'; // 默认起始原子
+    int charIdx = 1;
+
+    for (int i = 1; i < atomCount; i++)
+    {
+        // 根据原子类型编码字符
+        int atomChar = 'X';
+        switch(atomTypes[i])
+        {
+            case 0: atomChar = 'C'; break;
+            case 1: atomChar = 'O'; break;
+            case 2: atomChar = 'N'; break;
+            case 3: atomChar = 'S'; break;
+            default: atomChar = 'C'; break;
+        }
+        smilesChars[charIdx++] = atomChar;
+
+        // 根据键长编码键类型
+        float bondLength = distance(atomPositions[i], atomPositions[i-1]);
+        if (bondLength < 1.2f) 
+        {
+            smilesChars[charIdx++] = '='; // 双键
+        }
+        else
+        {
+            smilesChars[charIdx++] = '-'; // 单键
+        }
+
+        if (charIdx >= 255) 
+            break; // 防止越界
+    }
+}
+
+
+[numthreads(64,1,1)]
+void CSForwardDiffusion(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    int molIdx = dispatchThreadID.x;
+    if (molIdx >= batchSize)
+        return;
+
+    // 读取大分子活性中心和原子权重
+    float3 activeCenter = activeCenterBuffer[0];
+    float4 atomWeights = float4(atomWeightBuffer[0], atomWeightBuffer[1], atomWeightBuffer[2], atomWeightBuffer[3]);
+    atomWeights = normalize(atomWeights); // 权重归一化
+
+    // 初始化分子参数
+    int atomCount = (int)lerp(10, maxAtoms, Random(uint2(molIdx, 0)));
+    int atomTypes[MAX_ATOM_COUNT];
+    float3 atomPositions[MAX_ATOM_COUNT];
+    float totalFeatureScore = 0.0f;
+
+    // 前向扩散主循环
+    for (int t = 0; t < timesteps; t++)
+    {
+        float alphaCumprod = alphaCumprodBuffer[t];
+        float beta = betaBuffer[t];
+
+        for (int a = 0; a < atomCount; a++)
+        {
+            // 初始化原子位置和类型（基于大分子活性中心）
+            if (t == 0)
+            {
+                //atomPositions[a] = activeCenter + float3(
+                //    Random(uint2(molIdx, a)) * heatmapSize - heatmapSize * 0.5f,
+                //    Random(uint2(a, molIdx)) * 10 - 5,
+                //    Random(uint2(molIdx+a, a)) * heatmapSize - heatmapSize * 0.5f
+                //);
+                atomPositions[a] = activeCenter + float3(
+                    Random(uint2(molIdx, a)) * heatmapSize - heatmapSize * 0.5f,
+                    Random(uint2(a, molIdx)) * 10 - 5,
+                    Random(uint2(molIdx + a, a)) * heatmapSize - heatmapSize * 0.5f
+                );
+
+                // 根据原子权重选择类型（适配不同受体偏好）
+                float rand = Random(uint2(molIdx+a, t));
+                float weightSum = 0.0f;
+                for (int type = 0; type < 4; type++)
+                {
+                    weightSum += atomWeights[type];
+                    if (rand < weightSum)
+                    {
+                        atomTypes[a] = type;
+                        break;
+                    }
+                }
+            }
+
+            // 前向扩散：添加高斯噪声
+            float noise = Random(uint2(molIdx+a, t)) * 2 - 1; // -1~1
+            atomPositions[a] = sqrt(alphaCumprod) * atomPositions[a] + sqrt(1 - alphaCumprod) * noise;
+
+            // 施加大分子热力图约束（拉回活性位点）
+            float featureScore = GetProteinFeatureConstraint(molIdx, atomPositions[a], activeCenter);
+            totalFeatureScore += featureScore;
+
+            if (featureScore < minFeatureScore)
+            {
+                // 向活性中心拉回原子位置
+                atomPositions[a] = lerp(atomPositions[a], activeCenter, 0.1f);
+            }
+        }
+    }
+
+    // 过滤特征分数过低的无效分子
+    float avgFeatureScore = totalFeatureScore / (atomCount * timesteps);
+    if (avgFeatureScore < minFeatureScore)
+    {
+        return;
+    }
+
+    // 编码为SMILES字符串并写入输出Buffer
+    int smilesChars[smilesMaxLength];
+    EncodeSMILES(molIdx, atomCount, atomTypes, atomPositions, smilesChars);
+
+    for (int i = 0; i < smilesMaxLength; i++)
+    {
+        smilesOutputBuffer[molIdx * smilesMaxLength + i] = smilesChars[i];
+    }
+}

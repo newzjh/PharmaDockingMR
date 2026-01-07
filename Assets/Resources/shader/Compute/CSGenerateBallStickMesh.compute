@@ -1,0 +1,239 @@
+#pragma kernel CSGenerateBallStickMesh
+
+#define MAX_ATOM_COUNT 50 // 分子最大原子数
+#define smilesMaxLength 256
+#define fpSize 512
+
+// 原子类型枚举
+#define AtomTypeC 0
+#define AtomTypeO 1
+#define AtomTypeN 2
+#define AtomTypeS 3
+#define AtomTypeUNKNOWN 4
+
+// C#传递的全局参数
+int batchSize;
+//int smilesMaxLength;
+int sphereSegments;
+int cylinderSegments;
+float bondLength;
+float atomRadius;
+float bondRadius;
+int topK;
+
+// 输入输出Buffer
+StructuredBuffer<int> smilesInputBuffer;
+RWStructuredBuffer<float3> vertexOutputBuffer_position;
+RWStructuredBuffer<float3> vertexOutputBuffer_normal;
+RWStructuredBuffer<float4> vertexOutputBuffer_color;
+RWStructuredBuffer<int> indexOutputBuffer;
+RWStructuredBuffer<int> atomCountOutputBuffer;
+
+// CPK配色与半径映射
+float GetAtomRadius(int type)
+{
+    switch(type)
+    {
+        case AtomTypeC: return atomRadius * 1.0f;
+        case AtomTypeO: return atomRadius * 0.9f;
+        case AtomTypeN: return atomRadius * 0.95f;
+        case AtomTypeS: return atomRadius * 1.2f;
+        default: return atomRadius * 0.8f;
+    }
+}
+
+float4 GetAtomColor(int type)
+{
+    switch(type)
+    {
+        case AtomTypeC: return float4(0.2f, 0.2f, 0.2f, 1.0f); // 碳-灰色
+        case AtomTypeO: return float4(1.0f, 0.0f, 0.0f, 1.0f); // 氧-红色
+        case AtomTypeN: return float4(0.0f, 0.0f, 1.0f, 1.0f); // 氮-蓝色
+        case AtomTypeS: return float4(1.0f, 1.0f, 0.0f, 1.0f); // 硫-黄色
+        default: return float4(0.5f, 0.5f, 0.5f, 1.0f); // 未知-浅灰
+    }
+}
+
+// 解析SMILES字符串
+void ParseSMILES(in int smilesChars[smilesMaxLength], out int atomTypes[MAX_ATOM_COUNT], out int atomCount)
+{
+    atomCount = 0;
+    //atomTypes = new AtomType[MAX_ATOM_COUNT];
+    for(int i = 0; i < smilesMaxLength; i++)
+    {
+        int c = smilesChars[i];
+        if(c == 0) break;
+        if(c == '-' || c == '=' || c == '(' || c == ')') continue;
+
+        switch(c)
+        {
+            case 'C': atomTypes[atomCount++] = AtomTypeC; break;
+            case 'O': atomTypes[atomCount++] = AtomTypeO; break;
+            case 'N': atomTypes[atomCount++] = AtomTypeN; break;
+            case 'S': atomTypes[atomCount++] = AtomTypeS; break;
+            default: atomTypes[atomCount++] = AtomTypeUNKNOWN; break;
+        }
+        if(atomCount >= MAX_ATOM_COUNT) break;
+    }
+}
+
+// 生成原子球顶点/法线/颜色
+void GenerateAtomSphere(float3 center, int type, int vertexOffset, int indexOffset, inout int vCount, inout int iCount)
+{
+    float radius = GetAtomRadius(type);
+    float4 color = GetAtomColor(type);
+    float thetaStep = 2 * 3.1415926f / sphereSegments;
+    float phiStep = 3.1415926f / sphereSegments;
+
+    for(int y = 0; y <= sphereSegments; y++)
+    {
+        float phi = y * phiStep;
+        float sinPhi = sin(phi);
+        float cosPhi = cos(phi);
+
+        for(int x = 0; x <= sphereSegments; x++)
+        {
+            float theta = x * thetaStep;
+            float sinTheta = sin(theta);
+            float cosTheta = cos(theta);
+
+            // 球顶点坐标
+            float3 pos = float3(
+                radius * sinPhi * cosTheta,
+                radius * sinPhi * sinTheta,
+                radius * cosPhi
+            ) + center;
+            float3 normal = normalize(pos - center);
+
+            // 写入顶点Buffer
+            vertexOutputBuffer_position[vertexOffset + vCount] = pos;
+            vertexOutputBuffer_normal[vertexOffset + vCount] = normal;
+            vertexOutputBuffer_color[vertexOffset + vCount] = color;
+            vCount++;
+        }
+    }
+
+    // 生成球三角索引
+    for(int y = 0; y < sphereSegments; y++)
+    {
+        for(int x = 0; x < sphereSegments; x++)
+        {
+            int v0 = x + y * (sphereSegments + 1);
+            int v1 = v0 + 1;
+            int v2 = v0 + (sphereSegments + 1);
+            int v3 = v2 + 1;
+
+            indexOutputBuffer[indexOffset + iCount++] = v0 + vertexOffset;
+            indexOutputBuffer[indexOffset + iCount++] = v2 + vertexOffset;
+            indexOutputBuffer[indexOffset + iCount++] = v1 + vertexOffset;
+
+            indexOutputBuffer[indexOffset + iCount++] = v1 + vertexOffset;
+            indexOutputBuffer[indexOffset + iCount++] = v2 + vertexOffset;
+            indexOutputBuffer[indexOffset + iCount++] = v3 + vertexOffset;
+        }
+    }
+}
+
+// 生成化学键圆柱（棍）
+void GenerateBondCylinder(float3 start, float3 end, float4 color, int vertexOffset, int indexOffset, inout int vCount, inout int iCount)
+{
+    float3 dir = normalize(end - start);
+    float3 up = abs(dir.y) < 0.9f ? float3(0,1,0) : float3(1,0,0);
+    float3 right = normalize(cross(dir, up));
+    up = normalize(cross(right, dir));
+    float length = distance(start, end);
+
+    // 生成圆柱两端顶点
+    for(int i = 0; i <= cylinderSegments; i++)
+    {
+        float angle = i * 2 * 3.1415926f / cylinderSegments;
+        float x = cos(angle);
+        float z = sin(angle);
+
+        float3 offset = right * x * bondRadius + up * z * bondRadius;
+        vertexOutputBuffer_position[vertexOffset + vCount] = start + offset;
+        vertexOutputBuffer_normal[vertexOffset + vCount] = normalize(offset);
+        vertexOutputBuffer_color[vertexOffset + vCount] = color;
+        vCount++;
+
+        vertexOutputBuffer_position[vertexOffset + vCount] = end + offset;
+        vertexOutputBuffer_normal[vertexOffset + vCount] = normalize(offset);
+        vertexOutputBuffer_color[vertexOffset + vCount] = color;
+        vCount++;
+    }
+
+    // 生成圆柱三角索引
+    for(int i = 0; i < cylinderSegments; i++)
+    {
+        int v0 = i * 2;
+        int v1 = v0 + 1;
+        int v2 = (i + 1) * 2;
+        int v3 = v2 + 1;
+
+        indexOutputBuffer[indexOffset + iCount++] = v0 + vertexOffset;
+        indexOutputBuffer[indexOffset + iCount++] = v2 + vertexOffset;
+        indexOutputBuffer[indexOffset + iCount++] = v1 + vertexOffset;
+
+        indexOutputBuffer[indexOffset + iCount++] = v1 + vertexOffset;
+        indexOutputBuffer[indexOffset + iCount++] = v2 + vertexOffset;
+        indexOutputBuffer[indexOffset + iCount++] = v3 + vertexOffset;
+    }
+}
+
+[numthreads(32,1,1)]
+void CSGenerateBallStickMesh(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    int molIdx = dispatchThreadID.x;
+    if(molIdx >= batchSize) return;
+
+    // 1. 读取SMILES字符串
+    int smilesChars[smilesMaxLength];
+    for (int i = 0; i < smilesMaxLength; i++)
+    {
+        smilesChars[i] = smilesInputBuffer[molIdx * smilesMaxLength + i];
+    }
+
+    // 2. 解析SMILES
+    int atomTypes[MAX_ATOM_COUNT];
+    int atomCount = 0;
+    ParseSMILES(smilesChars, atomTypes, atomCount);
+    atomCountOutputBuffer[molIdx] = atomCount;
+
+    // 仅处理Top-K分子
+    if(molIdx >= topK || atomCount <= 1) return;
+
+    // 3. 计算原子位置（链式排列，沿X轴分布）
+    float3 atomPositions[MAX_ATOM_COUNT];
+    for(int a = 0; a < atomCount; a++)
+    {
+        atomPositions[a] = float3(a * bondLength, 0, 0);
+    }
+
+    // 4. 计算当前分子的Buffer偏移量
+    int verticesPerAtom = (sphereSegments + 1) * (sphereSegments + 1);
+    int verticesPerBond = 2 * (cylinderSegments + 1);
+    int indicesPerAtom = sphereSegments * sphereSegments * 6;
+    int indicesPerBond = cylinderSegments * 6;
+
+    int totalVertices = atomCount * verticesPerAtom + (atomCount - 1) * verticesPerBond;
+    int totalIndices = atomCount * indicesPerAtom + (atomCount - 1) * indicesPerBond;
+    int vertexOffset = molIdx * totalVertices;
+    int indexOffset = molIdx * totalIndices;
+
+    int vCount = 0;
+    int iCount = 0;
+
+    // 5. 生成原子球
+    for(int a = 0; a < atomCount; a++)
+    {
+        GenerateAtomSphere(atomPositions[a], atomTypes[a], vertexOffset, indexOffset, vCount, iCount);
+    }
+
+    // 6. 生成化学键棍（取原子颜色均值）
+    for(int b = 0; b < atomCount - 1; b++)
+    {
+        float4 color = (GetAtomColor(atomTypes[b]) + GetAtomColor(atomTypes[b+1])) * 0.5f;
+        GenerateBondCylinder(atomPositions[b], atomPositions[b+1], color, vertexOffset + atomCount * verticesPerAtom, 
+                             indexOffset + atomCount * indicesPerAtom, vCount, iCount);
+    }
+}

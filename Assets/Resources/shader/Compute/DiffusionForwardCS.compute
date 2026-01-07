@@ -1,0 +1,64 @@
+// DiffusionForwardCS.hlsl
+#pragma kernel CSForwardDiffusion
+
+// 热力图像素结构
+struct HeatmapPixel {
+    float4 features; // 4通道：原子类型/电荷/键长/键角
+};
+
+// 常量缓冲区：扩散参数
+cbuffer DiffusionParams : register(b0) {
+    int batchSize;          // 批量大小
+    int heatmapSize;        // 热力图尺寸（32×32）
+    float betaStart;        // 扩散β起始值
+    float betaEnd;          // 扩散β结束值
+    int totalTimesteps;     // 总时间步
+};
+
+// 输入：原始热力图（分布式多卡时，按batch拆分到不同卡）
+StructuredBuffer<HeatmapPixel> originHeatmap : register(t0);
+// 输入：随机时间步（每个样本一个）
+StructuredBuffer<int> timesteps : register(t1);
+// 输出：带噪声的热力图
+RWStructuredBuffer<HeatmapPixel> noisyHeatmap : register(u0);
+// 输出：噪声缓存（供反向扩散使用）
+RWStructuredBuffer<HeatmapPixel> noiseBuffer : register(u1);
+
+// GPU随机数生成（替代CPU随机数，并行性更高）
+float RandomFloat(uint2 seed) {
+    seed = uint2(seed.x ^ seed.y * 1999999973, seed.y ^ seed.x * 399999991);
+    return frac(sin(dot(seed, uint2(129979, 429496729))) * 43758.5453);
+}
+
+[numthreads(32, 32, 1)] // 32×32线程=1024（匹配热力图尺寸）
+void CSForwardDiffusion(uint3 dispatchThreadID : SV_DispatchThreadID) {
+    int pixelX = dispatchThreadID.x;
+    int pixelY = dispatchThreadID.y;
+    int batchIdx = dispatchThreadID.z;
+
+    // 边界检查
+    if (pixelX >= heatmapSize || pixelY >= heatmapSize || batchIdx >= batchSize) return;
+
+    // 步骤1：计算当前时间步的扩散系数
+    int t = timesteps[batchIdx];
+    float beta = betaStart + (betaEnd - betaStart) * (float)t / totalTimesteps;
+    float alpha = 1.0 - beta;
+    float alphaCumprod = pow(alpha, (float)t); // 简化版累积乘积（实际需预计算）
+
+    // 步骤2：生成GPU端随机噪声
+    uint2 seed = uint2(pixelX + batchIdx * heatmapSize, pixelY + batchIdx * heatmapSize);
+    float4 noise = float4(
+        RandomFloat(seed), RandomFloat(seed + 1),
+        RandomFloat(seed + 2), RandomFloat(seed + 3)
+    );
+    noise = (noise - 0.5) * 2.0; // 归一化到[-1,1]
+
+    // 步骤3：前向扩散公式：x_t = sqrt(α_cumprod)*x_0 + sqrt(1-α_cumprod)*noise
+    HeatmapPixel origin = originHeatmap[batchIdx * heatmapSize * heatmapSize + pixelY * heatmapSize + pixelX];
+    HeatmapPixel noisy;
+    noisy.features = sqrt(alphaCumprod) * origin.features + sqrt(1.0 - alphaCumprod) * noise;
+
+    // 输出结果
+    noisyHeatmap[batchIdx * heatmapSize * heatmapSize + pixelY * heatmapSize + pixelX] = noisy;
+    noiseBuffer[batchIdx * heatmapSize * heatmapSize + pixelY * heatmapSize + pixelX] = (HeatmapPixel)noise;
+}

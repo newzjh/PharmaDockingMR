@@ -1,0 +1,83 @@
+#pragma kernel CSSparseConv
+
+// 热力图像素结构（与C#对齐）
+struct HeatmapPixel {
+    float4 features;
+};
+
+// 原子数据结构（与C#对齐）
+struct AtomData {
+    float3 position;
+    int atomicNum;
+    int charge;
+    int hybridization;
+    int degree;
+    int molId;
+};
+
+// 全局参数
+int heatmapSize;
+int kernelSize;
+float padding;
+float stride;
+int inChannels;
+int outChannels;
+
+
+// 输入输出Buffer
+StructuredBuffer<HeatmapPixel> heatmapInput;
+StructuredBuffer<float> kernelWeights;
+RWStructuredBuffer<HeatmapPixel> heatmapOutput;
+StructuredBuffer<AtomData> atomBuffer;
+
+// 稀疏卷积核心函数（跳过零值像素）
+[numthreads(32,32,1)]
+void CSSparseConv(uint3 dispatchThreadID : SV_DispatchThreadID) {
+    int x = dispatchThreadID.x;
+    int y = dispatchThreadID.y;
+
+    // 超出热力图范围则退出
+    if (x >= heatmapSize || y >= heatmapSize) return;
+
+    int idx = y * heatmapSize + x;
+    float4 inputFeat = heatmapInput[idx].features;
+
+    // 稀疏判断：输入特征全零则跳过卷积（提升效率）
+    if (length(inputFeat) < 1e-6) {
+        heatmapOutput[idx].features = float4(0,0,0,0);
+        return;
+    }
+
+    // 3×3卷积计算（共享内存缓存权重，提升访问效率）
+    float weights[3*3*4*4];
+    for (int i = 0; i < kernelSize*kernelSize*inChannels*outChannels; i++) {
+        weights[i] = kernelWeights[i];
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    float4 outputFeat = float4(0,0,0,0);
+    int kernelHalf = kernelSize / 2;
+
+    // 遍历卷积核窗口
+    for (int ky = -kernelHalf; ky <= kernelHalf; ky++) {
+        for (int kx = -kernelHalf; kx <= kernelHalf; kx++) {
+            // 计算邻域像素坐标（padding=1，保持尺寸）
+            int nx = x + kx;
+            int ny = y + ky;
+            if (nx < 0 || nx >= heatmapSize || ny < 0 || ny >= heatmapSize) continue;
+
+            int nidx = ny * heatmapSize + nx;
+            float4 nFeat = heatmapInput[nidx].features;
+
+            // 卷积核权重索引
+            int wIdx = ((ky + kernelHalf) * kernelSize + (kx + kernelHalf)) * inChannels * outChannels;
+            // 4通道卷积（逐通道加权求和）
+            for (int c = 0; c < inChannels; c++) {
+                outputFeat[c] += nFeat[c] * weights[wIdx + c];
+            }
+        }
+    }
+
+    // 输出卷积后特征
+    heatmapOutput[idx].features = outputFeat;
+}
