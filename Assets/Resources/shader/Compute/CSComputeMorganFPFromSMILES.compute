@@ -1,4 +1,5 @@
 #pragma kernel CSComputeMorganFPFromSMILES
+#pragma enable_d3d11_debug_symbols
 
 // 全局参数
 int batchSize;          // 分子批次大小

@@ -1,4 +1,5 @@
 #pragma kernel CSSparseConv
+#pragma enable_d3d11_debug_symbols
 
 // 热力图像素结构（与C#对齐）
 struct HeatmapPixel {

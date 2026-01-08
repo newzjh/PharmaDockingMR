@@ -1,5 +1,5 @@
-// DiffusionForwardCS.hlsl
 #pragma kernel CSForwardDiffusion
+#pragma enable_d3d11_debug_symbols
 
 // 热力图像素结构
 struct HeatmapPixel {

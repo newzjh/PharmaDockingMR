@@ -1,5 +1,5 @@
 #pragma kernel CSForwardDiffusion
-
+#pragma enable_d3d11_debug_symbols
 
 #define MAX_ATOM_COUNT 50 // 分子最大原子数
 #define smilesMaxLength 256
@@ -27,11 +27,12 @@ Texture2D<float4> proteinHeatmap; // 通用大分子热力图
 // 输入Buffer
 StructuredBuffer<float> betaBuffer;
 StructuredBuffer<float> alphaCumprodBuffer;
-StructuredBuffer<float> atomWeightBuffer; // 原子类型权重
-StructuredBuffer<float3> activeCenterBuffer; // 大分子活性中心
+float4 atomWeightBuffer; // 原子类型权重
+float4 activeCenterBuffer; // 大分子活性中心
 
 // 输出Buffer
 RWStructuredBuffer<int> smilesOutputBuffer;
+RWTexture2D<float4> smilesOutputTexture;
 
 // 哈希函数（生成随机数）
 uint Hash(uint2 seed)
@@ -104,6 +105,8 @@ void EncodeSMILES(int molIdx, int atomCount, in int atomTypes[MAX_ATOM_COUNT], i
     }
 }
 
+// 新增匹配分数Debug Buffer
+RWStructuredBuffer<float> matchScoreDebugBuffer;
 
 [numthreads(64,1,1)]
 void CSForwardDiffusion(uint3 dispatchThreadID : SV_DispatchThreadID)
@@ -113,8 +116,8 @@ void CSForwardDiffusion(uint3 dispatchThreadID : SV_DispatchThreadID)
         return;
 
     // 读取大分子活性中心和原子权重
-    float3 activeCenter = activeCenterBuffer[0];
-    float4 atomWeights = float4(atomWeightBuffer[0], atomWeightBuffer[1], atomWeightBuffer[2], atomWeightBuffer[3]);
+    float3 activeCenter = activeCenterBuffer.xyz;
+    float4 atomWeights = atomWeightBuffer;
     atomWeights = normalize(atomWeights); // 权重归一化
 
     // 初始化分子参数
@@ -122,7 +125,7 @@ void CSForwardDiffusion(uint3 dispatchThreadID : SV_DispatchThreadID)
     int atomTypes[MAX_ATOM_COUNT];
     float3 atomPositions[MAX_ATOM_COUNT];
     float totalFeatureScore = 0.0f;
-
+    
     // 前向扩散主循环
     for (int t = 0; t < timesteps; t++)
     {
@@ -172,8 +175,14 @@ void CSForwardDiffusion(uint3 dispatchThreadID : SV_DispatchThreadID)
                 // 向活性中心拉回原子位置
                 atomPositions[a] = lerp(atomPositions[a], activeCenter, 0.1f);
             }
+            
+            // 在原子生成后计算匹配分数（热力图像素值）
+            float3 atomPos = atomPositions[a];
+            // 采样热力图对应位置的分数（假设热力图是2D纹理）
+            matchScoreDebugBuffer[molIdx * MAX_ATOM_COUNT + a] = featureScore;
         }
     }
+
 
     // 过滤特征分数过低的无效分子
     float avgFeatureScore = totalFeatureScore / (atomCount * timesteps);
@@ -189,5 +198,7 @@ void CSForwardDiffusion(uint3 dispatchThreadID : SV_DispatchThreadID)
     for (int i = 0; i < smilesMaxLength; i++)
     {
         smilesOutputBuffer[molIdx * smilesMaxLength + i] = smilesChars[i];
+        float r = ((float) smilesChars[i]) / 255.0f;
+        smilesOutputTexture[int2(i, molIdx)] = float4(r, 0, 0, 1);
     }
 }

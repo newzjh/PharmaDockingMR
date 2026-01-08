@@ -1,4 +1,5 @@
 #pragma kernel CSGenerateBallMesh
+#pragma enable_d3d11_debug_symbols
 
 #define MAX_ATOM_COUNT 50 // 分子最大原子数
 #define smilesMaxLength 256
@@ -22,6 +23,7 @@ int topK;
 
 
 // 输入：SMILES Buffer
+Texture2D<float4> smilesInputTexture;
 StructuredBuffer<int> smilesInputBuffer;
 // 输出：Mesh数据（顶点、法线、颜色）
 RWStructuredBuffer<float3> meshDataOutput_vertex;
@@ -128,7 +130,9 @@ void CSGenerateBallMesh(uint3 dispatchThreadID : SV_DispatchThreadID)
     int smilesChars[smilesMaxLength];
     for(int i = 0; i < smilesMaxLength; i++)
     {
-        smilesChars[i] = smilesInputBuffer[molIdx * smilesMaxLength + i];
+        //smilesChars[i] = smilesInputBuffer[molIdx * smilesMaxLength + i];
+        float r = smilesInputTexture[int2(i, molIdx)].r;
+        smilesChars[i] = (int) (r * 255.0f);
     }
 
     // 2. 解析SMILES
@@ -138,8 +142,8 @@ void CSGenerateBallMesh(uint3 dispatchThreadID : SV_DispatchThreadID)
     atomCountOutput[molIdx] = atomCount;
 
     // 仅处理Top-K分子（简化版：假设前topK个为筛选后的分子）
-    if(molIdx >= topK) return;
-    if(atomCount == 0) return;
+    //if(molIdx >= topK) return;
+    if(atomCount <= 1) return;
 
     // 3. 计算原子位置（简单链式排列）
     float3 atomPositions [MAX_ATOM_COUNT];
@@ -150,7 +154,7 @@ void CSGenerateBallMesh(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     // 4. 生成每个原子的球冠Mesh
     int verticesPerAtom = (sphereSegments + 1) * (sphereSegments + 1);
-    int meshDataOffset = molIdx * atomCount * verticesPerAtom;
+    int meshDataOffset = molIdx * MAX_ATOM_COUNT * verticesPerAtom;
 
     for(int a = 0; a < atomCount; a++)
     {

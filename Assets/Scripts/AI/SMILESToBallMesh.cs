@@ -1,5 +1,7 @@
 using UnityEngine;
 using System.Collections.Generic;
+using System;
+using UnityEngine.UIElements;
 
 namespace AIDrugDiscovery
 {
@@ -14,41 +16,38 @@ namespace AIDrugDiscovery
         public int topK = 10; // 生成Top-K分子的Mesh
     }
 
-    // Mesh数据结构（用于GPU→CPU传递）
-    public struct MeshData
-    {
-        public Vector3 vertex;
-        public Vector3 normal;
-        public Color color;
-    }
 
-    public class SMILESToMeshGenerator : MonoBehaviour
+    public class SMILESToBallMesh : MonoBehaviour
     {
         public ComputeShader meshGeneratorCS;
         public AtomSphereConfig config;
-        public ComputeBuffer smilesBuffer; // 输入的SMILES Buffer
-        public int batchSize; // 分子批次大小
+        public int batchSize = 128; // 分子批次大小
         public int smilesMaxLength = 256; // 单个SMILES最大长度
+        public int maxAtomLimit = 50;
 
-        private ComputeBuffer meshDataBuffer;
+        private ComputeBuffer vertexBufferPosition;
+        private ComputeBuffer vertexBufferNormal;
+        private ComputeBuffer vertexBufferColor;
         private ComputeBuffer atomCountBuffer; // 每个分子的原子数
-        private int maxMeshDataCount; // 最大Mesh数据量
+        private int maxVertexCount; // 最大Mesh数据量
 
         void Start()
         {
             // 计算最大Mesh数据量：每个原子的球冠顶点数 = (segments+1)*(segments+1)
             int verticesPerAtom = (config.sphereSegments + 1) * (config.sphereSegments + 1);
-            maxMeshDataCount = batchSize * config.topK * verticesPerAtom;
+            maxVertexCount = batchSize * maxAtomLimit * verticesPerAtom;
 
             // 初始化Buffer
-            meshDataBuffer = new ComputeBuffer(maxMeshDataCount, System.Runtime.InteropServices.Marshal.SizeOf(typeof(MeshData)));
+            vertexBufferPosition = new ComputeBuffer(maxVertexCount, System.Runtime.InteropServices.Marshal.SizeOf(typeof(Vector3)));
+            vertexBufferNormal = new ComputeBuffer(maxVertexCount, System.Runtime.InteropServices.Marshal.SizeOf(typeof(Vector3)));
+            vertexBufferColor = new ComputeBuffer(maxVertexCount, System.Runtime.InteropServices.Marshal.SizeOf(typeof(Vector4)));
             atomCountBuffer = new ComputeBuffer(batchSize, sizeof(int));
         }
 
         /// <summary>
         /// 生成分子球冠Mesh
         /// </summary>
-        public List<Mesh> GenerateMolMeshes(List<int> filteredIndices)
+        public List<Mesh> GenerateMolMeshes(List<int> filteredIndices, ComputeBuffer smilesBuffer, RenderTexture smilesTexture)
         {
             List<Mesh> molMeshes = new List<Mesh>();
             int verticesPerAtom = (config.sphereSegments + 1) * (config.sphereSegments + 1);
@@ -64,7 +63,10 @@ namespace AIDrugDiscovery
 
             // 2. 绑定Buffer
             meshGeneratorCS.SetBuffer(kernelId, "smilesInputBuffer", smilesBuffer);
-            meshGeneratorCS.SetBuffer(kernelId, "meshDataOutput", meshDataBuffer);
+            meshGeneratorCS.SetTexture(kernelId, "smilesInputTexture", smilesTexture);
+            meshGeneratorCS.SetBuffer(kernelId, "vertexOutputBuffer_position", vertexBufferPosition);
+            meshGeneratorCS.SetBuffer(kernelId, "vertexOutputBuffer_normal", vertexBufferNormal);
+            meshGeneratorCS.SetBuffer(kernelId, "vertexOutputBuffer_color", vertexBufferColor);
             meshGeneratorCS.SetBuffer(kernelId, "atomCountOutput", atomCountBuffer);
 
             // 3. 调度GPU计算
@@ -76,8 +78,12 @@ namespace AIDrugDiscovery
             atomCountBuffer.GetData(atomCounts);
 
             // 5. 读取Mesh数据并生成Mesh
-            MeshData[] allMeshData = new MeshData[maxMeshDataCount];
-            meshDataBuffer.GetData(allMeshData);
+            Vector3[] allPositions = new Vector3[maxVertexCount];
+            Vector3[] allNormals = new Vector3[maxVertexCount];
+            Vector4[] allColors = new Vector4[maxVertexCount];
+            vertexBufferPosition.GetData(allPositions);
+            vertexBufferNormal.GetData(allNormals);
+            vertexBufferColor.GetData(allColors);
 
             int offset = 0;
             foreach (int idx in filteredIndices)
@@ -86,28 +92,31 @@ namespace AIDrugDiscovery
                 int atomCount = atomCounts[idx];
                 if (atomCount == 0) continue;
 
+                Debug.Log("molIdx:" + idx);
+                offset = idx * (maxAtomLimit * verticesPerAtom);
+
                 int totalVertices = atomCount * verticesPerAtom;
-                if (offset + totalVertices > maxMeshDataCount) break;
+                if (offset + totalVertices > maxVertexCount) break;
 
                 Mesh mesh = new Mesh();
-                Vector3[] vertices = new Vector3[totalVertices];
+                Vector3[] positions = new Vector3[totalVertices];
                 Vector3[] normals = new Vector3[totalVertices];
                 Color[] colors = new Color[totalVertices];
 
                 for (int i = 0; i < totalVertices; i++)
                 {
-                    vertices[i] = allMeshData[offset + i].vertex;
-                    normals[i] = allMeshData[offset + i].normal;
-                    colors[i] = allMeshData[offset + i].color;
+                    colors[i] = allColors[offset + i];
                 }
+                Array.Copy(allPositions, offset, positions, 0, totalVertices);
+                Array.Copy(allNormals, offset, normals, 0, totalVertices);
 
-                mesh.vertices = vertices;
+                mesh.vertices = positions;
                 mesh.normals = normals;
                 mesh.colors = colors;
                 mesh.triangles = GenerateTriangles(atomCount, config.sphereSegments);
 
                 molMeshes.Add(mesh);
-                offset += totalVertices;
+                //offset += totalVertices;
             }
 
             return molMeshes;
@@ -149,7 +158,9 @@ namespace AIDrugDiscovery
 
         void OnDestroy()
         {
-            meshDataBuffer?.Release();
+            vertexBufferPosition?.Release();
+            vertexBufferNormal?.Release();
+            vertexBufferColor?.Release();
             atomCountBuffer?.Release();
         }
     }

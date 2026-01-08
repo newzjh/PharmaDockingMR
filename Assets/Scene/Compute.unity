@@ -119,6 +119,62 @@ NavMeshSettings:
     debug:
       m_Flags: 0
   m_NavMeshData: {fileID: 0}
+--- !u!1 &245285009
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 245285011}
+  - component: {fileID: 245285010}
+  m_Layer: 0
+  m_Name: MeshGenerator
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &245285010
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 245285009}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 44a60da9064e63944a86064b72eb4c1c, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::AIDrugDiscovery.SMILESToBallStickMesh
+  ballStickCS: {fileID: 7200000, guid: 42d3c6e4d08125f4684efc5ca7093e03, type: 3}
+  config:
+    bondLength: 1.5
+    atomRadius: 0.3
+    bondRadius: 0.1
+    sphereSegments: 12
+    cylinderSegments: 8
+    topK: 10
+  batchSize: 128
+  smilesMaxLength: 256
+  maxAtomLimit: 50
+  test: 1
+--- !u!4 &245285011
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 245285009}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0.1001, y: 0, z: 6.39416}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &738985758
 GameObject:
   m_ObjectHideFlags: 0
@@ -151,19 +207,20 @@ MonoBehaviour:
   diffusionCS: {fileID: 7200000, guid: 460b7a850a98bf34b9f088ff4a934fcc, type: 3}
   diffusionConfigs:
   - proteinName: 1AQ1
-    batchSize: 100
+    batchSize: 128
     timesteps: 1000
     betaStart: 0.0001
     betaEnd: 0.02
     heatmapWeight: 0.8
     maxAtoms: 50
-    minFeatureScore: 0.3
-    proteinActiveCenter: {x: 10.5, y: 8.2, z: 12.7}
+    minFeatureScore: 0.15
+    proteinActiveCenter: {x: 1.16, y: 26.85, z: -8.51}
     cWeight: 0.4
     oWeight: 0.3
     nWeight: 0.2
     sWeight: 0.1
     lowPowerMode: 0
+  test: 1
 --- !u!4 &738985760
 Transform:
   m_ObjectHideFlags: 0
@@ -228,7 +285,7 @@ MonoBehaviour:
   - proteinName: 1AQ1
     heatmapSize: 32
     gridSpacing: 1
-    activeSiteCenter: {x: 10.5, y: 8.2, z: 12.7}
+    activeSiteCenter: {x: 1.16, y: 26.85, z: -8.51}
     kernelSize: 3
     inChannels: 4
     outChannels: 4
@@ -267,6 +324,7 @@ MonoBehaviour:
   morganCS: {fileID: 0}
   diffusionForwardCS: {fileID: 0}
   heatmapConvCS: {fileID: 0}
+  templateMat: {fileID: 2100000, guid: 26695abc36ac7b141ad14c66a9c0a5eb, type: 2}
 --- !u!4 &1149687865
 Transform:
   m_ObjectHideFlags: 0
@@ -479,4 +537,5 @@ SceneRoots:
   - {fileID: 1366347514}
   - {fileID: 1082317111}
   - {fileID: 738985760}
+  - {fileID: 245285011}
   - {fileID: 1149687865}

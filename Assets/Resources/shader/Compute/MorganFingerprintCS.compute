@@ -1,5 +1,6 @@
 // MorganFingerprintCS.compute - 512位Count型Morgan指纹
 #pragma kernel CSGenerateMorgan
+#pragma enable_d3d11_debug_symbols
 
 // 原子数据结构（与C#结构体对齐）
 struct AtomData {

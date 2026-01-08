@@ -1,4 +1,5 @@
 #pragma kernel CSGenerateBallStickMesh
+#pragma enable_d3d11_debug_symbols
 
 #define MAX_ATOM_COUNT 50 // 分子最大原子数
 #define smilesMaxLength 256
@@ -22,6 +23,7 @@ float bondRadius;
 int topK;
 
 // 输入输出Buffer
+Texture2D<float4> smilesInputTexture;
 StructuredBuffer<int> smilesInputBuffer;
 RWStructuredBuffer<float3> vertexOutputBuffer_position;
 RWStructuredBuffer<float3> vertexOutputBuffer_normal;
@@ -59,21 +61,33 @@ void ParseSMILES(in int smilesChars[smilesMaxLength], out int atomTypes[MAX_ATOM
 {
     atomCount = 0;
     //atomTypes = new AtomType[MAX_ATOM_COUNT];
-    for(int i = 0; i < smilesMaxLength; i++)
+    for (int i = 0; i < MAX_ATOM_COUNT; i++)
     {
         int c = smilesChars[i];
         if(c == 0) break;
         if(c == '-' || c == '=' || c == '(' || c == ')') continue;
-
-        switch(c)
+        
+        switch (c)
         {
-            case 'C': atomTypes[atomCount++] = AtomTypeC; break;
-            case 'O': atomTypes[atomCount++] = AtomTypeO; break;
-            case 'N': atomTypes[atomCount++] = AtomTypeN; break;
-            case 'S': atomTypes[atomCount++] = AtomTypeS; break;
-            default: atomTypes[atomCount++] = AtomTypeUNKNOWN; break;
+            case 'C':
+                atomTypes[atomCount++] = AtomTypeC;
+                break;
+            case 'O':
+                atomTypes[atomCount++] = AtomTypeO;
+                break;
+            case 'N':
+                atomTypes[atomCount++] = AtomTypeN;
+                break;
+            case 'S':
+                atomTypes[atomCount++] = AtomTypeS;
+                break;
+            default:
+                atomTypes[atomCount++] = AtomTypeUNKNOWN;
+                break;
         }
-        if(atomCount >= MAX_ATOM_COUNT) break;
+        
+        if(atomCount >= MAX_ATOM_COUNT)
+            break;
     }
 }
 
@@ -85,6 +99,8 @@ void GenerateAtomSphere(float3 center, int type, int vertexOffset, int indexOffs
     float thetaStep = 2 * 3.1415926f / sphereSegments;
     float phiStep = 3.1415926f / sphereSegments;
 
+    int beginVCount = vCount;
+    
     for(int y = 0; y <= sphereSegments; y++)
     {
         float phi = y * phiStep;
@@ -123,13 +139,21 @@ void GenerateAtomSphere(float3 center, int type, int vertexOffset, int indexOffs
             int v2 = v0 + (sphereSegments + 1);
             int v3 = v2 + 1;
 
-            indexOutputBuffer[indexOffset + iCount++] = v0 + vertexOffset;
-            indexOutputBuffer[indexOffset + iCount++] = v2 + vertexOffset;
-            indexOutputBuffer[indexOffset + iCount++] = v1 + vertexOffset;
+            //indexOutputBuffer[indexOffset + iCount++] = v0 + vertexOffset;
+            //indexOutputBuffer[indexOffset + iCount++] = v2 + vertexOffset;
+            //indexOutputBuffer[indexOffset + iCount++] = v1 + vertexOffset;
 
-            indexOutputBuffer[indexOffset + iCount++] = v1 + vertexOffset;
-            indexOutputBuffer[indexOffset + iCount++] = v2 + vertexOffset;
-            indexOutputBuffer[indexOffset + iCount++] = v3 + vertexOffset;
+            //indexOutputBuffer[indexOffset + iCount++] = v1 + vertexOffset;
+            //indexOutputBuffer[indexOffset + iCount++] = v2 + vertexOffset;
+            //indexOutputBuffer[indexOffset + iCount++] = v3 + vertexOffset;
+            
+            indexOutputBuffer[indexOffset + iCount++] = v0 + beginVCount;
+            indexOutputBuffer[indexOffset + iCount++] = v2 + beginVCount;
+            indexOutputBuffer[indexOffset + iCount++] = v1 + beginVCount;
+
+            indexOutputBuffer[indexOffset + iCount++] = v1 + beginVCount;
+            indexOutputBuffer[indexOffset + iCount++] = v2 + beginVCount;
+            indexOutputBuffer[indexOffset + iCount++] = v3 + beginVCount;
         }
     }
 }
@@ -142,6 +166,8 @@ void GenerateBondCylinder(float3 start, float3 end, float4 color, int vertexOffs
     float3 right = normalize(cross(dir, up));
     up = normalize(cross(right, dir));
     float length = distance(start, end);
+    
+    int beginVCount = vCount;
 
     // 生成圆柱两端顶点
     for(int i = 0; i <= cylinderSegments; i++)
@@ -170,13 +196,13 @@ void GenerateBondCylinder(float3 start, float3 end, float4 color, int vertexOffs
         int v2 = (i + 1) * 2;
         int v3 = v2 + 1;
 
-        indexOutputBuffer[indexOffset + iCount++] = v0 + vertexOffset;
-        indexOutputBuffer[indexOffset + iCount++] = v2 + vertexOffset;
-        indexOutputBuffer[indexOffset + iCount++] = v1 + vertexOffset;
+        indexOutputBuffer[indexOffset + iCount++] = v0 + beginVCount;
+        indexOutputBuffer[indexOffset + iCount++] = v1 + beginVCount;
+        indexOutputBuffer[indexOffset + iCount++] = v2 + beginVCount;
 
-        indexOutputBuffer[indexOffset + iCount++] = v1 + vertexOffset;
-        indexOutputBuffer[indexOffset + iCount++] = v2 + vertexOffset;
-        indexOutputBuffer[indexOffset + iCount++] = v3 + vertexOffset;
+        indexOutputBuffer[indexOffset + iCount++] = v1 + beginVCount;
+        indexOutputBuffer[indexOffset + iCount++] = v3 + beginVCount;
+        indexOutputBuffer[indexOffset + iCount++] = v2 + beginVCount;
     }
 }
 
@@ -190,7 +216,9 @@ void CSGenerateBallStickMesh(uint3 dispatchThreadID : SV_DispatchThreadID)
     int smilesChars[smilesMaxLength];
     for (int i = 0; i < smilesMaxLength; i++)
     {
-        smilesChars[i] = smilesInputBuffer[molIdx * smilesMaxLength + i];
+        //smilesChars[i] = smilesInputBuffer[molIdx * smilesMaxLength + i];
+        float r = smilesInputTexture[int2(i, molIdx)].r;
+        smilesChars[i] = (int)(r * 255.0f);
     }
 
     // 2. 解析SMILES
@@ -199,8 +227,10 @@ void CSGenerateBallStickMesh(uint3 dispatchThreadID : SV_DispatchThreadID)
     ParseSMILES(smilesChars, atomTypes, atomCount);
     atomCountOutputBuffer[molIdx] = atomCount;
 
-    // 仅处理Top-K分子
-    if(molIdx >= topK || atomCount <= 1) return;
+    //// 仅处理Top-K分子
+    //if(molIdx >= topK || atomCount <= 1) return;
+    if (atomCount <= 1)
+        return;
 
     // 3. 计算原子位置（链式排列，沿X轴分布）
     float3 atomPositions[MAX_ATOM_COUNT];
@@ -215,8 +245,8 @@ void CSGenerateBallStickMesh(uint3 dispatchThreadID : SV_DispatchThreadID)
     int indicesPerAtom = sphereSegments * sphereSegments * 6;
     int indicesPerBond = cylinderSegments * 6;
 
-    int totalVertices = atomCount * verticesPerAtom + (atomCount - 1) * verticesPerBond;
-    int totalIndices = atomCount * indicesPerAtom + (atomCount - 1) * indicesPerBond;
+    int totalVertices = MAX_ATOM_COUNT * verticesPerAtom + (MAX_ATOM_COUNT - 1) * verticesPerBond;
+    int totalIndices = MAX_ATOM_COUNT * indicesPerAtom + (MAX_ATOM_COUNT - 1) * indicesPerBond;
     int vertexOffset = molIdx * totalVertices;
     int indexOffset = molIdx * totalIndices;
 
@@ -228,12 +258,14 @@ void CSGenerateBallStickMesh(uint3 dispatchThreadID : SV_DispatchThreadID)
     {
         GenerateAtomSphere(atomPositions[a], atomTypes[a], vertexOffset, indexOffset, vCount, iCount);
     }
+    
+    //vertexOffset += MAX_ATOM_COUNT * verticesPerAtom;
+    //indexOffset += MAX_ATOM_COUNT * indicesPerAtom;
 
     // 6. 生成化学键棍（取原子颜色均值）
     for(int b = 0; b < atomCount - 1; b++)
     {
         float4 color = (GetAtomColor(atomTypes[b]) + GetAtomColor(atomTypes[b+1])) * 0.5f;
-        GenerateBondCylinder(atomPositions[b], atomPositions[b+1], color, vertexOffset + atomCount * verticesPerAtom, 
-                             indexOffset + atomCount * indicesPerAtom, vCount, iCount);
+        GenerateBondCylinder(atomPositions[b], atomPositions[b + 1], color, vertexOffset, indexOffset, vCount, iCount);
     }
 }

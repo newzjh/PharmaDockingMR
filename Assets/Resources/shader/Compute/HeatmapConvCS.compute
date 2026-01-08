@@ -1,5 +1,5 @@
-// HeatmapConvCS.hlsl
 #pragma kernel CSSparseConv
+#pragma enable_d3d11_debug_symbols
 
 // 常量缓冲区：卷积参数
 cbuffer ConvParams : register(b0) {
