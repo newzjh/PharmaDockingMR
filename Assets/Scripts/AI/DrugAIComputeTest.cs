@@ -24,7 +24,28 @@ namespace AIDrugDiscovery
             var hg = GameObject.FindFirstObjectByType<HeatmapGenerator>(FindObjectsInactive.Include);
             var dg = GameObject.FindFirstObjectByType<DiffusionGenerator>(FindObjectsInactive.Include);
             var mg = GameObject.FindFirstObjectByType<SMILESToBallStickMesh>(FindObjectsInactive.Include);
-            var fp = GameObject.FindFirstObjectByType<MorganFPGenerator>(FindObjectsInactive.Include);
+            var rfp = GameObject.FindFirstObjectByType<ReferenceFPGenerator>(FindObjectsInactive.Include);
+            var mfp = GameObject.FindFirstObjectByType<MorganFPGenerator>(FindObjectsInactive.Include);
+            var ff = GameObject.FindFirstObjectByType<FPFilter>(FindObjectsInactive.Include);
+
+            // 2. 1AQ1活性配体SMILES列表（实验数据）
+            List<string> aq1ActiveSmiles = new List<string>()
+            {
+                "C1=CC=C(C(=C1)C(=O)N)O",
+                "CC(=O)Nc1ccc(O)cc1",
+                "CN1C=NC2=C1C(=O)N(C(=O)N2C)C"
+            };
+
+            // 3. 生成ECFP4参考指纹库
+            var aq1FPLibrary = rfp.GenerateReferenceFPLibrary(
+                targetName: "1AQ1",
+                activeSmilesList: aq1ActiveSmiles,
+                fpType: ReferenceFPGenerator.FingerprintType.ECFP4,
+                fpLength: 512);
+
+            // 4. 输出核心信息
+            Debug.Log($"1AQ1共识指纹长度：{aq1FPLibrary.ConsensusFP.Count}");
+            Debug.Log($"校准相似度阈值：{aq1FPLibrary.CalibratedThreshold:F2}");
 
             foreach (var config in hg.proteinConfigs)
             {
@@ -49,7 +70,16 @@ namespace AIDrugDiscovery
                     Texture2D.Destroy(heatmap);
                     RenderTexture.Destroy(heatmap3D);
 
-                    var generateFP = await fp.Generate512BitFP(smiletexture, smiletexture.height);
+                    var generateFP = await mfp.Generate512BitFP(smiletexture, smiletexture.height);
+
+                    List<int> newfilter = new List<int>();
+                    for (int j = 0; j < filters.Count; j++)
+                    {
+                        var genfp = mfp.GetFPFromBuffer(filters[j]);
+                        var similarity = rfp.CalculateFPSimilarity(genfp, aq1FPLibrary);
+                        if (similarity > aq1FPLibrary.CalibratedThreshold)
+                            newfilter.Add(j);
+                    }
 
                     var meshes = await mg.GenerateBallStickMeshes(filters, smiletexture);
                     RenderTexture.Destroy(smiletexture);
