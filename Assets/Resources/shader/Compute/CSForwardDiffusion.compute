@@ -16,6 +16,7 @@ int heatmapSize; // 热力图尺寸（兼容不同分辨率）
 
 // 输入资源
 Texture2D<float4> proteinHeatmap; // 通用大分子热力图
+Texture3D<float4> proteinHeatmap3D; // 通用大分子热力图
 
 // 输入Buffer
 StructuredBuffer<float> betaBuffer;
@@ -56,6 +57,27 @@ float GetProteinFeatureConstraint(int molIdx, float3 atomPos, float3 activeCente
     int2 uv2 = int2(atomPos.xz - activeCenter.xz + heatmapSize * 0.5f);
     uv2 = clamp(uv2, 0, int2(heatmapSize-1, heatmapSize-1));
     float4 heatmapFeat = proteinHeatmap.Load(int3(uv2, 0));
+    
+    // 加权求和得到特征匹配分数
+    float featureScore = dot(heatmapFeat, float4(0.3f, 0.2f, 0.3f, 0.2f));
+    return featureScore * heatmapWeight;
+}
+
+float GetProteinFeatureConstraint3D(int molIdx, float3 atomPos, float3 activeCenter)
+{
+    // 将原子坐标映射到热力图UV（适配任意热力图尺寸）
+    //float2 uv = float2(
+    //    (atomPos.x - activeCenter.x + heatmapSize * 0.5f) / heatmapSize,
+    //    (atomPos.z - activeCenter.z + heatmapSize * 0.5f) / heatmapSize
+    //);
+    //uv = saturate(uv); // 限制UV在0-1范围内
+
+    //// 采样热力图4通道特征（原子类型/电荷/疏水性/氢键）
+    //float4 heatmapFeat = proteinHeatmap.SampleLevel(pointSampler, uv, 0);
+    
+    int3 uv3 = int3(atomPos - activeCenter + heatmapSize * 0.5f);
+    uv3 = clamp(uv3, 0, int3(heatmapSize - 1, heatmapSize - 1, heatmapSize - 1));
+    float4 heatmapFeat = proteinHeatmap3D.Load(int4(uv3, 0));
     
     // 加权求和得到特征匹配分数
     float featureScore = dot(heatmapFeat, float4(0.3f, 0.2f, 0.3f, 0.2f));

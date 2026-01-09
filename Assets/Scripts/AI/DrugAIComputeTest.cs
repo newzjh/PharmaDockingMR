@@ -26,17 +26,22 @@ namespace AIDrugDiscovery
 
             foreach (var config in hg.proteinConfigs)
             {
-                var heatmap = hg.GenerateProteinHeatmap(config);
-                var unfilter = await dg.GenerateProteinTargetedMols(dg.diffusionConfigs.First(), heatmap);
+                var heatmap = await hg.GenerateProteinHeatmap(config);
+                var heatmap3D = await hg.GenerateProteinHeatmap3D(config);
+                var unfilter = await dg.GenerateProteinTargetedMols(dg.diffusionConfigs.First(), heatmap, heatmap3D);
                 var smiles = unfilter.Item1;
                 var filters = unfilter.Item2;
                 var smilebuffer = unfilter.Item3;
                 var smiletexture = unfilter.Item4;
 
+                Texture2D.Destroy(heatmap);
+                RenderTexture.Destroy(heatmap3D);
+
                 var generateFP = await fp.Generate512BitFP(smilebuffer, smiletexture, smiletexture.height);
 
                 var meshes = await mg.GenerateBallStickMeshes(filters, smilebuffer, smiletexture);
                 smilebuffer.Dispose();
+                RenderTexture.Destroy(smiletexture);
 
                 int count = 0;
                 foreach(var mesh in meshes)

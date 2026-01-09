@@ -44,11 +44,11 @@ namespace AIDrugDiscovery
         public List<ProteinDiffusionConfig> diffusionConfigs; // 多受体配置列表
 
 
-        public async void Begin(Texture2D heatmap)
+        public async void Begin(Texture2D heatmap, RenderTexture heatmap3D)
         {
             foreach (var config in diffusionConfigs)
             {
-                  await GenerateProteinTargetedMols(config, heatmap);
+                  await GenerateProteinTargetedMols(config, heatmap, heatmap3D);
             }
         }
 
@@ -56,7 +56,7 @@ namespace AIDrugDiscovery
 
         // 通用大分子靶向分子生成函数
         
-        public async UniTask<ValueTuple<List<string>, List<int>, ComputeBuffer, RenderTexture>> GenerateProteinTargetedMols(ProteinDiffusionConfig config, Texture2D proteinHeatmap)
+        public async UniTask<ValueTuple<List<string>, List<int>, ComputeBuffer, RenderTexture>> GenerateProteinTargetedMols(ProteinDiffusionConfig config, Texture2D proteinHeatmap, RenderTexture proteinHeatmap3D)
         {
             List<string> generatedSmiles = new List<string>();
             List<int> generatedIndices = new List<int>();
@@ -110,6 +110,7 @@ namespace AIDrugDiscovery
 
             // 绑定纹理和Buffer
             diffusionCS.SetTexture(kernelId, "proteinHeatmap", proteinHeatmap);
+            diffusionCS.SetTexture(kernelId, "proteinHeatmap3D", proteinHeatmap3D);
             diffusionCS.SetBuffer(kernelId, "betaBuffer", betaBuffer);
             diffusionCS.SetBuffer(kernelId, "alphaCumprodBuffer", alphaCumprodBuffer);
             diffusionCS.SetVector("atomWeightBuffer", atomWeightBuffer);
@@ -146,7 +147,9 @@ namespace AIDrugDiscovery
                         count++;
                     }
                 }
-                Debug.Log($"分子{i}平均匹配分数：{avgScore / count}");
+                if (count > 0)
+                    avgScore /= (float)count;
+                Debug.Log($"分子{i}平均匹配分数：{avgScore}");
             }
 
             // 7. 读取并解析SMILES结果
@@ -181,22 +184,6 @@ namespace AIDrugDiscovery
 
             Debug.Log($"[{config.proteinName}] 靶向分子生成完成：共生成{generatedSmiles.Count}个有效SMILES");
             return (generatedSmiles, generatedIndices, smilesBuffer, smilesTexture);
-        }
-
-        // 批量生成所有配置的大分子靶向分子
-        public void GenerateAllProteinTargetedMols(Dictionary<string, Texture2D> proteinHeatmapDict)
-        {
-            foreach (var config in diffusionConfigs)
-            {
-                if (proteinHeatmapDict.TryGetValue(config.proteinName, out var heatmap))
-                {
-                    GenerateProteinTargetedMols(config, heatmap);
-                }
-                else
-                {
-                    Debug.LogError($"[{config.proteinName}] 未找到对应的热力图");
-                }
-            }
         }
 
         // 辅助函数：预计算扩散噪声调度表（支持自定义beta参数）

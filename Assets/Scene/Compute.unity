@@ -213,7 +213,7 @@ MonoBehaviour:
     betaEnd: 0.02
     heatmapWeight: 0.8
     maxAtomLimit: 60
-    minFeatureScore: 0.15
+    minFeatureScore: 0.01
     proteinActiveCenter: {x: 1.16, y: 26.85, z: -8.51}
     cWeight: 0.4
     oWeight: 0.3
@@ -281,6 +281,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::AIDrugDiscovery.HeatmapGenerator
   heatmapConvCS: {fileID: 7200000, guid: aee4a8379577adc4f9842906c625a222, type: 3}
+  sparseConv3DCS: {fileID: 7200000, guid: eb537d44c8cfb994f80cc2823f6f7f4e, type: 3}
   proteinConfigs:
   - proteinName: 1AQ1
     heatmapSize: 32
@@ -292,6 +293,7 @@ MonoBehaviour:
     lowPowerMode: 0
   autoVisualize: 1
   heatmapPlaneScale: 0.1
+  test: 1
 --- !u!1 &1088922784
 GameObject:
   m_ObjectHideFlags: 0

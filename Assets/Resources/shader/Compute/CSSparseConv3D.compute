@@ -1,0 +1,130 @@
+#pragma kernel CSSparseConv3D
+#pragma enable_d3d11_debug_symbols
+
+// 3D稀疏卷积核心参数（适配1AQ1 64×64×64热力图）
+int3 kernelSize;           // 3×3×3卷积核
+int3 stride;               // 步长1×1×1
+int3 padding;              // 填充1×1×1
+float sparseThreshold;     // 稀疏阈值（基于活性值x轴）
+float3 voxelResolution;    // 0.5Å/体素
+//float3 activeSiteCenter;   // 1AQ1活性中心(10.5,8.2,12.7)
+
+
+// 输入：1AQ1 3D热力图Texture3D（每个体素float4特征）
+Texture3D<float4> InputHeatmap3D;
+
+// 输出：3D卷积结果Texture3D（float4特征）
+RWTexture3D<float4> OutputHeatmap3D;
+
+// 预定义3D高斯卷积核（4组权重，对应float4的4个特征维度）
+// 索引：0=活性值(x), 1=电荷(y), 2=疏水性(z), 3=氢键特征(w),
+static const float convKernel3D[4][27] = 
+{
+    // 活性值卷积核（增强1AQ1口袋中心）
+    {0.0f,0.0f,0.0f, 0.0f,1.0f,0.0f, 0.0f,0.0f,0.0f,
+     0.0f,0.1f,0.1f, 0.1f,0.8f,0.1f, 0.1f,0.1f,0.0f,
+     0.0f,0.1f,0.2f, 0.1f,0.8f,0.1f, 0.2f,0.1f,0.0f},
+    // 电荷卷积核（1AQ1带电口袋区域增强）
+    {0.0f,0.0f,0.0f, 0.0f,0.7f,0.0f, 0.0f,0.0f,0.0f,
+     0.0f,0.1f,0.1f, 0.1f,0.5f,0.1f, 0.1f,0.1f,0.0f,
+     0.0f,0.1f,0.2f, 0.1f,0.5f,0.1f, 0.2f,0.1f,0.0f},
+    // 疏水性卷积核（1AQ1口袋疏水区域增强）
+    {
+        0.0f, 0.0f, 0.0f, 0.0f, 0.8f, 0.0f, 0.0f, 0.0f, 0.0f,
+     0.0f, 0.2f, 0.2f, 0.2f, 1.0f, 0.2f, 0.2f, 0.2f, 0.0f,
+     0.0f, 0.2f, 0.3f, 0.2f, 1.0f, 0.2f, 0.3f, 0.2f, 0.0f
+    },
+    // 氢键特征卷积核（1AQ1酰胺键结合区域增强）
+    {
+        0.0f, 0.0f, 0.0f, 0.0f, 0.9f, 0.0f, 0.0f, 0.0f, 0.0f,
+     0.0f, 0.15f, 0.15f, 0.15f, 0.7f, 0.15f, 0.15f, 0.15f, 0.0f,
+     0.0f, 0.15f, 0.25f, 0.15f, 0.7f, 0.15f, 0.25f, 0.15f, 0.0f
+    }
+};
+
+// 3D体素边界检查
+bool IsInBounds(int3 voxelIdx)
+{
+    //uint3 texSize = InputHeatmap3D.GetDimensions();
+    uint3 texSize = uint3(32, 32, 32);
+    return voxelIdx.x >= 0 && voxelIdx.x < (int)texSize.x &&
+           voxelIdx.y >= 0 && voxelIdx.y < (int)texSize.y &&
+           voxelIdx.z >= 0 && voxelIdx.z < (int)texSize.z;
+}
+
+// 动态稀疏3D卷积（float4多特征计算）
+float4 ComputeSparseConv3D(int3 voxelIdx)
+{
+    // 1. 采样当前体素float4特征，基于x轴（活性值）判断稀疏性
+    //float4 currFeatures = InputHeatmap3D.SampleLevel(sampler3D, float3(voxelIdx)/float3(InputHeatmap3D.GetDimensions()), 0);
+    float4 currFeatures = InputHeatmap3D[voxelIdx];
+    
+    if (length(currFeatures) < 1e-6) 
+    //if (currFeatures.x < sparseThreshold)
+        return float4(0,0,0,0); // 零特征直接返回
+
+    // 2. 初始化4维卷积结果
+    float4 convResult = float4(0,0,0,0);
+    
+    // 3. 3D卷积核遍历（3×3×3）
+    int kernelIdx = 0;
+    for (int kz = -padding.z; kz < kernelSize.z - padding.z; kz++)
+    {
+        for (int ky = -padding.y; ky < kernelSize.y - padding.y; ky++)
+        {
+            for (int kx = -padding.x; kx < kernelSize.x - padding.x; kx++)
+            {
+                // 卷积核对应体素索引
+                int3 kernelVoxelIdx = voxelIdx + int3(kx * stride.x, ky * stride.y, kz * stride.z);
+                
+                // 边界检查：超出范围则跳过
+                if (!IsInBounds(kernelVoxelIdx))
+                {
+                    kernelIdx++;
+                    continue;
+                }
+
+                // 采样卷积核对应体素的float4特征
+                //float4 kernelVoxelFeatures = InputHeatmap3D.SampleLevel(sampler3D, float3(kernelVoxelIdx)/float3(InputHeatmap3D.GetDimensions()), 0);
+                float4 kernelVoxelFeatures = InputHeatmap3D[kernelVoxelIdx];
+                // 稀疏判断：仅活性值≥阈值的体素参与计算
+                if (length(kernelVoxelFeatures) < 1e-6)
+                {
+                    kernelIdx++;
+                    continue;
+                }
+
+                // 4维特征分别卷积：特征值 × 对应维度的卷积核权重
+                convResult.x += kernelVoxelFeatures.x * convKernel3D[0][kernelIdx];
+                convResult.y += kernelVoxelFeatures.y * convKernel3D[1][kernelIdx];
+                convResult.z += kernelVoxelFeatures.z * convKernel3D[2][kernelIdx];
+                convResult.w += kernelVoxelFeatures.w * convKernel3D[3][kernelIdx];
+                
+                kernelIdx++;
+            }
+        }
+    }
+
+    // 4. 特征归一化（适配1AQ1特征范围：0~1）
+    convResult.x = saturate(convResult.x / 5.0f); // 活性值归一化
+    convResult.y = saturate(convResult.y / 3.5f); // 电荷归一化
+    convResult.z = saturate(convResult.z / 4.0f); // 疏水性归一化
+    convResult.w = saturate(convResult.w / 4.5f); // 氢键特征归一化    
+
+    return convResult;
+}
+
+// 3D线程组调度（8×8×8适配64×64×64 Texture3D）
+[numthreads(8,8,8)]
+void CSSparseConv3D(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    int3 voxelIdx = int3(dispatchThreadID);
+    uint3 texSize = uint3(32, 32, 32);
+    
+    // 边界检查
+    if (voxelIdx.x >= (int)texSize.x || voxelIdx.y >= (int)texSize.y || voxelIdx.z >= (int)texSize.z)
+        return;
+
+    // 执行稀疏卷积并写入float4特征到输出Texture3D
+    OutputHeatmap3D[dispatchThreadID] = ComputeSparseConv3D(voxelIdx);
+}
