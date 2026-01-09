@@ -47,7 +47,7 @@ namespace AIDrugDiscovery
         /// <summary>
         /// 生成分子球冠Mesh
         /// </summary>
-        public List<Mesh> GenerateMolMeshes(List<int> filteredIndices, ComputeBuffer smilesBuffer, RenderTexture smilesTexture)
+        public List<Mesh> GenerateMolMeshes(List<int> filteredIndices, RenderTexture smilesTexture)
         {
             List<Mesh> molMeshes = new List<Mesh>();
             int verticesPerAtom = (config.sphereSegments + 1) * (config.sphereSegments + 1);
@@ -62,7 +62,7 @@ namespace AIDrugDiscovery
             meshGeneratorCS.SetInt("topK", config.topK);
 
             // 2. 绑定Buffer
-            meshGeneratorCS.SetBuffer(kernelId, "smilesInputBuffer", smilesBuffer);
+            //meshGeneratorCS.SetBuffer(kernelId, "smilesInputBuffer", smilesBuffer);
             meshGeneratorCS.SetTexture(kernelId, "smilesInputTexture", smilesTexture);
             meshGeneratorCS.SetBuffer(kernelId, "vertexOutputBuffer_position", vertexBufferPosition);
             meshGeneratorCS.SetBuffer(kernelId, "vertexOutputBuffer_normal", vertexBufferNormal);

@@ -65,7 +65,7 @@ namespace AIDrugDiscovery
         /// 生成球棍模型Mesh
         /// </summary>
         /// <param name="filteredIndices">筛选后的分子索引列表</param>
-        public async UniTask<List<Mesh>> GenerateBallStickMeshes(List<int> filteredIndices, ComputeBuffer smilesBuffer, RenderTexture smilesTexture)
+        public async UniTask<List<Mesh>> GenerateBallStickMeshes(List<int> filteredIndices, Texture smilesTexture)
         {
             List<Mesh> molMeshes = new List<Mesh>();
             int verticesPerAtom = (config.sphereSegments + 1) * (config.sphereSegments + 1);
@@ -85,7 +85,7 @@ namespace AIDrugDiscovery
             ballStickCS.SetInt("topK", config.topK);
 
             // 2. 绑定Buffer
-            ballStickCS.SetBuffer(kernelId, "smilesInputBuffer", smilesBuffer);
+            //ballStickCS.SetBuffer(kernelId, "smilesInputBuffer", smilesBuffer);
             ballStickCS.SetTexture(kernelId, "smilesInputTexture", smilesTexture);
             ballStickCS.SetBuffer(kernelId, "vertexOutputBuffer_position", vertexBufferPosition);
             ballStickCS.SetBuffer(kernelId, "vertexOutputBuffer_normal", vertexBufferNormal);

@@ -48,7 +48,7 @@ namespace AIDrugDiscovery
         {
             foreach (var config in diffusionConfigs)
             {
-                  await GenerateProteinTargetedMols(config, heatmap, heatmap3D);
+                  await GenerateProteinTargetedMols(config, heatmap, heatmap3D, 0);
             }
         }
 
@@ -56,7 +56,7 @@ namespace AIDrugDiscovery
 
         // 通用大分子靶向分子生成函数
         
-        public async UniTask<ValueTuple<List<string>, List<int>, ComputeBuffer, RenderTexture>> GenerateProteinTargetedMols(ProteinDiffusionConfig config, Texture2D proteinHeatmap, RenderTexture proteinHeatmap3D)
+        public async UniTask<ValueTuple<List<string>, List<int>, RenderTexture>> GenerateProteinTargetedMols(ProteinDiffusionConfig config, Texture2D proteinHeatmap, RenderTexture proteinHeatmap3D, int batchOffset)
         {
             List<string> generatedSmiles = new List<string>();
             List<int> generatedIndices = new List<int>();
@@ -65,7 +65,7 @@ namespace AIDrugDiscovery
             if (proteinHeatmap == null)
             {
                 Debug.LogError($"[{config.proteinName}] 热力图为空，无法生成靶向分子");
-                return (generatedSmiles, generatedIndices, null, null);
+                return (generatedSmiles, generatedIndices, null);
             }
 
             // 2. 低功耗模式适配
@@ -102,7 +102,7 @@ namespace AIDrugDiscovery
             // 5. 配置Compute Shader参数
             int kernelId = diffusionCS.FindKernel("CSForwardDiffusion");
             diffusionCS.SetInt("batchSize", effectiveBatchSize);
-            diffusionCS.SetInt("batchOffset", 0);
+            diffusionCS.SetInt("batchOffset", batchOffset);
             diffusionCS.SetInt("timesteps", effectiveTimesteps);
             diffusionCS.SetFloat("heatmapWeight", config.heatmapWeight);
             diffusionCS.SetInt("maxAtoms", config.maxAtomLimit);
@@ -182,10 +182,10 @@ namespace AIDrugDiscovery
             // 8. 释放所有Buffer（避免内存泄漏）
             betaBuffer.Release();
             alphaCumprodBuffer.Release();
-            //smilesBuffer.Release();
+            smilesBuffer.Release();
 
             Debug.Log($"[{config.proteinName}] 靶向分子生成完成：共生成{generatedSmiles.Count}个有效SMILES");
-            return (generatedSmiles, generatedIndices, smilesBuffer, smilesTexture);
+            return (generatedSmiles, generatedIndices, smilesTexture);
         }
 
         // 辅助函数：预计算扩散噪声调度表（支持自定义beta参数）
