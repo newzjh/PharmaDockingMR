@@ -213,7 +213,7 @@ MonoBehaviour:
     betaEnd: 0.02
     heatmapWeight: 0.8
     maxAtomLimit: 60
-    minFeatureScore: 0.01
+    minFeatureScore: 0.0012
     proteinActiveCenter: {x: 1.16, y: 26.85, z: -8.51}
     cWeight: 0.4
     oWeight: 0.3

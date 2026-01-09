@@ -128,7 +128,7 @@ namespace AIDrugDiscovery
                     continue;
                 int bondCount = atomCount - 1;
 
-                Debug.Log("molIdx:" + molIdx);
+                //Debug.Log("molIdx:" + molIdx);
 
                 vertexOffset = molIdx * (maxAtomLimit * verticesPerAtom + (maxAtomLimit - 1) * verticesPerBond);
                 indexOffset = molIdx * (maxAtomLimit * indicesPerAtom + (maxAtomLimit - 1) * indicesPerBond);

@@ -159,7 +159,7 @@ void CSForwardDiffusion(uint3 dispatchThreadID : SV_DispatchThreadID)
                 //);
                 atomPositions[a] = activeCenter + float3(
                     Random(uint2(molIdx, a)) * heatmapSize - heatmapSize * 0.5f,
-                    Random(uint2(a, molIdx)) * 10 - 5,
+                    Random(uint2(a, molIdx)) * heatmapSize - heatmapSize * 0.5f,
                     Random(uint2(molIdx + a, a)) * heatmapSize - heatmapSize * 0.5f
                 );
 
@@ -182,7 +182,7 @@ void CSForwardDiffusion(uint3 dispatchThreadID : SV_DispatchThreadID)
             atomPositions[a] = sqrt(alphaCumprod) * atomPositions[a] + sqrt(1 - alphaCumprod) * noise;
 
             // 施加大分子热力图约束（拉回活性位点）
-            float featureScore = GetProteinFeatureConstraint(molIdx, atomPositions[a], activeCenter);
+            float featureScore = GetProteinFeatureConstraint3D(molIdx, atomPositions[a], activeCenter);
             totalFeatureScore += featureScore;
 
             if (featureScore < minFeatureScore)
@@ -194,7 +194,8 @@ void CSForwardDiffusion(uint3 dispatchThreadID : SV_DispatchThreadID)
             // 在原子生成后计算匹配分数（热力图像素值）
             float3 atomPos = atomPositions[a];
             // 采样热力图对应位置的分数（假设热力图是2D纹理）
-            matchScoreDebugBuffer[molIdx * MAX_ATOM_COUNT + a] = featureScore;
+            if (featureScore > matchScoreDebugBuffer[molIdx * MAX_ATOM_COUNT + a])
+                matchScoreDebugBuffer[molIdx * MAX_ATOM_COUNT + a] = featureScore;
         }
     }
 

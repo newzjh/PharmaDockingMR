@@ -149,7 +149,8 @@ namespace AIDrugDiscovery
                 }
                 if (count > 0)
                     avgScore /= (float)count;
-                Debug.Log($"分子{i}平均匹配分数：{avgScore}");
+                //if (avgScore > 0)
+                //    Debug.Log($"分子{i}平均匹配分数：{avgScore}");
             }
 
             // 7. 读取并解析SMILES结果

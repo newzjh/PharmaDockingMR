@@ -258,6 +258,7 @@ namespace AIDrugDiscovery
             return heatmapTex;
         }
 
+
         public async UniTask<RenderTexture> GenerateProteinHeatmap3D(ProteinHeatmapConfig config)
         {
             // 1. 低功耗模式自动降分辨率
@@ -326,11 +327,8 @@ namespace AIDrugDiscovery
             }
             rawHeatmap.Apply();
 
-            //rawHeatmap.SetPixelData<Vector4>(rawHeatmapPixels, 0);
-
             // 5. 调用CS执行稀疏卷积
             RenderTexture heatmapTex = await RunSparseConvCS3D(rawHeatmap, proteinAtoms, config, finalHeatmapSize);
-
 
             return heatmapTex;
         }

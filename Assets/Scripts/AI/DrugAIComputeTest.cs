@@ -17,6 +17,8 @@ namespace AIDrugDiscovery
 
         public Material templateMat;
 
+        public RenderTexture outTest;
+
         public async void Start()
         {
             var hg = GameObject.FindFirstObjectByType<HeatmapGenerator>(FindObjectsInactive.Include);
@@ -35,7 +37,9 @@ namespace AIDrugDiscovery
                 var smiletexture = unfilter.Item4;
 
                 Texture2D.Destroy(heatmap);
-                RenderTexture.Destroy(heatmap3D);
+
+                outTest = heatmap3D;
+                //RenderTexture.Destroy(heatmap3D);
 
                 var generateFP = await fp.Generate512BitFP(smilebuffer, smiletexture, smiletexture.height);
 
@@ -43,10 +47,16 @@ namespace AIDrugDiscovery
                 smilebuffer.Dispose();
                 RenderTexture.Destroy(smiletexture);
 
+                GameObject parentgo = new GameObject("ligands");
+                parentgo.transform.localScale = Vector3.one;
+                parentgo.transform.localEulerAngles = Vector3.zero;
+                parentgo.transform.localPosition = Vector3.zero;
+
                 int count = 0;
                 foreach(var mesh in meshes)
                 {
                     GameObject go = new GameObject();
+                    go.transform.parent = parentgo.transform;
                     go.transform.localScale = Vector3.one;
                     go.transform.localEulerAngles = Vector3.zero;
                     go.transform.localPosition = Vector3.forward * count;
