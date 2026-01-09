@@ -1,20 +1,11 @@
 #pragma kernel CSGenerateBallMesh
 #pragma enable_d3d11_debug_symbols
 
-#define MAX_ATOM_COUNT 50 // 分子最大原子数
-#define smilesMaxLength 256
-#define fpSize 512
+#include "AtomCommon.hlsl"
 
-// 原子类型枚举
-#define AtomTypeC 0
-#define AtomTypeO 1
-#define AtomTypeN 2
-#define AtomTypeS 3
-#define AtomTypeUNKNOWN 4
 
 // C#传递的参数
 int batchSize;
-//int smilesMaxLength;
 int sphereSegments;
 float bondLength;
 float baseRadius;
@@ -32,55 +23,8 @@ RWStructuredBuffer<float4> meshDataOutput_color;
 // 输出：每个分子的原子数
 RWStructuredBuffer<int> atomCountOutput;
 
-// 原子半径与颜色映射（基于Cpk配色）
-float GetAtomRadius(int type)
-{
-    switch(type)
-    {
-        case AtomTypeC: return baseRadius * 0.7f;
-        case AtomTypeO: return baseRadius * 0.6f;
-        case AtomTypeN: return baseRadius * 0.65f;
-        case AtomTypeS: return baseRadius * 0.9f;
-        default: return baseRadius * 0.5f;
-    }
-}
 
-float4 GetAtomColor(int type)
-{
-    switch(type)
-    {
-        case AtomTypeC: return float4(0.2f, 0.2f, 0.2f, 1.0f); // 碳-灰色
-        case AtomTypeO: return float4(1.0f, 0.0f, 0.0f, 1.0f); // 氧-红色
-        case AtomTypeN: return float4(0.0f, 0.0f, 1.0f, 1.0f); // 氮-蓝色
-        case AtomTypeS: return float4(1.0f, 1.0f, 0.0f, 1.0f); // 硫-黄色
-        default: return float4(0.5f, 0.5f, 0.5f, 1.0f); // 未知-浅灰
-    }
-}
 
-// 解析SMILES字符串，获取原子类型与数量
-void ParseSMILES(in int smilesChars[smilesMaxLength], out int atomTypes[MAX_ATOM_COUNT], out int atomCount)
-{
-    atomCount = 0;
-    //atomTypes = new AtomType[MAX_ATOM_COUNT];
-
-    for(int i = 0; i < smilesMaxLength; i++)
-    {
-        int c = smilesChars[i];
-        if(c == 0) break;
-        if(c == '-' || c == '=' || c == '(' || c == ')') continue;
-
-        switch(c)
-        {
-            case 'C': atomTypes[atomCount++] = AtomTypeC; break;
-            case 'O': atomTypes[atomCount++] = AtomTypeO; break;
-            case 'N': atomTypes[atomCount++] = AtomTypeN; break;
-            case 'S': atomTypes[atomCount++] = AtomTypeS; break;
-            default: atomTypes[atomCount++] = AtomTypeUNKNOWN; break;
-        }
-
-        if(atomCount >= MAX_ATOM_COUNT) break;
-    }
-}
 
 // 生成球冠顶点与法线
 void GenerateSphereCap(float3 center, float radius, float4 color, int atomIndex, int segments, inout int meshDataOffset)

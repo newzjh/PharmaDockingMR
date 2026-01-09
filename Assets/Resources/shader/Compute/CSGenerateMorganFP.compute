@@ -1,0 +1,94 @@
+#pragma kernel CSGenerateMorganFP
+#pragma enable_d3d11_debug_symbols
+
+#include "AtomCommon.hlsl"
+
+
+int batchSize; // 分子批次数量
+int morganRadius; // Morgan指纹半径（推荐2）
+
+
+// 输入：Diffusion生成的SMILES Buffer（char数组，每个分子占smilesMaxLength长度）
+Texture2D<float4> smilesInputTexture;
+StructuredBuffer<int> smilesInputBuffer;
+// 输出：512位指纹Buffer（每个分子对应512个bool，batchSize * 512长度）
+RWStructuredBuffer<bool> fpOutputBuffer;
+
+
+
+
+
+// 计算单个分子的512位Morgan指纹
+void ComputeMorganFP(in int atomTypes[MAX_ATOM_COUNT], in int atomCount, out bool fp[fpSize])
+{
+    // 初始化指纹为false（512位全0）
+    for (int i = 0;i <fpSize; i++) fp[i] = false;
+
+    // 遍历每个原子，计算指定半径内的邻域特征
+    for (int atomIdx = 0;atomIdx <atomCount; atomIdx++)
+    {
+        for (int r = 0;r <=morganRadius; r++)
+        {
+            // 提取原子特征：类型 + 半径 + 邻域原子数
+            uint atomType = (uint) atomTypes[atomIdx];
+            uint neighborCount = 0u;
+
+            // 统计半径r内的邻域原子（前后r个原子，模拟空间邻域）
+            int startIdx = max(0, atomIdx - r);
+            int endIdx = min(atomCount - 1, atomIdx + r);
+            for (int nIdx = startIdx;nIdx <=endIdx; nIdx++)
+            {
+                if (nIdx == atomIdx) continue; // 排除自身
+                neighborCount++;
+            }
+
+            // 组合特征并哈希到512位范围内
+            uint3 feature = uint3(atomType, (uint) r, neighborCount);
+            uint fpIdx = Hash(feature);
+            fp[fpIdx] = true; // 置为1，表示该特征存在
+        }
+    }
+}
+
+// 主Kernel：批量处理SMILES生成512位指纹
+[numthreads(32, 1, 1)] // 32线程组，适配移动端GPU warp尺寸
+void CSGenerateMorganFP(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    int molIdx = dispatchThreadID.x;
+    if (molIdx >= batchSize)
+        return; // 防止线程越界
+
+    // 1. 从SMILES Buffer读取当前分子的字符数组
+    int smilesChars[smilesMaxLength];
+    for (int i = 0; i < smilesMaxLength; i++)
+    {
+        //smilesChars[i] = smilesInputBuffer[molIdx * smilesMaxLength + i];
+        float r = smilesInputTexture[int2(i, molIdx)].r;
+        smilesChars[i] = (int) (r * 255.0f);
+    }
+
+    // 2. 解析SMILES得到原子类型和数量
+    int atomTypes[MAX_ATOM_COUNT];
+    int atomCount;
+    ParseSMILES(smilesChars, atomTypes, atomCount);
+
+    if (atomCount == 0) // 无效分子，指纹全0
+    {
+        for (int i = 0; i < fpSize; i++)
+        {
+            fpOutputBuffer[molIdx * fpSize + i] = false;
+        }
+        return;
+    }
+
+    // 3. 计算512位Morgan指纹
+    bool fp[ fpSize];
+    ComputeMorganFP(atomTypes, atomCount, fp);
+
+    // 4. 写入指纹输出Buffer
+    for (int i = 0; i < fpSize; i++)
+    {
+        int outputIdx = molIdx * fpSize + i;
+        fpOutputBuffer[outputIdx] = fp[i];
+    }
+}
