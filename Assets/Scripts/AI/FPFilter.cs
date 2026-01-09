@@ -57,7 +57,6 @@ namespace AIDrugDiscovery
             int kernelId = similarityCS.FindKernel("CSComputeMaxSimilarity");
             similarityCS.SetInt("genCount", genCount);
             similarityCS.SetInt("refCount", refCount);
-            similarityCS.SetInt("fpSize", fpSize);
             similarityCS.SetFloat("minSimilarity", filterConfig.minSimilarity);
 
             // °ó¶¨Buffer

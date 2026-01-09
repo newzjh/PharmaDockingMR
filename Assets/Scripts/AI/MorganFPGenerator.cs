@@ -48,7 +48,6 @@ namespace AIDrugDiscovery
             int kernelId = morganFPComputeShader.FindKernel("CSGenerateMorganFP");
             morganFPComputeShader.SetInt("batchSize", batchSize);
             morganFPComputeShader.SetInt("smilesMaxLength", smilesMaxLength);
-            morganFPComputeShader.SetInt("fpSize", FP_SIZE);
             morganFPComputeShader.SetInt("morganRadius", morganRadius);
 
             // 5. ∞Û∂® ‰»Î ‰≥ˆBuffer

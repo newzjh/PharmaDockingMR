@@ -71,10 +71,10 @@ void CSGenerateBallMesh(uint3 dispatchThreadID : SV_DispatchThreadID)
     if(molIdx >= batchSize) return;
 
     // 1. 读取当前分子的SMILES
-    int smilesChars[smilesMaxLength];
-    for(int i = 0; i < smilesMaxLength; i++)
+    int smilesChars[SMILES_MAX_LENGTH];
+    for (int i = 0; i < SMILES_MAX_LENGTH; i++)
     {
-        //smilesChars[i] = smilesInputBuffer[molIdx * smilesMaxLength + i];
+        //smilesChars[i] = smilesInputBuffer[molIdx * SMILES_MAX_LENGTH + i];
         float r = smilesInputTexture[int2(i, molIdx)].r;
         smilesChars[i] = (int) (r * 255.0f);
     }

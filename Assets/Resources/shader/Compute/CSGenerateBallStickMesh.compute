@@ -149,10 +149,10 @@ void CSGenerateBallStickMesh(uint3 dispatchThreadID : SV_DispatchThreadID)
         return;
 
     // 1. 读取SMILES字符串
-    int smilesChars[smilesMaxLength];
-    for (int i = 0; i < smilesMaxLength; i++)
+    int smilesChars[SMILES_MAX_LENGTH];
+    for (int i = 0; i < SMILES_MAX_LENGTH; i++)
     {
-        //smilesChars[i] = smilesInputBuffer[molIdx * smilesMaxLength + i];
+        //smilesChars[i] = smilesInputBuffer[molIdx * SMILES_MAX_LENGTH + i];
         float r = smilesInputTexture[int2(i, molIdx)].r;
         smilesChars[i] = (int) (r * 255.0f);
     }

@@ -8,7 +8,7 @@ int batchSize; // 分子批次数量
 int morganRadius; // Morgan指纹半径（推荐2）
 
 
-// 输入：Diffusion生成的SMILES Buffer（char数组，每个分子占smilesMaxLength长度）
+// 输入：Diffusion生成的SMILES Buffer（char数组，每个分子占SMILES_MAX_LENGTH长度）
 Texture2D<float4> smilesInputTexture;
 //StructuredBuffer<int> smilesInputBuffer;
 // 输出：512位指纹Buffer（每个分子对应512个bool，batchSize * 512长度）
@@ -19,10 +19,10 @@ RWStructuredBuffer<int> fpOutputBuffer;
 
 
 // 计算单个分子的512位Morgan指纹
-void ComputeMorganFP(in int atomTypes[MAX_ATOM_COUNT], in int atomCount, out int fp[fpSize])
+void ComputeMorganFP(in int atomTypes[MAX_ATOM_COUNT], in int atomCount, out int fp[FP_SIZE])
 {
     // 初始化指纹为false（512位全0）
-    for (int i = 0;i <fpSize; i++) fp[i] = 0;
+    for (int i = 0;i <FP_SIZE; i++) fp[i] = 0;
 
     // 遍历每个原子，计算指定半径内的邻域特征
     for (int atomIdx = 0;atomIdx <atomCount; atomIdx++)
@@ -59,10 +59,10 @@ void CSGenerateMorganFP(uint3 dispatchThreadID : SV_DispatchThreadID)
         return; // 防止线程越界
 
     // 1. 从SMILES Buffer读取当前分子的字符数组
-    int smilesChars[smilesMaxLength];
-    for (int i = 0; i < smilesMaxLength; i++)
+    int smilesChars[SMILES_MAX_LENGTH];
+    for (int i = 0; i < SMILES_MAX_LENGTH; i++)
     {
-        //smilesChars[i] = smilesInputBuffer[molIdx * smilesMaxLength + i];
+        //smilesChars[i] = smilesInputBuffer[molIdx * SMILES_MAX_LENGTH + i];
         float r = smilesInputTexture[int2(i, molIdx)].r;
         smilesChars[i] = (int) (r * 255.0f);
     }
@@ -74,21 +74,21 @@ void CSGenerateMorganFP(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     if (atomCount <= 0) // 无效分子，指纹全0
     {
-        for (int i = 0; i < fpSize; i++)
+        for (int i = 0; i < FP_SIZE; i++)
         {
-            fpOutputBuffer[molIdx * fpSize + i] = 0;
+            fpOutputBuffer[molIdx * FP_SIZE + i] = 0;
         }
         return;
     }
 
     // 3. 计算512位Morgan指纹
-    int fp[fpSize];
+    int fp[FP_SIZE];
     ComputeMorganFP(atomTypes, atomCount, fp);
 
     // 4. 写入指纹输出Buffer
-    for (int i = 0; i < fpSize; i++)
+    for (int i = 0; i < FP_SIZE; i++)
     {
-        int outputIdx = molIdx * fpSize + i;
+        int outputIdx = molIdx * FP_SIZE + i;
         fpOutputBuffer[outputIdx] = fp[i];
     }
 }
