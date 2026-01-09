@@ -29,9 +29,7 @@
 #define BOND_DOUBLE 1
 #define BOND_TRIPLE 2
 #define BOND_AROMATIC 3
-#define BOND_AMIDE 4
-#define BOND_ESTER 5
-#define BOND_UNKNOWN 6
+#define BOND_UNKNOWN 4
 
 // 通用尺寸常量
 #define MAX_ATOM_COUNT 60 // 分子最大原子数（沿用AtomCommon.txt定义）
@@ -246,8 +244,6 @@ int BondTypeToSMILES(int bondType)
         case BOND_DOUBLE: return '=';
         case BOND_TRIPLE: return '#';
         case BOND_AROMATIC: return ':';
-        case BOND_AMIDE: return '$';
-        case BOND_ESTER: return '%';
         default: return '-';
     }
 }

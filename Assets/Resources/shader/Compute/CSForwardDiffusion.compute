@@ -33,9 +33,7 @@
 #define BOND_Double 1
 #define BOND_Triple 2
 #define BOND_Aromatic 3
-#define BOND_Amide 4
-#define BOND_Ester 5
-#define BOND_unknown 6
+#define BOND_unknown 4
 
 // 通用扩散参数（适配任意大分子）
 int batchSize;
@@ -178,8 +176,6 @@ int BondTypeToSMILES(int bondType)
         case BOND_Double: return '=';
         case BOND_Triple: return '#';
         case BOND_Aromatic: return ':';
-        case BOND_Amide: return '$'; // SMILES中酰胺键用$表示
-        case BOND_Ester: return '%'; // SMILES中酯键用%表示
         default: return '-';
     }
 }
@@ -217,160 +213,280 @@ bool CheckRingFormation(float3 pos1, float3 pos2, float threshold)
     return distance(pos1, pos2) < threshold;
 }
 
-// 通用SMILES编码函数（支持完整SMILES语法）
+// 补充：原子最大价键定义（基于化学规则）
+#define MAX_VALENCE_C 4
+#define MAX_VALENCE_N 3
+#define MAX_VALENCE_O 2
+#define MAX_VALENCE_S 6
+#define MAX_VALENCE_F 1
+#define MAX_VALENCE_Cl 1
+#define MAX_VALENCE_Br 1
+#define MAX_VALENCE_I 1
+#define MAX_VALENCE_H 1
+#define MAX_VALENCE_B 3
+#define MAX_VALENCE_Si 4
+#define MAX_VALENCE_As 3
+#define MAX_VALENCE_Se 2
+
+// 补充：获取原子最大价键
+int GetMaxValence(int atomType)
+{
+    switch(atomType)
+    {
+        case ATOM_C: case ATOM_c: case ATOM_Si: return MAX_VALENCE_C;
+        case ATOM_N: case ATOM_n: case ATOM_As: return MAX_VALENCE_N;
+        case ATOM_O: case ATOM_o: case ATOM_Se: return MAX_VALENCE_O;
+        case ATOM_S: case ATOM_s: return MAX_VALENCE_S;
+        case ATOM_F: case ATOM_Cl: case ATOM_Br: case ATOM_I: return 1;
+        case ATOM_H: return MAX_VALENCE_H;
+        case ATOM_B: return MAX_VALENCE_B;
+        default: return 4; // 未知原子默认4价
+    }
+}
+
+// 补充：计算键类型对应的键级（用于价键校验）
+int GetBondOrder(int bondType)
+{
+    switch(bondType)
+    {
+        case BOND_Single: return 1;
+        case BOND_Double: return 2;
+        case BOND_Triple: return 3;
+        case BOND_Aromatic: return 1.5; // 芳香键按1.5价计算
+        default: return 1;
+    }
+}
+
+// 修复后的SMILES编码函数（支持完整语法+化学规则约束）
 void EncodeSMILES(int molIdx, int atomCount, in int atomTypes[MAX_ATOM_COUNT], 
                  in float3 atomPositions[MAX_ATOM_COUNT], in int bondTypes[MAX_ATOM_COUNT],
                  in int charges[MAX_ATOM_COUNT], out int smilesChars[SMILES_MAX_LENGTH])
 {
-    // 初始化SMILES缓冲区
+    // 初始化SMILES缓冲区（0表示空字符）
     for (int i = 0; i < SMILES_MAX_LENGTH; i++)
     {
         smilesChars[i] = 0;
     }
     
     int charIdx = 0;
-    RingMarker ringMarkers[MAX_RING_COUNT];
+    RingMarker ringMarkers[MAX_RING_COUNT]; // 存储环的起点标记（原子索引+环编号）
     int ringCount = 0;
-    int branchStack[MAX_BRANCH_DEPTH];
+    int branchStack[MAX_BRANCH_DEPTH]; // 支链栈：存储支链结束的原子索引
     int branchDepth = 0;
+    float currentValence[MAX_ATOM_COUNT]; // 跟踪每个原子已使用的价键数
+    bool ringNumberUsed[MAX_RING_COUNT + 1]; // 标记环编号是否已使用（1-9）
     
-    // 处理第一个原子
+    // -------------- 第一步：处理第一个原子（主链起点）--------------
+    if (atomCount == 0) return;
+    int firstAtomType = atomTypes[0];
+    int firstAtomMaxValence = GetMaxValence(firstAtomType);
+    
+    // 处理第一个原子的类型字符
     int atomChars[3];
-    AtomTypeToSMILES(atomTypes[0], atomChars);
-    for (int i = 0; i < 3 && atomChars[i] != 0 && charIdx < SMILES_MAX_LENGTH - 1; i++)
+    AtomTypeToSMILES(firstAtomType, atomChars);
+    for (int i = 0; i < 3 && atomChars[i] != 0 && charIdx < SMILES_MAX_LENGTH - 2; i++)
     {
         smilesChars[charIdx++] = atomChars[i];
     }
     
-    // 处理第一个原子的电荷
-    if (charges[0] != 0 && charIdx < SMILES_MAX_LENGTH - 1)
+    // 处理第一个原子的电荷（修正：结合原子类型限制电荷范围）
+    int firstCharge = charges[0];
+    // 电荷约束：氢最多+1，氧最多+2/-2，碳最多+1/-1等
+    switch(firstAtomType)
+    {
+        case ATOM_H: firstCharge = clamp(firstCharge, -1, 1); break;
+        case ATOM_F: case ATOM_Cl: case ATOM_Br: case ATOM_I: firstCharge = clamp(firstCharge, -1, 1); break;
+        case ATOM_O: case ATOM_o: firstCharge = clamp(firstCharge, -2, 2); break;
+        default: firstCharge = clamp(firstCharge, -2, 2);break;
+    }
+    if (firstCharge != 0 && charIdx < SMILES_MAX_LENGTH - 2)
     {
         int chargeChars[3];
-        GenerateCharge(charges[0], chargeChars);
-        for (int i = 0; i < 3 && chargeChars[i] != 0 && charIdx < SMILES_MAX_LENGTH - 1; i++)
+        GenerateCharge(firstCharge, chargeChars);
+        for (int i = 0; i < 3 && chargeChars[i] != 0 && charIdx < SMILES_MAX_LENGTH - 2; i++)
         {
             smilesChars[charIdx++] = chargeChars[i];
         }
     }
     
-    // 检查第一个原子是否与其他原子形成环
-    for (int i = 2; i < atomCount; i++)
-    {
-        if (CheckRingFormation(atomPositions[0], atomPositions[i], 1.8f) && ringCount < MAX_RING_COUNT)
-        {
-            int ringNum = ringCount + 1;
-            smilesChars[charIdx++] = '0' + ringNum;
-            ringMarkers[ringCount].atomIndex = i;
-            ringMarkers[ringCount].ringNumber = ringNum;
-            ringCount++;
-            break;
-        }
-    }
+    // 第一个原子初始价键：未连接任何键，故为0
+    currentValence[0] = 0;
     
-    // 处理后续原子（主链+支链+环）
+    // -------------- 第二步：处理后续原子（主链+支链+环）--------------
     for (int i = 1; i < atomCount; i++)
     {
-        if (charIdx >= SMILES_MAX_LENGTH - 1) break;
+        if (charIdx >= SMILES_MAX_LENGTH - 2) break; // 预留1个位置给结束符
         
-        // 检查是否需要结束支链
-        if (branchDepth > 0 && i > branchStack[branchDepth - 1])
+        // 1. 结束已完成的支链（栈不为空且当前原子索引超过支链结束索引）
+        while (branchDepth > 0 && i > branchStack[branchDepth - 1])
         {
             smilesChars[charIdx++] = ')';
             branchDepth--;
+            if (charIdx >= SMILES_MAX_LENGTH - 2) break;
         }
+        if (charIdx >= SMILES_MAX_LENGTH - 2) break;
         
-        // 处理键类型
-        if (i > 0)
+        // 2. 处理当前原子与前一个原子的化学键（核心：价键校验）
+        int prevAtomIdx = i - 1;
+        int currentBondType = bondTypes[i];
+        int currentBondOrder = GetBondOrder(currentBondType);
+        int currentAtomType = atomTypes[i];
+        int currentAtomMaxValence = GetMaxValence(currentAtomType);
+        int prevAtomMaxValence = GetMaxValence(atomTypes[prevAtomIdx]);
+        
+        // 价键校验：确保前后原子的价键不超标
+        if (currentValence[prevAtomIdx] + currentBondOrder > prevAtomMaxValence ||
+            currentValence[i] + currentBondOrder > currentAtomMaxValence)
         {
-            int bondChar = BondTypeToSMILES(bondTypes[i]);
-            // 单键可省略（SMILES默认），但保留显式表示选项
-            if (bondChar != '-' || Random(uint2(molIdx, i)) > 0.7f)
-            {
-                smilesChars[charIdx++] = bondChar;
-            }
+            // 价键超标时，降级为单键
+            currentBondType = BOND_Single;
+            currentBondOrder = 1;
         }
         
-        // 随机生成支链（30%概率）
-        if (Random(uint2(molIdx + i, i)) < 0.3f && branchDepth < MAX_BRANCH_DEPTH && i < atomCount - 2)
+        // 写入键符号（修正：单键默认省略，仅显式写入非单键）
+        int bondChar = BondTypeToSMILES(currentBondType);
+        if (currentBondType != BOND_Single)
+        {
+            smilesChars[charIdx++] = bondChar;
+            if (charIdx >= SMILES_MAX_LENGTH - 2) break;
+        }
+        
+        // 3. 随机生成支链（修正：仅在当前原子价键有剩余时生成）
+        if (Random(uint2(molIdx + i, i)) < 0.3f && branchDepth < MAX_BRANCH_DEPTH && 
+            i < atomCount - 2 && currentValence[i] + 1 <= currentAtomMaxValence)
         {
             smilesChars[charIdx++] = '(';
-            branchStack[branchDepth++] = i + RandomInt(uint2(i, molIdx), 1, 3);
+            branchStack[branchDepth++] = i + RandomInt(uint2(i, molIdx), 1, 2); // 支链长度限制为1-2个原子
+            if (charIdx >= SMILES_MAX_LENGTH - 2) break;
         }
         
-        // 处理原子类型
-        AtomTypeToSMILES(atomTypes[i], atomChars);
-        for (int j = 0; j < 3 && atomChars[j] != 0 && charIdx < SMILES_MAX_LENGTH - 1; j++)
+        // 4. 写入当前原子类型字符
+        AtomTypeToSMILES(currentAtomType, atomChars);
+        for (int j = 0; j < 3 && atomChars[j] != 0 && charIdx < SMILES_MAX_LENGTH - 2; j++)
         {
             smilesChars[charIdx++] = atomChars[j];
         }
+        if (charIdx >= SMILES_MAX_LENGTH - 2) break;
         
-        // 处理原子电荷
-        if (charges[i] != 0 && charIdx < SMILES_MAX_LENGTH - 1)
+        // 5. 处理当前原子的电荷（同第一步的电荷约束）
+        int currentCharge = charges[i];
+        switch(currentAtomType)
+        {
+            case ATOM_H: currentCharge = clamp(currentCharge, -1, 1); break;
+            case ATOM_F: case ATOM_Cl: case ATOM_Br: case ATOM_I: currentCharge = clamp(currentCharge, -1, 1); break;
+            case ATOM_O: case ATOM_o: currentCharge = clamp(currentCharge, -2, 2); break;
+            default: currentCharge = clamp(currentCharge, -2, 2); break;
+        }
+        if (currentCharge != 0 && charIdx < SMILES_MAX_LENGTH - 2)
         {
             int chargeChars[3];
-            GenerateCharge(charges[i], chargeChars);
-            for (int j = 0; j < 3 && chargeChars[j] != 0 && charIdx < SMILES_MAX_LENGTH - 1; j++)
+            GenerateCharge(currentCharge, chargeChars);
+            for (int j = 0; j < 3 && chargeChars[j] != 0 && charIdx < SMILES_MAX_LENGTH - 2; j++)
             {
                 smilesChars[charIdx++] = chargeChars[j];
             }
         }
+        if (charIdx >= SMILES_MAX_LENGTH - 2) break;
         
-        // 处理环结构
+        // 6. 处理环结构（修正：强制环编号成对，且价键校验）
         bool ringFormed = false;
-        for (int j = 0; j < i - 1; j++)
+        for (int j = 0; j < i - 1; j++) // 仅与前面已处理的原子形成环
         {
-            if (CheckRingFormation(atomPositions[i], atomPositions[j], 1.8f) && ringCount < MAX_RING_COUNT)
+            if (CheckRingFormation(atomPositions[i], atomPositions[j], 1.8f) && 
+                ringCount < MAX_RING_COUNT && charIdx < SMILES_MAX_LENGTH - 2)
             {
-                // 检查是否已有环标记
-                bool hasMarker = false;
+                // 检查j原子是否已有环起点标记
+                int existingRingNum = -1;
                 for (int k = 0; k < ringCount; k++)
                 {
                     if (ringMarkers[k].atomIndex == j)
                     {
-                        smilesChars[charIdx++] = '0' + ringMarkers[k].ringNumber;
-                        hasMarker = true;
+                        existingRingNum = ringMarkers[k].ringNumber;
                         break;
                     }
                 }
                 
-                // 新环标记
-                if (!hasMarker)
+                if (existingRingNum != -1)
                 {
-                    int ringNum = ringCount + 1;
-                    smilesChars[charIdx++] = '0' + ringNum;
-                    ringMarkers[ringCount].atomIndex = i;
-                    ringMarkers[ringCount].ringNumber = ringNum;
-                    ringCount++;
+                    // 已有环起点：写入环编号（终点），完成配对
+                    smilesChars[charIdx++] = '0' + existingRingNum;
+                    // 校验环键的价键
+                    int ringBondOrder = GetBondOrder(BOND_Single); // 环键默认单键
+                    if (currentValence[j] + ringBondOrder <= prevAtomMaxValence &&
+                        currentValence[i] + ringBondOrder <= currentAtomMaxValence)
+                    {
+                        currentValence[j] += ringBondOrder;
+                        currentValence[i] += ringBondOrder;
+                    }
+                    ringFormed = true;
+                    break;
                 }
-                
-                ringFormed = true;
-                break;
+                else
+                {
+                    // 无环起点：创建新环标记（起点）
+                    int newRingNum = -1;
+                    for (int k = 1; k <= MAX_RING_COUNT; k++)
+                    {
+                        if (!ringNumberUsed[k])
+                        {
+                            newRingNum = k;
+                            ringNumberUsed[k] = true;
+                            break;
+                        }
+                    }
+                    if (newRingNum != -1)
+                    {
+                        smilesChars[charIdx++] = '0' + newRingNum;
+                        ringMarkers[ringCount].atomIndex = i;
+                        ringMarkers[ringCount].ringNumber = newRingNum;
+                        ringCount++;
+                        ringFormed = true;
+                        break;
+                    }
+                }
             }
         }
         
-        // 随机生成芳香环标记（仅对芳香原子）
-        if ((atomTypes[i] == ATOM_c || atomTypes[i] == ATOM_n || atomTypes[i] == ATOM_o || atomTypes[i] == ATOM_s) && 
-            Random(uint2(i, molIdx + i)) < 0.4f && !ringFormed)
+        // 7. 更新当前原子与前一个原子的价键数
+        currentValence[prevAtomIdx] += currentBondOrder;
+        currentValence[i] += currentBondOrder;
+        
+        // 8. 芳香键处理（修正：仅芳香环中添加，且不与其他键冲突）
+        if ((currentAtomType == ATOM_c || currentAtomType == ATOM_n || 
+             currentAtomType == ATOM_o || currentAtomType == ATOM_s) && 
+            !ringFormed && currentBondType != BOND_Double && currentBondType != BOND_Triple)
         {
-            smilesChars[charIdx++] = ':';
+            if (Random(uint2(i, molIdx + i)) < 0.4f && charIdx < SMILES_MAX_LENGTH - 2)
+            {
+                smilesChars[charIdx++] = ':';
+            }
         }
     }
     
+    // -------------- 第三步：清理未闭合的结构 --------------
     // 关闭所有未结束的支链
-    while (branchDepth > 0 && charIdx < SMILES_MAX_LENGTH - 1)
+    while (branchDepth > 0 && charIdx < SMILES_MAX_LENGTH - 2)
     {
         smilesChars[charIdx++] = ')';
         branchDepth--;
     }
     
-    // 确保SMILES以空字符结尾
-    if (charIdx < SMILES_MAX_LENGTH)
+    // -------------- 第四步：确保SMILES合法结束 --------------
+    // 移除末尾可能残留的键符号（避免以键符号结尾）
+    if (charIdx > 0)
     {
-        smilesChars[charIdx] = 0;
+        int lastChar = smilesChars[charIdx - 1];
+        if (lastChar == '-' || lastChar == '=' || lastChar == '#' || lastChar == ':')
+        {
+            charIdx--;
+        }
     }
+    
+    // 以空字符结尾（SMILES标准）
+    smilesChars[charIdx] = 0;
 }
 
-[numthreads(64,1,1)]
+[numthreads(64, 1, 1)]
 void CSForwardDiffusion(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     int molIdx = dispatchThreadID.x;
@@ -407,7 +523,7 @@ void CSForwardDiffusion(uint3 dispatchThreadID : SV_DispatchThreadID)
     };
     
     // 初始化分子参数
-    int atomCount = (int)lerp(5, maxAtoms, Random(uint2(molIdx, 0)));
+    int atomCount = (int) lerp(5, maxAtoms, Random(uint2(molIdx, 0)));
     int atomTypes[MAX_ATOM_COUNT]; // 改为int数组存储原子类型常量
     float3 atomPositions[MAX_ATOM_COUNT];
     int bondTypes[MAX_ATOM_COUNT]; // 改为int数组存储键类型常量
@@ -513,7 +629,7 @@ void CSForwardDiffusion(uint3 dispatchThreadID : SV_DispatchThreadID)
     {
         int charVal = smilesChars[i];
         smilesOutputBuffer[molIdx * SMILES_MAX_LENGTH + i] = charVal;
-        float r = (float)charVal/255.0f;
+        float r = (float) charVal / 255.0f;
         smilesOutputTexture[int2(i, molIdx)] = float4(r, 0, 0, 1);
     }
 }
