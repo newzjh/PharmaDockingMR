@@ -1,59 +1,55 @@
-// Ô­×ÓÀàÐÍÃ¶¾Ù£¨¸²¸ÇÒ©Îï·Ö×Ó³£¼ûÔ­×Ó£©
-// Ô­×ÓÀàÐÍÃ¶¾Ù
-#define AtomTypeC 0
-#define AtomTypeO 1
-#define AtomTypeN 2
-#define AtomTypeS 3
-#define AtomTypeF 4
-#define AtomTypeCl 5
-#define AtomTypeUNKNOWN 9
+ï»¿// åŽŸå­ç±»åž‹æžšä¸¾ï¼ˆè¦†ç›–è¯ç‰©åˆ†å­å¸¸è§åŽŸå­ï¼‰
+// åŽŸå­ç±»åž‹æžšä¸¾
+#define AtomTypeH 1
+#define AtomTypeC 6
+#define AtomTypeO 8
+#define AtomTypeN 7
+#define AtomTypeS 16
+#define AtomTypeF 9
+#define AtomTypeCl 17
+#define AtomTypeUNKNOWN 0
 
 
-#define MAX_ATOM_COUNT 60 // ·Ö×Ó×î´óÔ­×ÓÊý
-#define smilesMaxLength 256 // µ¥¸öSMILES×î´ó³¤¶È
-#define fpSize 512   // Ö¸ÎÆ³¤¶È£¨512/256£©
+#define MAX_ATOM_COUNT 60 // åˆ†å­æœ€å¤§åŽŸå­æ•°
+#define smilesMaxLength 256 // å•ä¸ªSMILESæœ€å¤§é•¿åº¦
+#define fpSize 512   // æŒ‡çº¹é•¿åº¦ï¼ˆ512/256ï¼‰
 
 float atomRadius;
 
-// CPKÅäÉ«Óë°ë¾¶Ó³Éä
-float GetAtomRadius(int type)
+// CPKé…è‰²ä¸ŽåŠå¾„æ˜ å°„
+float GetAtomRadius(int atomicNumber)
 {
-    switch (type)
+    float radius =
+        0.35f + // å¸¸æ•°é¡¹
+        0.18f * log(atomicNumber) - // å¯¹æ•°é¡¹ï¼ˆåŽŸå­åºæ•°è¶Šå¤§ï¼ŒåŠå¾„å¢žé•¿æ”¾ç¼“ï¼‰
+        0.005f * atomicNumber + // çº¿æ€§ä¿®æ­£é¡¹
+        0.02f * sin(atomicNumber); // å‘¨æœŸæ€§ä¿®æ­£ï¼ˆé€‚é…å…ƒç´ å‘¨æœŸè¡¨ï¼‰
+    
+    // ä¿®æ­£éžé‡‘å±žåŽŸå­çš„åŠå¾„åå·®ï¼ˆ1AQ1æ ¸å¿ƒåŽŸå­å‡ä¸ºéžé‡‘å±žï¼‰
+    if (atomicNumber >= 6 && atomicNumber <= 17)
     {
-        case AtomTypeC:
-            return atomRadius * 1.0f;
-        case AtomTypeO:
-            return atomRadius * 0.9f;
-        case AtomTypeN:
-            return atomRadius * 0.95f;
-        case AtomTypeS:
-            return atomRadius * 1.2f;
-        default:
-            return atomRadius * 0.8f;
+        radius += 0.4f; // éžé‡‘å±žåŽŸå­åŸºå‡†ä¿®æ­£
     }
+    
+    return clamp(radius, 0.5f, 2.5f); // H=0.53Ã…, Cl=1.75Ã…
 }
 
-float4 GetAtomColor(int type)
+#define PI 3.1415926f
+float4 GetAtomColor(int atomicNumber)
 {
-    switch (type)
-    {
-        case AtomTypeC:
-            return float4(0.2f, 0.2f, 0.2f, 1.0f); // Ì¼-»ÒÉ«
-        case AtomTypeO:
-            return float4(1.0f, 0.0f, 0.0f, 1.0f); // Ñõ-ºìÉ«
-        case AtomTypeN:
-            return float4(0.0f, 0.0f, 1.0f, 1.0f); // µª-À¶É«
-        case AtomTypeS:
-            return float4(1.0f, 1.0f, 0.0f, 1.0f); // Áò-»ÆÉ«
-        default:
-            return float4(0.5f, 0.5f, 0.5f, 1.0f); // Î´Öª-Ç³»Ò
-    }
+    float normZ = saturate((atomicNumber - 1) / 16.0f);
+    
+    float r = 0.5f + 0.4f * sin(normZ * PI * 2 - PI / 2);
+    float g = 0.5f + 0.4f * cos(normZ * PI * 3 - PI / 3);
+    float b = 0.5f + 0.4f * sin(normZ * PI * 2 + PI / 4);
+
+    return float4(saturate(r), saturate(g), saturate(b), 1.0f);
 }
 
-// ºËÐÄ¹þÏ£º¯Êý£º½«Ô­×ÓÁÚÓòÌØÕ÷Ó³ÉäÎª512Î»ÄÚµÄË÷Òý
+// æ ¸å¿ƒå“ˆå¸Œå‡½æ•°ï¼šå°†åŽŸå­é‚»åŸŸç‰¹å¾æ˜ å°„ä¸º512ä½å†…çš„ç´¢å¼•
 uint Hash(uint3 feature)
 {
-    // ÓÅ»¯µÄ¹þÏ£Ëã·¨£¬ÊÊÅäGPUÎÞ·ûºÅÕûÊý¼ÆËã
+    // ä¼˜åŒ–çš„å“ˆå¸Œç®—æ³•ï¼Œé€‚é…GPUæ— ç¬¦å·æ•´æ•°è®¡ç®—
     feature = feature * 1664525u + 1013904223u;
     feature.x += feature.y * feature.z;
     feature.y += feature.z * feature.x;
@@ -65,11 +61,11 @@ uint Hash(uint3 feature)
     return feature.z % fpSize;
 }
 
-// GPU¶ËÇáÁ¿¼¶SMILES½âÎö£ºÌáÈ¡Ô­×ÓÀàÐÍºÍÊýÁ¿
+// GPUç«¯è½»é‡çº§SMILESè§£æžï¼šæå–åŽŸå­ç±»åž‹å’Œæ•°é‡
 void ParseSMILES(in int smilesChars[smilesMaxLength], out int atomTypes[MAX_ATOM_COUNT], out int atomCount)
 {
     atomCount = 0;
-    //atomTypes = new AtomType[ MAX_ATOM_COUNT]; // Ô¤·ÖÅä×î´ó³¤¶È
+    //atomTypes = new AtomType[ MAX_ATOM_COUNT]; // é¢„åˆ†é…æœ€å¤§é•¿åº¦
 
     //for (int i = 0; i < smilesMaxLength; i++)
     for (int i = 0; i < MAX_ATOM_COUNT; i++)
@@ -79,12 +75,12 @@ void ParseSMILES(in int smilesChars[smilesMaxLength], out int atomTypes[MAX_ATOM
         
         int c = smilesChars[i];
         if (c == 0)
-            break; // µ½´ïSMILES×Ö·û´®Ä©Î²
-        // ¹ýÂËSMILESÌØÊâ·ûºÅ£¨¼ü¡¢À¨ºÅ¡¢·ÖÖ§·û£©
+            break; // åˆ°è¾¾SMILESå­—ç¬¦ä¸²æœ«å°¾
+        // è¿‡æ»¤SMILESç‰¹æ®Šç¬¦å·ï¼ˆé”®ã€æ‹¬å·ã€åˆ†æ”¯ç¬¦ï¼‰
         if (c == '-' || c == '=' || c == '#' || c == '(' || c == ')' || c == '[' || c == ']' || c == '/')
             continue;
 
-        // ½âÎöÔ­×ÓÀàÐÍ£¨Ö§³Ö³£¼ûÒ©ÎïÔ­×Ó£©
+        // è§£æžåŽŸå­ç±»åž‹ï¼ˆæ”¯æŒå¸¸è§è¯ç‰©åŽŸå­ï¼‰
         switch (c)
         {
             case 'C':
@@ -102,7 +98,7 @@ void ParseSMILES(in int smilesChars[smilesMaxLength], out int atomTypes[MAX_ATOM
             case 'F':
                 atomTypes[atomCount++] = AtomTypeF;
                 break;
-            case 'l': // ClµÄµÚ¶þ¸ö×Ö·û£¬Ðè¼æÈÝ¼ò»¯SMILES
+            case 'l': // Clçš„ç¬¬äºŒä¸ªå­—ç¬¦ï¼Œéœ€å…¼å®¹ç®€åŒ–SMILES
                 if (i > 0 && smilesChars[i - 1] == 'C')
                     atomTypes[atomCount - 1] = AtomTypeCl;
                 break;
