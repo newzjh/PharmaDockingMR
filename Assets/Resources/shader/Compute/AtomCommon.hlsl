@@ -69,10 +69,14 @@ uint Hash(uint3 feature)
 void ParseSMILES(in int smilesChars[smilesMaxLength], out int atomTypes[MAX_ATOM_COUNT], out int atomCount)
 {
     atomCount = 0;
-    //atomTypes = new AtomType[ smilesMaxLength]; // 预分配最大长度
+    //atomTypes = new AtomType[ MAX_ATOM_COUNT]; // 预分配最大长度
 
-    for (int i = 0; i < smilesMaxLength; i++)
+    //for (int i = 0; i < smilesMaxLength; i++)
+    for (int i = 0; i < MAX_ATOM_COUNT; i++)
     {
+        //if (atomCount >= MAX_ATOM_COUNT)
+        //    break;
+        
         int c = smilesChars[i];
         if (c == 0)
             break; // 到达SMILES字符串末尾
@@ -106,5 +110,6 @@ void ParseSMILES(in int smilesChars[smilesMaxLength], out int atomTypes[MAX_ATOM
                 atomTypes[atomCount++] = AtomTypeUNKNOWN;
                 break;
         }
+
     }
 }
