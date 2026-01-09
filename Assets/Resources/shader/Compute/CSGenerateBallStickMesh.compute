@@ -23,10 +23,10 @@ RWStructuredBuffer<int> atomCountOutputBuffer;
 // 注：需在AtomCommon.hlsl中定义MAX_ATOM_COUNT，且ParseSMILES需同步修改以填充此数组
 int atomParentIndices[MAX_ATOM_COUNT];
 // 新增：不同化学键类型的键角（单位：弧度）
-const float BOND_ANGLE_SINGLE = 1.09956f; // 109.5°（四面体结构）
-const float BOND_ANGLE_DOUBLE = 1.0472f;  // 120°（平面结构）
-const float BOND_ANGLE_TRIPLE = 3.14159f; // 180°（直线结构，修正：原0弧度错误）
-const float EPS = 0.01f; // 浮点数比较阈值
+#define BOND_ANGLE_SINGLE 1.09956f // 109.5°（四面体结构）
+#define BOND_ANGLE_DOUBLE 1.0472f // 120°（平面结构）
+#define BOND_ANGLE_TRIPLE 3.14159f // 180°（直线结构，修正：原0弧度错误）
+#define EPS 0.01f // 浮点数比较阈值
 
 // 生成原子球顶点/法线/颜色（保持不变）
 void GenerateAtomSphere(float3 center, int type, int vertexOffset, int indexOffset, inout int vCount, inout int iCount)
@@ -151,28 +151,31 @@ float3 CalculateNextAtomPosition(float3 parentPos, float3 grandParentPos, int bo
     {
         up = float3(0, 0, 1);
     }
-    float3 perpendicular1 = normalize(cross(parentToGrandParent, up));
+    // 左手系：up × parentToGrandParent（右手系是parentToGrandParent × up）
+    float3 perpendicular1 = normalize(cross(up, parentToGrandParent));
+    // 左手系：parentToGrandParent × perpendicular1（右手系是perpendicular1 × parentToGrandParent）
     float3 perpendicular2 = normalize(cross(parentToGrandParent, perpendicular1));
     
-    // 修正4：分支角度偏移（从childIndex+1开始，避免与已有原子方向重叠）
-    // 每个分支间隔均匀分布（最多4个分支，符合四面体结构）
-    float angleOffset = (childIndex + 1) * (2 * 3.1415926f / 4);
+    // 4. 分支角度偏移（确保方向远离祖父原子）
+    float angleOffset = childIndex * (2 * 3.1415926f / 4); // 4个分支均匀分布
+    // 修正：左手系旋转方向（逆时针→顺时针，避免方向反转）
+    angleOffset = -angleOffset;
     
-    // 修正5：正确的球坐标转换（确保方向向量远离父-祖父方向）
+// 5. 球坐标转换（适配左手系，Z轴方向修正）
     float3 dir;
-    // 球坐标：phi=键角（与父方向的夹角），theta=方位角（绕父方向的旋转角）
+    // 关键修正：Z轴分量取反（左手系下Z轴向外，避免方向指向祖父）
     dir.x = sin(bondAngle) * cos(angleOffset);
     dir.y = sin(bondAngle) * sin(angleOffset);
-    dir.z = cos(bondAngle);
+    dir.z = -cos(bondAngle); // 左手系Z轴修正
     
     // 修正6：正确的旋转矩阵（采用右手坐标系，确保方向向量旋转后指向正确）
-    float3x3 rotationMatrix =
-    {
-        perpendicular1.x, perpendicular2.x, parentToGrandParent.x,
-        perpendicular1.y, perpendicular2.y, parentToGrandParent.y,
-        perpendicular1.z, perpendicular2.z, parentToGrandParent.z
-    };
-    dir = mul(dir, rotationMatrix); // 修正：矩阵乘法顺序（向量 * 矩阵）
+    float3x3 rotationMatrix = float3x3(perpendicular1, perpendicular2, parentToGrandParent);
+    //{
+    //    perpendicular1.x, perpendicular2.x, parentToGrandParent.x,
+    //    perpendicular1.y, perpendicular2.y, parentToGrandParent.y,
+    //    perpendicular1.z, perpendicular2.z, parentToGrandParent.z
+    //};
+    dir = mul(rotationMatrix, dir); // 修正：矩阵乘法顺序（向量 * 矩阵）
     dir = normalize(dir); // 确保方向向量归一化
     
     // 修正7：添加微小偏移，避免浮点精度导致的重叠
@@ -221,39 +224,39 @@ void CSGenerateBallStickMesh(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (atomCount <= 1)
         return;
     
-    // 3. 计算原子位置（核心修改：非轴向空间分布）
+    // 3. 计算原子位置（核心修正：解决重叠问题）
     float3 atomPositions[MAX_ATOM_COUNT];
-    // 根原子（第一个原子）位置固定在原点
+    // 根原子位置固定在原点
     atomPositions[0] = float3(0, 0, 0);
     
     // 遍历每个原子，计算其位置（从第二个原子开始）
     for(int a = 1; a < atomCount; a++)
     {
         int parentIdx = parentIndices[a];
-        if(parentIdx < 0) // 异常处理：无父原子则默认沿X轴
+        if(parentIdx < 0)
         {
             atomPositions[a] = float3(a * bondLength, 0, 0);
             continue;
         }
         
-        // 获取父原子位置和祖父原子位置（若无祖父则与父原子位置相同）
+        // 获取父原子和祖父原子位置
         float3 parentPos = atomPositions[parentIdx];
         float3 grandParentPos = (parentIdx == 0) ? parentPos : atomPositions[parentIndices[parentIdx]];
         
-        // 统计父原子的子原子数量（用于分支角度分配）
+        // 修正：正确统计父原子的子原子数量（从0开始计数）
         int childCount = 0;
-        for(int b = 0; b < a; b++)
+        for(int b = 1; b < a; b++)
         {
             if(parentIndices[b] == parentIdx)
                 childCount++;
         }
         
-        // 计算当前原子位置
+        // 计算当前原子位置（使用修正后的函数）
         atomPositions[a] = CalculateNextAtomPosition(
             parentPos, 
             grandParentPos, 
             bondTypes[a], 
-            childCount // 子原子索引，实现分支均匀分布
+            childCount
         );
     }
     
@@ -275,14 +278,14 @@ void CSGenerateBallStickMesh(uint3 dispatchThreadID : SV_DispatchThreadID)
         GenerateAtomSphere(atomPositions[a], atomTypes[a], vertexOffset, indexOffset, vCount, iCount);
     }
     
-    // 6. 生成化学键棍（保持不变）
-    for(int b = 0; b < atomCount - 1; b++)
+    // 6. 生成化学键棍（修正：只生成父子连接的化学键）
+    for(int b = 1; b < atomCount; b++)
     {
-        // 仅生成有父子关系的化学键（适配分支结构）
-        if(parentIndices[b+1] == b)
+        int parentIdx = parentIndices[b];
+        if(parentIdx >= 0)
         {
-            float4 color = (GetAtomColor(atomTypes[b]) + GetAtomColor(atomTypes[b+1])) * 0.5f;
-            GenerateBondCylinder(atomPositions[b], atomPositions[b + 1], color, vertexOffset, indexOffset, vCount, iCount);
+            float4 color = (GetAtomColor(atomTypes[parentIdx]) + GetAtomColor(atomTypes[b])) * 0.5f;
+            GenerateBondCylinder(atomPositions[parentIdx], atomPositions[b], color, vertexOffset, indexOffset, vCount, iCount);
         }
     }
 }
