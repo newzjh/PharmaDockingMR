@@ -371,6 +371,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::AIDrugDiscovery.DrugAIComputeTest
   templateMat: {fileID: 2100000, guid: 26695abc36ac7b141ad14c66a9c0a5eb, type: 2}
+  outTest: {fileID: 0}
 --- !u!4 &1149687865
 Transform:
   m_ObjectHideFlags: 0

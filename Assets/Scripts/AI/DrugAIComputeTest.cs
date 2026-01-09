@@ -30,7 +30,9 @@ namespace AIDrugDiscovery
             {
                 var heatmap = await hg.GenerateProteinHeatmap(config);
                 var heatmap3D = await hg.GenerateProteinHeatmap3D(config);
-                var unfilter = await dg.GenerateProteinTargetedMols(dg.diffusionConfigs.First(), heatmap, heatmap3D);
+                var config2 = dg.diffusionConfigs.First();
+                config2.proteinActiveCenter = config.activeSiteCenter;
+                var unfilter = await dg.GenerateProteinTargetedMols(config2, heatmap, heatmap3D);
                 var smiles = unfilter.Item1;
                 var filters = unfilter.Item2;
                 var smilebuffer = unfilter.Item3;

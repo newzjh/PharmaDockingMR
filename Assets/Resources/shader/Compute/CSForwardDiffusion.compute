@@ -7,6 +7,7 @@
 
 // 通用扩散参数（适配任意大分子）
 int batchSize;
+int batchOffset;
 int timesteps;
 float heatmapWeight;
 int maxAtoms;
@@ -42,7 +43,7 @@ float Random(uint2 seed)
 }
 
 // 通用特征约束函数（基于大分子热力图）
-float GetProteinFeatureConstraint(int molIdx, float3 atomPos, float3 activeCenter)
+float GetProteinFeatureConstraint(int totalMolIdx, float3 atomPos, float3 activeCenter)
 {
     // 将原子坐标映射到热力图UV（适配任意热力图尺寸）
     //float2 uv = float2(
@@ -63,7 +64,7 @@ float GetProteinFeatureConstraint(int molIdx, float3 atomPos, float3 activeCente
     return featureScore * heatmapWeight;
 }
 
-float GetProteinFeatureConstraint3D(int molIdx, float3 atomPos, float3 activeCenter)
+float GetProteinFeatureConstraint3D(int totalMolIdx, float3 atomPos, float3 activeCenter)
 {
     // 将原子坐标映射到热力图UV（适配任意热力图尺寸）
     //float2 uv = float2(
@@ -129,6 +130,8 @@ void CSForwardDiffusion(uint3 dispatchThreadID : SV_DispatchThreadID)
     int molIdx = dispatchThreadID.x;
     if (molIdx >= batchSize)
         return;
+    
+    int totalMolIdx = molIdx + batchOffset;
 
     // 读取大分子活性中心和原子权重
     float3 activeCenter = activeCenterBuffer.xyz;
@@ -152,19 +155,14 @@ void CSForwardDiffusion(uint3 dispatchThreadID : SV_DispatchThreadID)
             // 初始化原子位置和类型（基于大分子活性中心）
             if (t == 0)
             {
-                //atomPositions[a] = activeCenter + float3(
-                //    Random(uint2(molIdx, a)) * heatmapSize - heatmapSize * 0.5f,
-                //    Random(uint2(a, molIdx)) * 10 - 5,
-                //    Random(uint2(molIdx+a, a)) * heatmapSize - heatmapSize * 0.5f
-                //);
                 atomPositions[a] = activeCenter + float3(
-                    Random(uint2(molIdx, a)) * heatmapSize - heatmapSize * 0.5f,
-                    Random(uint2(a, molIdx)) * heatmapSize - heatmapSize * 0.5f,
-                    Random(uint2(molIdx + a, a)) * heatmapSize - heatmapSize * 0.5f
+                    Random(uint2(totalMolIdx, a)) * heatmapSize - heatmapSize * 0.5f,
+                    Random(uint2(a, totalMolIdx)) * heatmapSize - heatmapSize * 0.5f,
+                    Random(uint2(totalMolIdx + a, a)) * heatmapSize - heatmapSize * 0.5f
                 );
 
                 // 根据原子权重选择类型（适配不同受体偏好）
-                float rand = Random(uint2(molIdx+a, t));
+                float rand = Random(uint2(totalMolIdx + a, t));
                 float weightSum = 0.0f;
                 for (int type = 0; type < 4; type++)
                 {
@@ -178,11 +176,11 @@ void CSForwardDiffusion(uint3 dispatchThreadID : SV_DispatchThreadID)
             }
 
             // 前向扩散：添加高斯噪声
-            float noise = Random(uint2(molIdx+a, t)) * 2 - 1; // -1~1
+            float noise = Random(uint2(totalMolIdx + a, t)) * 2 - 1; // -1~1
             atomPositions[a] = sqrt(alphaCumprod) * atomPositions[a] + sqrt(1 - alphaCumprod) * noise;
 
             // 施加大分子热力图约束（拉回活性位点）
-            float featureScore = GetProteinFeatureConstraint3D(molIdx, atomPositions[a], activeCenter);
+            float featureScore = GetProteinFeatureConstraint3D(totalMolIdx, atomPositions[a], activeCenter);
             totalFeatureScore += featureScore;
 
             if (featureScore < minFeatureScore)

@@ -102,6 +102,7 @@ namespace AIDrugDiscovery
             // 5. ≈‰÷√Compute Shader≤Œ ˝
             int kernelId = diffusionCS.FindKernel("CSForwardDiffusion");
             diffusionCS.SetInt("batchSize", effectiveBatchSize);
+            diffusionCS.SetInt("batchOffset", 0);
             diffusionCS.SetInt("timesteps", effectiveTimesteps);
             diffusionCS.SetFloat("heatmapWeight", config.heatmapWeight);
             diffusionCS.SetInt("maxAtoms", config.maxAtomLimit);
