@@ -11,7 +11,6 @@ namespace AIDrugDiscovery
     {
 
         // 测试参数
-        private const int BATCH_SIZE = 2;          // 测试用2个分子
         private const int HEATMAP_SIZE = 32;       // 32×32热力图
         private const int FP_LENGTH = 512;        // Morgan指纹长度
         private const int TOTAL_TIMESTEPS = 1000;  // Diffusion总时间步
@@ -45,7 +44,7 @@ namespace AIDrugDiscovery
                     GameObject go = new GameObject();
                     go.transform.localScale = Vector3.one;
                     go.transform.localEulerAngles = Vector3.zero;
-                    go.transform.localPosition = Vector3.zero;
+                    go.transform.localPosition = Vector3.forward * count;
                     var mf = go.AddComponent<MeshFilter>();
                     mf.mesh = mesh;
                     var mr = go.AddComponent<MeshRenderer>();

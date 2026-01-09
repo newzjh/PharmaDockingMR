@@ -16,13 +16,6 @@ int heatmapSize; // 热力图尺寸（兼容不同分辨率）
 
 // 输入资源
 Texture2D<float4> proteinHeatmap; // 通用大分子热力图
-//SamplerState sampler_proteinHeatmap;
-//SamplerState pointSampler
-//{
-//    Filter = MIN_MAG_MIP_POINT;
-//    AddressU = Clamp;
-//    AddressV = Clamp;
-//};
 
 // 输入Buffer
 StructuredBuffer<float> betaBuffer;

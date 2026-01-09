@@ -1,7 +1,7 @@
 #pragma kernel CSComputeMaxSimilarity
 #pragma enable_d3d11_debug_symbols
 
-#define MAX_ATOM_COUNT 50 // 分子最大原子数
+#define MAX_ATOM_COUNT 60 // 分子最大原子数
 #define smilesMaxLength 256
 #define fpSize 512
 

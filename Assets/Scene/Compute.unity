@@ -156,9 +156,9 @@ MonoBehaviour:
     sphereSegments: 12
     cylinderSegments: 8
     topK: 10
-  batchSize: 128
+  batchSize: 1024
   smilesMaxLength: 256
-  maxAtomLimit: 50
+  maxAtomLimit: 60
   test: 1
 --- !u!4 &245285011
 Transform:
@@ -207,12 +207,12 @@ MonoBehaviour:
   diffusionCS: {fileID: 7200000, guid: 460b7a850a98bf34b9f088ff4a934fcc, type: 3}
   diffusionConfigs:
   - proteinName: 1AQ1
-    batchSize: 128
+    batchSize: 1024
     timesteps: 1000
     betaStart: 0.0001
     betaEnd: 0.02
     heatmapWeight: 0.8
-    maxAtoms: 50
+    maxAtomLimit: 60
     minFeatureScore: 0.15
     proteinActiveCenter: {x: 1.16, y: 26.85, z: -8.51}
     cWeight: 0.4
@@ -336,7 +336,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: bbc9ba5939b5e924dad044d8c77feea0, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::MorganFPGenerator
-  morganFPComputeShader: {fileID: 7200000, guid: 58dbb1258b45a2a4f9f77157759a1367, type: 3}
+  morganFPComputeShader: {fileID: 7200000, guid: 567ac9bc6bc6c3d4895d4178d9a791f2, type: 3}
   smilesMaxLength: 256
   morganRadius: 2
 --- !u!1 &1149687863

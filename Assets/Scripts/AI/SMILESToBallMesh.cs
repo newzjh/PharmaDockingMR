@@ -23,7 +23,7 @@ namespace AIDrugDiscovery
         public AtomSphereConfig config;
         public int batchSize = 128; // 分子批次大小
         public int smilesMaxLength = 256; // 单个SMILES最大长度
-        public int maxAtomLimit = 50;
+        public int maxAtomLimit = 60;
 
         private ComputeBuffer vertexBufferPosition;
         private ComputeBuffer vertexBufferNormal;

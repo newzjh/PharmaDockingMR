@@ -14,14 +14,14 @@ namespace AIDrugDiscovery
         public string proteinName = "1AQ1"; // 受体名称（如3CLpro、EGFR）
 
         [Header("扩散核心参数")]
-        public int batchSize = 100; // 单次生成分子数量
+        public int batchSize = 1024; // 单次生成分子数量
         public int timesteps = 1000; // 扩散时间步
         public float betaStart = 0.0001f; // 噪声初始强度
         public float betaEnd = 0.02f; // 噪声最终强度
 
         [Header("靶向约束参数")]
         public float heatmapWeight = 0.8f; // 热力图约束权重
-        public int maxAtoms = 50; // 分子最大原子数
+        public int maxAtomLimit = 60; // 分子最大原子数
         public float minFeatureScore = 0.3f; // 最小特征匹配分数（替代疏水占比）
         public Vector3 proteinActiveCenter = new Vector3(10.5f, 8.2f, 12.7f); // 大分子活性中心
 
@@ -43,51 +43,6 @@ namespace AIDrugDiscovery
         public ComputeShader diffusionCS;
         public List<ProteinDiffusionConfig> diffusionConfigs; // 多受体配置列表
 
-        /// <summary>
-        /// 从扩散模型的SMILES Buffer直接计算Morgan指纹，无CPU回读
-        /// </summary>
-        public ComputeBuffer ComputeFPFromSmilesBuffer(ComputeShader morganCS, ComputeBuffer smilesBuffer, int batchSize, int fpSize = 512)
-        {
-            // 1. 创建指纹输出Buffer
-            int fpStride = sizeof(bool) * fpSize;
-            ComputeBuffer fpBuffer = new ComputeBuffer(batchSize, fpStride);
-
-            // 2. 配置MorganFP Compute Shader
-            int kernelId = morganCS.FindKernel("CSComputeMorganFPFromSMILES");
-            morganCS.SetInt("batchSize", batchSize);
-            morganCS.SetInt("fpSize", fpSize);
-            morganCS.SetInt("radius", 2);
-            morganCS.SetInt("smilesMaxLength", SMILES_MAX_LENGTH);
-
-            // 3. 绑定输入输出Buffer（关键：直接传递SMILES Buffer）
-            morganCS.SetBuffer(kernelId, "smilesInputBuffer", smilesBuffer);
-            morganCS.SetBuffer(kernelId, "fpOutputBuffer", fpBuffer);
-
-            // 4. 调度GPU计算（线程组适配移动端）
-            int threadGroupX = Mathf.CeilToInt(batchSize / 32f);
-            morganCS.Dispatch(kernelId, threadGroupX, 1, 1);
-
-            // 5. 指纹Buffer直接用于后续筛选（无需回读CPU）
-            return fpBuffer;
-        }
-
-        //// 调用示例：扩散生成 → 指纹计算 流水线
-        //public void RunDrugDiscoveryPipeline(int batchSize)
-        //{
-        //    // Step1: 扩散模型生成SMILES Buffer
-        //    ComputeBuffer smilesBuffer = CreateSmilesBuffer(batchSize);
-        //    RunForwardDiffusion(smilesBuffer); // 执行ForwardDiffusion CS
-
-        //    // Step2: 直接用SMILES Buffer计算指纹（无CPU回读）
-        //    ComputeBuffer fpBuffer = ComputeFPFromSmilesBuffer(morganCS, smilesBuffer, batchSize);
-
-        //    // Step3: 基于指纹Buffer进行相似性筛选（可在GPU/CPU端执行）
-        //    FilterByFPBuffer(fpBuffer);
-
-        //    // 释放资源
-        //    smilesBuffer.Release();
-        //    fpBuffer.Release();
-        //}
 
         public async void Begin(Texture2D heatmap)
         {
@@ -149,7 +104,7 @@ namespace AIDrugDiscovery
             diffusionCS.SetInt("batchSize", effectiveBatchSize);
             diffusionCS.SetInt("timesteps", effectiveTimesteps);
             diffusionCS.SetFloat("heatmapWeight", config.heatmapWeight);
-            diffusionCS.SetInt("maxAtoms", config.maxAtoms);
+            diffusionCS.SetInt("maxAtoms", config.maxAtomLimit);
             diffusionCS.SetFloat("minFeatureScore", config.minFeatureScore);
             diffusionCS.SetInt("heatmapSize", proteinHeatmap.width); // 传递热力图尺寸
 
@@ -163,7 +118,7 @@ namespace AIDrugDiscovery
             diffusionCS.SetTexture(kernelId, "smilesOutputTexture", smilesTexture);
 
             // 创建Debug Buffer
-            ComputeBuffer matchScoreDebugBuffer = new ComputeBuffer(effectiveBatchSize * config.maxAtoms, sizeof(int));
+            ComputeBuffer matchScoreDebugBuffer = new ComputeBuffer(effectiveBatchSize * config.maxAtomLimit, sizeof(int));
             // 绑定到CS
             diffusionCS.SetBuffer(kernelId, "matchScoreDebugBuffer", matchScoreDebugBuffer);
 
@@ -176,15 +131,15 @@ namespace AIDrugDiscovery
             //    await UniTask.NextFrame();
             //}
 
-            float[] scores = new float[effectiveBatchSize * config.maxAtoms];
+            float[] scores = new float[effectiveBatchSize * config.maxAtomLimit];
             matchScoreDebugBuffer.GetData(scores);
             for (int i = 0; i < effectiveBatchSize; i++)
             {
                 float avgScore = 0;
                 int count = 0;
-                for (int a = 0; a < config.maxAtoms; a++)
+                for (int a = 0; a < config.maxAtomLimit; a++)
                 {
-                    float s = scores[i * config.maxAtoms + a];
+                    float s = scores[i * config.maxAtomLimit + a];
                     if (s > 0)
                     {
                         avgScore += s;

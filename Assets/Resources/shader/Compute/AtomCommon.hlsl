@@ -9,7 +9,7 @@
 #define AtomTypeUNKNOWN 9
 
 
-#define MAX_ATOM_COUNT 50 // 分子最大原子数
+#define MAX_ATOM_COUNT 60 // 分子最大原子数
 #define smilesMaxLength 256 // 单个SMILES最大长度
 #define fpSize 512   // 指纹长度（512/256）
 
