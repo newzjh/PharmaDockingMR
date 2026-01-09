@@ -301,13 +301,14 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 1088922785}
+  - component: {fileID: 1088922786}
   m_Layer: 0
   m_Name: MorganFPGenerator
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 0
+  m_IsActive: 1
 --- !u!4 &1088922785
 Transform:
   m_ObjectHideFlags: 0
@@ -323,6 +324,21 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1088922786
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1088922784}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: bbc9ba5939b5e924dad044d8c77feea0, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::MorganFPGenerator
+  morganFPComputeShader: {fileID: 7200000, guid: 58dbb1258b45a2a4f9f77157759a1367, type: 3}
+  smilesMaxLength: 256
+  morganRadius: 2
 --- !u!1 &1149687863
 GameObject:
   m_ObjectHideFlags: 0
@@ -352,9 +368,6 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 0de6d35068f402642bc304d908e36f6c, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::AIDrugDiscovery.DrugAIComputeTest
-  morganCS: {fileID: 0}
-  diffusionForwardCS: {fileID: 0}
-  heatmapConvCS: {fileID: 0}
   templateMat: {fileID: 2100000, guid: 26695abc36ac7b141ad14c66a9c0a5eb, type: 2}
 --- !u!4 &1149687865
 Transform:

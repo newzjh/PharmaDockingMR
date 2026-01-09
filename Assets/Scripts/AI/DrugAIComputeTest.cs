@@ -23,6 +23,7 @@ namespace AIDrugDiscovery
             var hg = GameObject.FindFirstObjectByType<HeatmapGenerator>(FindObjectsInactive.Include);
             var dg = GameObject.FindFirstObjectByType<DiffusionGenerator>(FindObjectsInactive.Include);
             var mg = GameObject.FindFirstObjectByType<SMILESToBallStickMesh>(FindObjectsInactive.Include);
+            var fp = GameObject.FindFirstObjectByType<MorganFPGenerator>(FindObjectsInactive.Include);
 
             foreach (var config in hg.proteinConfigs)
             {
@@ -32,6 +33,9 @@ namespace AIDrugDiscovery
                 var filters = unfilter.Item2;
                 var smilebuffer = unfilter.Item3;
                 var smiletexture = unfilter.Item4;
+
+                var generateFP = await fp.Generate512BitFP(smilebuffer, smiletexture, smiletexture.height);
+
                 var meshes = await mg.GenerateBallStickMeshes(filters, smilebuffer, smiletexture);
                 smilebuffer.Dispose();
 

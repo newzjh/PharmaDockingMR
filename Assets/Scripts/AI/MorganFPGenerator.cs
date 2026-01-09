@@ -1,5 +1,6 @@
 using UnityEngine;
 using System;
+using Cysharp.Threading.Tasks;
 
 /// <summary>
 /// 从Diffusion生成的SMILES Buffer生成512位Morgan指纹
@@ -18,7 +19,7 @@ public class MorganFPGenerator : MonoBehaviour
     /// <param name="smilesBuffer">Diffusion输出的SMILES Buffer</param>
     /// <param name="batchSize">分子批次数量</param>
     /// <returns>512位指纹Buffer（可直接用于FilterByFP）</returns>
-    public ComputeBuffer Generate512BitFP(ComputeBuffer smilesBuffer, RenderTexture smilesTexture, int batchSize)
+    public async UniTask<ComputeBuffer> Generate512BitFP(ComputeBuffer smilesBuffer, RenderTexture smilesTexture, int batchSize)
     {
         // 1. 参数校验
         if (smilesBuffer == null || smilesBuffer.count != batchSize)
@@ -29,11 +30,11 @@ public class MorganFPGenerator : MonoBehaviour
 
         // 2. 创建指纹输出Buffer（每个分子512个bool，batchSize * 512长度）
         int fpBufferCount = batchSize * FP_SIZE;
-        ComputeBuffer fpBuffer = new ComputeBuffer(fpBufferCount, sizeof(bool), ComputeBufferType.Default);
+        ComputeBuffer fpBuffer = new ComputeBuffer(fpBufferCount, sizeof(int));
 
         // 3. 初始化指纹Buffer为全false
-        bool[] initFP = new bool[fpBufferCount];
-        Array.Fill(initFP, false);
+        int[] initFP = new int[fpBufferCount];
+        Array.Fill(initFP, 0);
         fpBuffer.SetData(initFP);
 
         // 4. 配置Compute Shader参数

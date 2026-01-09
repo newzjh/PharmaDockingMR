@@ -12,17 +12,17 @@ int morganRadius; // Morgan指纹半径（推荐2）
 Texture2D<float4> smilesInputTexture;
 StructuredBuffer<int> smilesInputBuffer;
 // 输出：512位指纹Buffer（每个分子对应512个bool，batchSize * 512长度）
-RWStructuredBuffer<bool> fpOutputBuffer;
+RWStructuredBuffer<int> fpOutputBuffer;
 
 
 
 
 
 // 计算单个分子的512位Morgan指纹
-void ComputeMorganFP(in int atomTypes[MAX_ATOM_COUNT], in int atomCount, out bool fp[fpSize])
+void ComputeMorganFP(in int atomTypes[MAX_ATOM_COUNT], in int atomCount, out int fp[fpSize])
 {
     // 初始化指纹为false（512位全0）
-    for (int i = 0;i <fpSize; i++) fp[i] = false;
+    for (int i = 0;i <fpSize; i++) fp[i] = 0;
 
     // 遍历每个原子，计算指定半径内的邻域特征
     for (int atomIdx = 0;atomIdx <atomCount; atomIdx++)
@@ -45,7 +45,7 @@ void ComputeMorganFP(in int atomTypes[MAX_ATOM_COUNT], in int atomCount, out boo
             // 组合特征并哈希到512位范围内
             uint3 feature = uint3(atomType, (uint) r, neighborCount);
             uint fpIdx = Hash(feature);
-            fp[fpIdx] = true; // 置为1，表示该特征存在
+            fp[fpIdx] = 1; // 置为1，表示该特征存在
         }
     }
 }
@@ -76,13 +76,13 @@ void CSGenerateMorganFP(uint3 dispatchThreadID : SV_DispatchThreadID)
     {
         for (int i = 0; i < fpSize; i++)
         {
-            fpOutputBuffer[molIdx * fpSize + i] = false;
+            fpOutputBuffer[molIdx * fpSize + i] = 0;
         }
         return;
     }
 
     // 3. 计算512位Morgan指纹
-    bool fp[ fpSize];
+    int fp[ fpSize];
     ComputeMorganFP(atomTypes, atomCount, fp);
 
     // 4. 写入指纹输出Buffer
