@@ -3,7 +3,7 @@ using System;
 using System.IO;
 using System.Collections.Generic;
 using System.Linq;
-using static Mirror.BouncyCastle.Math.EC.ECCurve;
+using Cysharp.Threading.Tasks;
 
 namespace AIDrugDiscovery
 {
@@ -12,14 +12,21 @@ namespace AIDrugDiscovery
     public class DrugAIComputeTest : MonoBehaviour
     {
 
-        // ²âÊÔ²ÎÊı
-        private const int HEATMAP_SIZE = 32;       // 32¡Á32ÈÈÁ¦Í¼
-        private const int FP_LENGTH = 512;        // MorganÖ¸ÎÆ³¤¶È
-        private const int TOTAL_TIMESTEPS = 1000;  // Diffusion×ÜÊ±¼ä²½
+        // æµ‹è¯•å‚æ•°
+        private const int HEATMAP_SIZE = 32;       // 32Ã—32çƒ­åŠ›å›¾
+        private const int FP_LENGTH = 512;        // MorganæŒ‡çº¹é•¿åº¦
+        private const int TOTAL_TIMESTEPS = 1000;  // Diffusionæ€»æ—¶é—´æ­¥
+        
+        // æ’­æ”¾å™¨å¤‰é‡
+        public bool isPaused = false;
+        public bool isTerminated = false;
+        public int currentBatch = 0;
+        public const int TOTAL_BATCHES = 10;
 
         public Material templateMat;
 
-        public RenderTexture outTest;
+
+        public bool detectPocket = false;
 
         public async void Start()
         {
@@ -38,13 +45,14 @@ namespace AIDrugDiscovery
             }
             string pdbqtFullPath = tempfolder + "/" + "1AQ1" + ".pdb";
 
-            pocketdetector.pdbqtFilePath = pdbqtFullPath;
-            pocketdetector.RunFPocketGPU();
-            //pocketdetector.RunFPocketCSharpDetection();
+            if (detectPocket)
+            {
+                pocketdetector.pdbqtFilePath = pdbqtFullPath;
+                pocketdetector.RunFPocketGPU();
+                //pocketdetector.RunFPocketCSharpDetection();
+            }
 
-            return;
-
-            // 2. 1AQ1»îĞÔÅäÌåSMILESÁĞ±í£¨ÊµÑéÊı¾İ£©
+            // 2. 1AQ1æ´»æ€§é…ä½“SMILESåˆ—è¡¨ï¼ˆå®éªŒæ•°æ®ï¼‰
             List<string> aq1ActiveSmiles = new List<string>()
             {
                 "C1=CC=C(C(=C1)C(=O)N)O",
@@ -52,16 +60,16 @@ namespace AIDrugDiscovery
                 "CN1C=NC2=C1C(=O)N(C(=O)N2C)C"
             };
 
-            // 3. Éú³ÉECFP4²Î¿¼Ö¸ÎÆ¿â
+            // 3. ç”ŸæˆECFP4å‚è€ƒæŒ‡çº¹åº“
             var aq1FPLibrary = rfp.GenerateReferenceFPLibrary(
                 targetName: "1AQ1",
                 activeSmilesList: aq1ActiveSmiles,
                 fpType: ReferenceFPGenerator.FingerprintType.ECFP4,
                 fpLength: 512);
 
-            // 4. Êä³öºËĞÄĞÅÏ¢
-            Debug.Log($"1AQ1¹²Ê¶Ö¸ÎÆ³¤¶È£º{aq1FPLibrary.ConsensusFP.Count}");
-            Debug.Log($"Ğ£×¼ÏàËÆ¶ÈãĞÖµ£º{aq1FPLibrary.CalibratedThreshold:F2}");
+            // 4. è¾“å‡ºæ ¸å¿ƒä¿¡æ¯
+            Debug.Log($"1AQ1å…±è¯†æŒ‡çº¹é•¿åº¦ï¼š{aq1FPLibrary.ConsensusFP.Count}");
+            Debug.Log($"æ ¡å‡†ç›¸ä¼¼åº¦é˜ˆå€¼ï¼š{aq1FPLibrary.CalibratedThreshold:F2}");
 
             foreach (var config in hg.proteinConfigs)
             {
@@ -72,13 +80,24 @@ namespace AIDrugDiscovery
 
                 int ligandCount = 0;
 
-                for (int iBatch = 0; iBatch < 3; iBatch++)
+
+                currentBatch = 0;
+                while (currentBatch < TOTAL_BATCHES && !isTerminated)
                 {
+       
+                    while (isPaused && !isTerminated)
+                    {
+                        await UniTask.Yield();
+                    }
+
+                    if (isTerminated)
+                        break;
+
                     var heatmap = await hg.GenerateProteinHeatmap(config);
                     var heatmap3D = await hg.GenerateProteinHeatmap3D(config);
                     var config2 = dg.diffusionConfigs.First();
                     config2.proteinActiveCenter = config.activeSiteCenter;
-                    var unfilter = await dg.GenerateProteinTargetedMols(config2, heatmap, heatmap3D, iBatch * 1024);
+                    var unfilter = await dg.GenerateProteinTargetedMols(config2, heatmap, heatmap3D, currentBatch * 1024);
                     var smiles = unfilter.Item1;
                     var filters = unfilter.Item2;
                     var smiletexture = unfilter.Item3;
@@ -86,7 +105,7 @@ namespace AIDrugDiscovery
                     Texture2D.Destroy(heatmap);
                     RenderTexture.Destroy(heatmap3D);
 
-                    var generateFP = await mfp.Generate512BitFP(smiletexture, smiletexture.height);
+                    await mfp.Generate512BitFP(smiletexture, smiletexture.height);
 
                     List<int> newfilter = new List<int>();
                     for (int j = 0; j < filters.Count; j++)
@@ -99,6 +118,8 @@ namespace AIDrugDiscovery
 
                     var meshes = await mg.GenerateBallStickMeshes(filters, smiletexture);
                     RenderTexture.Destroy(smiletexture);
+
+                    await UniTask.NextFrame();
 
                     for(int i=0;i<filters.Count;i++)
                     {
@@ -116,16 +137,48 @@ namespace AIDrugDiscovery
 
                         ligandCount++;
                     }
+
+                    currentBatch++;
+                    Debug.Log($"finish: {currentBatch}/{TOTAL_BATCHES}");
+
+                    await UniTask.Delay(15);
+                }
+
+                if (isTerminated)
+                {
+                    break;
                 }
  
             }
 
         }
 
+        public void Pause()
+        {
+            isPaused = true;
+        }
+
+        public void Resume()
+        {
+            isPaused = false;
+        }
+
+        public void Terminate()
+        {
+            isTerminated = true;
+            isPaused = false;
+        }
+
+        public void Reset()
+        {
+            isPaused = false;
+            isTerminated = false;
+            currentBatch = 0;
+        }
 
         void OnDestroy()
         {
-
+            Terminate();
         }
     }
 

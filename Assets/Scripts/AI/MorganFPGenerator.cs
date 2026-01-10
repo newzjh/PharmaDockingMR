@@ -26,13 +26,13 @@ namespace AIDrugDiscovery
         /// <param name="smilesBuffer">Diffusion输出的SMILES Buffer</param>
         /// <param name="batchSize">分子批次数量</param>
         /// <returns>512位指纹Buffer（可直接用于FilterByFP）</returns>
-        public async UniTask<ComputeBuffer> Generate512BitFP(Texture smilesTexture, int batchSize)
+        public async UniTask Generate512BitFP(Texture smilesTexture, int batchSize)
         {
             // 1. 参数校验
             if (smilesTexture == null || batchSize <= 0)
             {
                 Debug.LogError("SMILES Buffer无效或批次大小不匹配");
-                return null;
+                return;
             }
 
             // 2. 创建指纹输出Buffer（每个分子512个bool，batchSize * 512长度）
@@ -62,9 +62,10 @@ namespace AIDrugDiscovery
             // 7. 等待GPU计算完成（移动端必须，避免数据未写入就读取）
             //ComputeShader.SyncThread();
             fpBuffer.GetData(allFP);
+            fpBuffer.Dispose();
 
             Debug.Log($"512位指纹生成完成：批次大小={batchSize}，指纹Buffer长度={fpBufferCount}");
-            return fpBuffer;
+            //return fpBuffer;
         }
 
         /// <summary>
