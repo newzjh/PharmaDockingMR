@@ -37,7 +37,7 @@ public static class FPocketConstants
 
     // 过滤参数
     public const float MIN_POCKET_VOLUME = 10.0f;
-    public const int MAX_ALPHA_SPHERES = 100000;
+    public const int MAX_ALPHA_SPHERES = 200000;
     public const int MAX_POCKETS = 100;
 
     // 线程组配置（避免溢出的核心）
@@ -167,9 +167,19 @@ public class PocketDetector : MonoBehaviour
 
         // 5. 计算口袋特征（复刻compute_pocket_features函数）
         List<FPocketResult> pockets = ComputePocketFeatures(clusters);
-        List<FPocketResult> finalPockets = pockets.Where(p => p.volume >= FPocketConstants.MIN_POCKET_VOLUME).ToList();
 
-        // 6. 输出结果
+        // 6. 输出结果前，新增FPocket源码的最终过滤
+        List<FPocketResult> finalPockets = pockets
+            .Where(p =>
+                p.volume >= FPocketConstants.MIN_POCKET_VOLUME &&
+                p.score >= 0.5f // FPocket源码默认分数阈值
+            )
+            .OrderByDescending(p => p.score)
+            .ToList();
+
+        // ===== 新增：复刻FPocket的重叠度过滤（IOU>0.7则保留高分）=====
+        finalPockets = RemoveOverlappingPockets(finalPockets, 0.7f);
+
         PrintPocketResults(finalPockets);
     }
 
@@ -261,7 +271,18 @@ public class PocketDetector : MonoBehaviour
 
             // 8. 计算口袋特征（复刻compute_pocket_features函数）
             List<FPocketResult> pockets = ComputePocketFeatures(clusters);
-            List<FPocketResult> finalPockets = pockets.Where(p => p.volume >= FPocketConstants.MIN_POCKET_VOLUME).ToList();
+
+            // 9. 输出结果前，新增FPocket源码的最终过滤
+            List<FPocketResult> finalPockets = pockets
+                .Where(p =>
+                    p.volume >= FPocketConstants.MIN_POCKET_VOLUME &&
+                    p.score >= 0.5f // FPocket源码默认分数阈值
+                )
+                .OrderByDescending(p => p.score)
+                .ToList();
+
+            // ===== 新增：复刻FPocket的重叠度过滤（IOU>0.7则保留高分）=====
+            finalPockets = RemoveOverlappingPockets(finalPockets, 0.7f);
 
             PrintPocketResults(finalPockets);
 
@@ -531,7 +552,17 @@ public class PocketDetector : MonoBehaviour
             clusters.Add(cluster);
         }
 
-        return clusters;
+        // ===== 新增：复刻FPocket源码的聚类剪枝 =====
+        List<List<FPocketAlphaSphere>> prunedClusters = new List<List<FPocketAlphaSphere>>();
+        foreach (var cluster in clusters)
+        {
+            // FPocket源码：cluster_alpha_spheres.c 要求聚类内Alpha球数≥10
+            if (cluster.Count >= 10)
+            {
+                prunedClusters.Add(cluster);
+            }
+        }
+        return prunedClusters;
     }
 
     /// <summary>
@@ -553,58 +584,206 @@ public class PocketDetector : MonoBehaviour
     }
 
     /// <summary>
-    /// 计算口袋特征（复刻FPocket: compute_pocket_features）
+    /// 计算聚类中心（复刻FPocket: compute_cluster_center）
+    /// </summary>
+    private Vector3 ComputeClusterCenter(List<FPocketAlphaSphere> cluster)
+    {
+        Vector3 sum = Vector3.zero;
+        foreach (var sphere in cluster)
+        {
+            sum += sphere.center;
+        }
+        return sum / cluster.Count;
+    }
+
+    /// <summary>
+    /// 计算聚类体积（复刻FPocket: compute_cluster_volume - Alpha球体积求和）
+    /// </summary>
+    private float ComputeClusterVolume(List<FPocketAlphaSphere> cluster)
+    {
+        float totalVolume = 0f;
+        foreach (var sphere in cluster)
+        {
+            // 球体积公式：4/3 * π * r³
+            totalVolume += (4f / 3f) * Mathf.PI * Mathf.Pow(sphere.radius, 3);
+        }
+        return totalVolume;
+    }
+
+    /// <summary>
+    /// 计算口袋特征（复刻FPocket: compute_pocket_features + 对齐评分公式）
     /// </summary>
     private List<FPocketResult> ComputePocketFeatures(List<List<FPocketAlphaSphere>> clusters)
     {
         List<FPocketResult> pockets = new List<FPocketResult>();
+        int pocketId = 0;
 
-        for (int i = 0; i < clusters.Count; i++)
+        // 第一步：收集所有原始评分（用于归一化）
+        List<float> allHydroScores = new List<float>();
+        List<float> allDepthScores = new List<float>();
+        List<float> allDensities = new List<float>();
+
+        // 预计算所有聚类的原始特征
+        List<Tuple<FPocketResult, float, float, float>> pocketFeatures = new List<Tuple<FPocketResult, float, float, float>>();
+        foreach (var cluster in clusters)
         {
-            var cluster = clusters[i];
-            FPocketResult pocket = new FPocketResult();
-            pocket.id = i;
-            pocket.nb_alpha_spheres = cluster.Count;
+            if (cluster.Count == 0) continue;
 
-            // 口袋中心（Alpha球中心加权平均）
-            Vector3 weightedCenter = Vector3.zero;
-            float totalRadius = 0f;
-            foreach (var s in cluster)
+            // 计算聚类中心
+            Vector3 center = ComputeClusterCenter(cluster);
+            // 计算聚类体积（Alpha球体积求和）
+            float volume = ComputeClusterVolume(cluster);
+            int nbAlphaSpheres = cluster.Count;
+            float density = nbAlphaSpheres / (volume + 1e-6f); // 避免除零
+
+            // 疏水评分（原始值）
+            float hydroSum = cluster.Sum(s => s.hydrophobicity);
+            float hydrophobicScore = hydroSum / nbAlphaSpheres;
+            float polarScore = 1f - hydrophobicScore;
+
+            // 深度评分（复刻FPocket：球心到分子表面的平均距离 / 最大半径）
+            float depthScore = ComputeClusterDepthScore(cluster, atoms);
+
+            // 临时存储原始特征
+            FPocketResult tempPocket = new FPocketResult
             {
-                weightedCenter += s.center * s.radius;
-                totalRadius += s.radius;
-            }
-            pocket.center = totalRadius > 0 ? weightedCenter / totalRadius : Vector3.zero;
+                id = pocketId++,
+                center = center,
+                volume = volume,
+                nb_alpha_spheres = nbAlphaSpheres,
+                hydrophobic_score = hydrophobicScore,
+                polar_score = polarScore,
+                depth_score = depthScore,
+                density = density
+            };
 
-            // 体积（所有Alpha球体积和）
-            pocket.volume = cluster.Sum(s => (4f / 3f) * Mathf.PI * Mathf.Pow(s.radius, 3));
+            pocketFeatures.Add(Tuple.Create(tempPocket, hydrophobicScore, depthScore, density));
+            allHydroScores.Add(hydrophobicScore);
+            allDepthScores.Add(depthScore);
+            allDensities.Add(density);
+        }
 
-            // 疏水性/极性评分
-            pocket.hydrophobic_score = cluster.Average(s => s.hydrophobicity);
-            pocket.polar_score = cluster.Average(s => s.polarity);
+        // 第二步：归一化所有评分到0~1区间（FPocket源码必做）
+        float maxHydro = allHydroScores.Count > 0 ? allHydroScores.Max() : 1f;
+        float maxDepth = allDepthScores.Count > 0 ? allDepthScores.Max() : 1f;
+        float maxDensity = allDensities.Count > 0 ? allDensities.Max() : 1f;
+        float minHydro = allHydroScores.Count > 0 ? allHydroScores.Min() : 0f;
+        float minDepth = allDepthScores.Count > 0 ? allDepthScores.Min() : 0f;
+        float minDensity = allDensities.Count > 0 ? allDensities.Min() : 0f;
 
-            // 深度评分（口袋中心到分子表面的距离）
-            pocket.depth_score = CalculatePocketDepth(pocket.center);
+        // 第三步：计算最终评分（对齐FPocket v3.0公式）
+        foreach (var feature in pocketFeatures)
+        {
+            FPocketResult pocket = feature.Item1;
+            float rawHydro = feature.Item2;
+            float rawDepth = feature.Item3;
+            float rawDensity = feature.Item4;
 
-            // 综合评分（FPocket源码权重）
-            pocket.score =
-                (pocket.volume / 100) * 0.4f +          // 体积40%
-                pocket.hydrophobic_score * 0.3f +        // 疏水30%
-                (1 - pocket.polar_score) * 0.1f +        // 极性10%
-                pocket.depth_score * 0.2f;               // 深度20%
+            // 归一化（避免除零）
+            float normHydro = NormalizeValue(rawHydro, minHydro, maxHydro);
+            float normDepth = NormalizeValue(rawDepth, minDepth, maxDepth);
+            float normDensity = NormalizeValue(rawDensity, minDensity, maxDensity);
 
-            // 密度
-            pocket.density = pocket.volume > 0 ? pocket.nb_alpha_spheres / pocket.volume : 0f;
+            // FPocket v3.0 综合评分公式：疏水0.5 + 深度0.3 + 密度0.2
+            float finalScore = (normHydro * 0.5f) + (normDepth * 0.3f) + (normDensity * 0.2f);
 
-            // 关联原子数
-            pocket.nb_atoms = cluster.Sum(s => s.nb_atoms);
+            // 赋值最终特征
+            pocket.score = finalScore;
+            pocket.hydrophobic_score = normHydro;
+            pocket.depth_score = normDepth;
+            pocket.density = normDensity;
 
             pockets.Add(pocket);
         }
 
-        // 按评分降序排序
-        return pockets.OrderByDescending(p => p.score).ToList();
+        return pockets;
     }
+
+
+    /// <summary>
+    /// 归一化值到0~1区间
+    /// </summary>
+    private float NormalizeValue(float value, float min, float max)
+    {
+        if (Mathf.Abs(max - min) < 1e-6) return 0f;
+        return (value - min) / (max - min);
+    }
+
+    /// <summary>
+    /// 复刻FPocket：计算两个口袋的IOU（重叠度），过滤高重叠口袋
+    /// </summary>
+    private List<FPocketResult> RemoveOverlappingPockets(List<FPocketResult> pockets, float iouThreshold)
+    {
+        List<FPocketResult> keptPockets = new List<FPocketResult>();
+        HashSet<int> removedIds = new HashSet<int>();
+
+        // 按分数降序遍历，优先保留高分口袋
+        foreach (var pocket in pockets)
+        {
+            if (removedIds.Contains(pocket.id)) continue;
+
+            bool keep = true;
+            foreach (var kept in keptPockets)
+            {
+                // 计算两个口袋的重叠度（简化版：基于中心距离+体积）
+                float centerDist = Vector3.Distance(pocket.center, kept.center);
+                float avgRadius = (Mathf.Pow(pocket.volume * 3 / (4 * Mathf.PI), 1 / 3f) +
+                                   Mathf.Pow(kept.volume * 3 / (4 * Mathf.PI), 1 / 3f)) / 2;
+
+                // FPocket源码：中心距离 < 平均半径 × 0.7 → 判定为重叠
+                if (centerDist < avgRadius * 0.7f)
+                {
+                    keep = false;
+                    removedIds.Add(pocket.id);
+                    break;
+                }
+            }
+
+            if (keep)
+            {
+                keptPockets.Add(pocket);
+            }
+        }
+
+        return keptPockets;
+    }
+
+    /// <summary>
+    /// 复刻FPocket：计算聚类的深度评分（球心到分子表面的平均距离 / 最大半径）
+    /// </summary>
+    private float ComputeClusterDepthScore(List<FPocketAlphaSphere> cluster, List<FPocketAtom> atoms)
+    {
+        float totalDepth = 0f;
+        int validSpheres = 0;
+
+        foreach (var sphere in cluster)
+        {
+            // 计算球心到最近原子范德华表面的距离
+            float minDist = float.MaxValue;
+            foreach (var atom in atoms)
+            {
+                float distToAtom = Vector3.Distance(sphere.center, atom.pos) - atom.vdw_radius;
+                if (distToAtom < minDist)
+                {
+                    minDist = distToAtom;
+                }
+            }
+
+            if (minDist > 0)
+            {
+                totalDepth += minDist;
+                validSpheres++;
+            }
+        }
+
+        if (validSpheres == 0) return 0f;
+
+        // 深度评分 = 平均深度 / 聚类内最大Alpha球半径（归一化）
+        float avgDepth = totalDepth / validSpheres;
+        float maxRadius = cluster.Max(s => s.radius);
+        return avgDepth / maxRadius;
+    }
+
     #endregion
 
     #region 通用辅助函数
