@@ -1,0 +1,274 @@
+#pragma kernel CSGenerateAlphaSpheres
+#pragma kernel CSFilterAlphaSpheres
+#pragma kernel CSDBSCANCluster
+#pragma kernel CSCalculatePocketScores
+
+// 对齐FPocket的常量
+cbuffer FPocketConstants
+{
+    float PROBE_RADIUS;
+    float GRID_STEP;
+    float ALPHA_SPHERE_MIN_RADIUS;
+    float ALPHA_SPHERE_MAX_RADIUS;
+    int DBSCAN_MIN_POINTS;
+    float DBSCAN_EPS;
+    float MIN_POCKET_VOLUME;
+    
+    // 分子边界框
+    float3 boundsMin;
+    float3 boundsMax;
+    
+    // 数据尺寸
+    int atomCount;
+    int gridPointCount;
+    int maxAlphaSpheres;
+    int maxPockets;
+};
+
+// 原子结构体（扩展疏水性）
+struct AtomData
+{
+    float3 position;
+    float vdwRadius;
+    float charge;
+    int atomType;
+    float hydrophobicity;
+};
+
+// Alpha球结构体
+struct AlphaSphere
+{
+    float3 center;
+    float radius;
+    int enclosedAtoms;
+    float hydrophobicity;
+    float polarity;
+    int visited; // DBSCAN标记：0=未访问，1=已访问，2=噪声
+};
+
+// FPocket结果结构体
+struct FPocketResult
+{
+    float3 center;
+    float volume;
+    float score;
+    float hydrophobicScore;
+    float polarScore;
+    float depthScore;
+    int alphaSphereCount;
+    int atomCount;
+    int id;
+    float density;
+    int lockFlag;
+};
+
+// 缓冲区定义
+StructuredBuffer<AtomData> atomBuffer;
+RWStructuredBuffer<AlphaSphere> alphaSphereBuffer;
+RWStructuredBuffer<FPocketResult> pocketResultBuffer;
+RWBuffer<int> clusterCountBuffer;
+
+// 修正：自旋锁实现（适配HLSL原子函数无返回值的特性）
+void LockPocket(int pocketIndex)
+{
+    int oldLockValue;
+    // HLSL：InterlockedExchange(目标地址, 新值, 输出旧值)
+    do
+    {
+        InterlockedExchange(pocketResultBuffer[pocketIndex].lockFlag, 1, oldLockValue);
+        // 旧值为0表示获取锁成功，退出循环；否则自旋等待
+    } while (oldLockValue != 0);
+}
+
+void UnlockPocket(int pocketIndex)
+{
+    int unused;
+    // 释放锁：将lockFlag设为0，旧值无需使用
+    InterlockedExchange(pocketResultBuffer[pocketIndex].lockFlag, 0, unused);
+}
+
+// 生成单个网格点的Alpha球
+AlphaSphere CalculateAlphaSphere(float3 gridPos)
+{
+    AlphaSphere sphere;
+    sphere.center = gridPos;
+    sphere.radius = 1000.0f;
+    sphere.enclosedAtoms = 0;
+    sphere.hydrophobicity = 0.0f;
+    sphere.polarity = 0.0f;
+    sphere.visited = 0;
+
+    int hydrophobicCount = 0;
+    int polarCount = 0;
+
+    for (int i = 0; i < atomCount; i++)
+    {
+        AtomData atom = atomBuffer[i];
+        float posDistance = distance(gridPos, atom.position);
+        float effectiveDistance = posDistance - (atom.vdwRadius + PROBE_RADIUS);
+
+        if (effectiveDistance < 0)
+            continue;
+        if (effectiveDistance < sphere.radius)
+        {
+            sphere.radius = effectiveDistance;
+        }
+
+        if (posDistance < (sphere.radius + atom.vdwRadius))
+        {
+            sphere.enclosedAtoms++;
+            if (atom.atomType == 0)
+                hydrophobicCount++;
+            else if (atom.atomType == 1)
+                polarCount++;
+        }
+    }
+
+    sphere.radius = clamp(sphere.radius, ALPHA_SPHERE_MIN_RADIUS, ALPHA_SPHERE_MAX_RADIUS);
+    if (sphere.enclosedAtoms > 0)
+    {
+        sphere.hydrophobicity = (float) hydrophobicCount / sphere.enclosedAtoms;
+        sphere.polarity = (float) polarCount / sphere.enclosedAtoms;
+    }
+
+    return sphere;
+}
+
+// Kernel 1：生成Alpha球
+[numthreads(64, 1, 1)]
+void CSGenerateAlphaSpheres(uint3 id : SV_DispatchThreadID)
+{
+    int gridIndex = id.x;
+    if (gridIndex >= gridPointCount)
+        return;
+
+    int xIndex = gridIndex % (int) ((boundsMax.x - boundsMin.x) / GRID_STEP + 1);
+    int yIndex = (gridIndex / (int) ((boundsMax.x - boundsMin.x) / GRID_STEP + 1)) % (int) ((boundsMax.y - boundsMin.y) / GRID_STEP + 1);
+    int zIndex = gridIndex / ((int) ((boundsMax.x - boundsMin.x) / GRID_STEP + 1) * (int) ((boundsMax.y - boundsMin.y) / GRID_STEP + 1));
+    
+    float3 gridPos = float3(
+        boundsMin.x + xIndex * GRID_STEP,
+        boundsMin.y + yIndex * GRID_STEP,
+        boundsMin.z + zIndex * GRID_STEP
+    );
+
+    alphaSphereBuffer[gridIndex] = CalculateAlphaSphere(gridPos);
+}
+
+// Kernel 2：过滤Alpha球
+[numthreads(64, 1, 1)]
+void CSFilterAlphaSpheres(uint3 id : SV_DispatchThreadID)
+{
+    int sphereIndex = id.x;
+    if (sphereIndex >= maxAlphaSpheres)
+        return;
+
+    AlphaSphere sphere = alphaSphereBuffer[sphereIndex];
+    if (sphere.hydrophobicity < 0.5f ||
+        sphere.radius < ALPHA_SPHERE_MIN_RADIUS ||
+        sphere.enclosedAtoms < 3)
+    {
+        sphere.radius = -1.0f;
+        alphaSphereBuffer[sphereIndex] = sphere;
+    }
+}
+
+// Kernel 3：DBSCAN聚类（修正原子函数调用）
+[numthreads(64, 1, 1)]
+void CSDBSCANCluster(uint3 id : SV_DispatchThreadID)
+{
+    int sphereIndex = id.x;
+    if (sphereIndex >= maxAlphaSpheres)
+        return;
+
+    AlphaSphere sphere = alphaSphereBuffer[sphereIndex];
+    if (sphere.radius < 0 || sphere.visited != 0)
+        return;
+
+    // 查找邻域点
+    int neighborCount = 0;
+    for (int i = 0; i < maxAlphaSpheres; i++)
+    {
+        if (i == sphereIndex || alphaSphereBuffer[i].radius < 0)
+            continue;
+        float clusterDistance = distance(sphere.center, alphaSphereBuffer[i].center);
+        if (clusterDistance < DBSCAN_EPS)
+            neighborCount++;
+    }
+
+    // 标记噪声或聚类核心点
+    if (neighborCount < DBSCAN_MIN_POINTS)
+    {
+        sphere.visited = 2; // 噪声
+        alphaSphereBuffer[sphereIndex] = sphere;
+        return;
+    }
+
+    // 修正：InterlockedAdd获取新聚类ID（HLSL：InterlockedAdd(地址, 增量, 输出旧值)）
+    int oldClusterCount;
+    InterlockedAdd(clusterCountBuffer[0], 1, oldClusterCount);
+    int clusterId = oldClusterCount; // 旧值是累加前的数，即为新ID
+    if (clusterId >= maxPockets)
+        return;
+
+    // 获取口袋锁（使用修正后的LockPocket函数）
+    LockPocket(clusterId);
+    
+    FPocketResult pocket = pocketResultBuffer[clusterId];
+    pocket.id = clusterId;
+    pocket.alphaSphereCount++;
+    // 加权中心点
+    pocket.center = (pocket.center * (pocket.alphaSphereCount - 1) + sphere.center * sphere.radius) / pocket.alphaSphereCount;
+    // 体积累加
+    pocket.volume += (4.0 / 3.0) * 3.14159 * pow(sphere.radius, 3);
+    // 疏水性/极性累加
+    pocket.hydrophobicScore += sphere.hydrophobicity;
+    pocket.polarScore += sphere.polarity;
+    
+    pocketResultBuffer[clusterId] = pocket;
+    // 释放锁
+    UnlockPocket(clusterId);
+
+    sphere.visited = 1; // 已访问
+    alphaSphereBuffer[sphereIndex] = sphere;
+}
+
+// Kernel 4：计算口袋最终评分（FPocket权重）
+[numthreads(64, 1, 1)]
+void CSCalculatePocketScores(uint3 id : SV_DispatchThreadID)
+{
+    int pocketIndex = id.x;
+    if (pocketIndex >= maxPockets)
+        return;
+
+    FPocketResult pocket = pocketResultBuffer[pocketIndex];
+    if (pocket.id == -1 || pocket.volume < MIN_POCKET_VOLUME)
+        return;
+
+    // 归一化疏水性/极性评分
+    pocket.hydrophobicScore = pocket.alphaSphereCount > 0 ? pocket.hydrophobicScore / pocket.alphaSphereCount : 0;
+    pocket.polarScore = pocket.alphaSphereCount > 0 ? pocket.polarScore / pocket.alphaSphereCount : 0;
+
+    // 计算深度评分
+    float minPosDistance = 1000.0f;
+    for (int i = 0; i < atomCount; i++)
+    {
+        AtomData atom = atomBuffer[i];
+        float depthDistance = distance(pocket.center, atom.position) - atom.vdwRadius;
+        if (depthDistance < minPosDistance)
+            minPosDistance = depthDistance;
+    }
+    pocket.depthScore = saturate(minPosDistance / 10.0f);
+
+    // FPocket综合评分
+    pocket.score =
+        (pocket.volume / 100) * 0.4f + // 体积权重40%
+        pocket.hydrophobicScore * 0.3f + // 疏水性权重30%
+        (1 - pocket.polarScore) * 0.1f + // 极性权重10%（反向）
+        pocket.depthScore * 0.2f; // 深度权重20%
+
+    // 密度=Alpha球数/体积
+    pocket.density = pocket.volume > 0 ? pocket.alphaSphereCount / pocket.volume : 0;
+
+    pocketResultBuffer[pocketIndex] = pocket;
+}

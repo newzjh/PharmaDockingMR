@@ -175,6 +175,52 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &697087612
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 697087613}
+  - component: {fileID: 697087614}
+  m_Layer: 0
+  m_Name: PocketDetector
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &697087613
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 697087612}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 16.99615, y: 0, z: 9.58671}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &697087614
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 697087612}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: e0f2079a462065b4789b4bb0b2bdda33, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::AIDrugDiscovery.PocketDetector
+  fpocketComputeShader: {fileID: 7200000, guid: 2264de3128b2d4d4fa5bc3c84be71e48, type: 3}
+  pdbqtFilePath: 
 --- !u!1 &738985758
 GameObject:
   m_ObjectHideFlags: 0
@@ -675,6 +721,7 @@ SceneRoots:
   m_Roots:
   - {fileID: 1617232115}
   - {fileID: 1366347514}
+  - {fileID: 697087613}
   - {fileID: 1082317111}
   - {fileID: 738985760}
   - {fileID: 245285011}

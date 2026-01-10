@@ -1,7 +1,9 @@
 using UnityEngine;
 using System;
+using System.IO;
 using System.Collections.Generic;
 using System.Linq;
+using static Mirror.BouncyCastle.Math.EC.ECCurve;
 
 namespace AIDrugDiscovery
 {
@@ -21,12 +23,26 @@ namespace AIDrugDiscovery
 
         public async void Start()
         {
+            var pocketdetector = GameObject.FindFirstObjectByType<PocketDetector>(FindObjectsInactive.Include);
             var hg = GameObject.FindFirstObjectByType<HeatmapGenerator>(FindObjectsInactive.Include);
             var dg = GameObject.FindFirstObjectByType<DiffusionGenerator>(FindObjectsInactive.Include);
             var mg = GameObject.FindFirstObjectByType<SMILESToBallStickMesh>(FindObjectsInactive.Include);
             var rfp = GameObject.FindFirstObjectByType<ReferenceFPGenerator>(FindObjectsInactive.Include);
             var mfp = GameObject.FindFirstObjectByType<MorganFPGenerator>(FindObjectsInactive.Include);
             var ff = GameObject.FindFirstObjectByType<FPFilter>(FindObjectsInactive.Include);
+
+            string tempfolder = Application.persistentDataPath + "/cachepdb";
+            if (Directory.Exists(tempfolder) == false)
+            {
+                Directory.CreateDirectory(tempfolder);
+            }
+            string pdbqtFullPath = tempfolder + "/" + "1AQ1" + ".pdb";
+
+            pocketdetector.pdbqtFilePath = pdbqtFullPath;
+            pocketdetector.RunFPocketComputeShaderDetection();
+            //pocketdetector.RunFPocketCSharpDetection();
+
+            return;
 
             // 2. 1AQ1活性配体SMILES列表（实验数据）
             List<string> aq1ActiveSmiles = new List<string>()
