@@ -88,6 +88,7 @@ void UnlockPocket(int pocketIndex)
 }
 
 // 生成单个网格点的Alpha球
+// 生成单个网格点的Alpha球（修正原子数统计逻辑）
 AlphaSphere CalculateAlphaSphere(float3 gridPos)
 {
     AlphaSphere sphere;
@@ -98,9 +99,7 @@ AlphaSphere CalculateAlphaSphere(float3 gridPos)
     sphere.polarity = 0.0f;
     sphere.visited = 0;
 
-    int hydrophobicCount = 0;
-    int polarCount = 0;
-
+    // 第一步：计算Alpha球半径（到最近原子的有效距离）
     for (int i = 0; i < atomCount; i++)
     {
         AtomData atom = atomBuffer[i];
@@ -108,12 +107,32 @@ AlphaSphere CalculateAlphaSphere(float3 gridPos)
         float effectiveDistance = posDistance - (atom.vdwRadius + PROBE_RADIUS);
 
         if (effectiveDistance < 0)
-            continue;
+        {
+            // 与原子重叠，标记为无效球
+            sphere.radius = -1.0f;
+            break;
+        }
         if (effectiveDistance < sphere.radius)
         {
             sphere.radius = effectiveDistance;
         }
+    }
 
+    // 检查半径有效性
+    if (sphere.radius < ALPHA_SPHERE_MIN_RADIUS || sphere.radius > ALPHA_SPHERE_MAX_RADIUS)
+    {
+        sphere.radius = -1.0f;
+        return sphere;
+    }
+
+    // 第二步：统计包裹的原子数（修正核心条件）
+    int hydrophobicCount = 0;
+    int polarCount = 0;
+    for (int i = 0; i < atomCount; i++)
+    {
+        AtomData atom = atomBuffer[i];
+        float posDistance = distance(gridPos, atom.position);
+        // 正确条件：原子到Alpha球中心的距离 < Alpha球半径 + 原子范德华半径
         if (posDistance < (sphere.radius + atom.vdwRadius))
         {
             sphere.enclosedAtoms++;
@@ -124,11 +143,16 @@ AlphaSphere CalculateAlphaSphere(float3 gridPos)
         }
     }
 
-    sphere.radius = clamp(sphere.radius, ALPHA_SPHERE_MIN_RADIUS, ALPHA_SPHERE_MAX_RADIUS);
+    // 计算疏水性/极性占比（避免除0）
     if (sphere.enclosedAtoms > 0)
     {
         sphere.hydrophobicity = (float) hydrophobicCount / sphere.enclosedAtoms;
         sphere.polarity = (float) polarCount / sphere.enclosedAtoms;
+    }
+    else
+    {
+        // 无包裹原子的Alpha球标记为无效
+        sphere.radius = -1.0f;
     }
 
     return sphere;

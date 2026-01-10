@@ -520,6 +520,9 @@ namespace AIDrugDiscovery
         /// <summary>
         /// 计算单个网格点的Alpha球（FPocket核心：最大空球）
         /// </summary>
+        /// <summary>
+        /// 计算单个网格点的Alpha球（FPocket核心：最大空球，修正原子数统计）
+        /// </summary>
         private AlphaSphere CalculateAlphaSphere(Vector3 gridPos, List<AtomData> atoms)
         {
             AlphaSphere sphere = new AlphaSphere();
@@ -528,21 +531,44 @@ namespace AIDrugDiscovery
             sphere.hydrophobicity = 0.0f;
             sphere.polarity = 0.0f;
 
-            // 计算到所有原子的最小距离（减去原子范德华半径+探针半径）
-            float minDistance = float.MaxValue;
-            int hydrophobicCount = 0;
-            int polarCount = 0;
-
+            // 第一步：先计算Alpha球的半径（到最近原子的有效距离）
+            float alphaSphereRadius = float.MaxValue;
             foreach (var atom in atoms)
             {
-                float distance = Vector3.Distance(gridPos, atom.position);
-                float effectiveDistance = distance - (atom.vdwRadius + FPocketConstants.PROBE_RADIUS);
+                // 原子中心到Alpha球中心的距离
+                float posDistance = Vector3.Distance(gridPos, atom.position);
+                // 有效距离 = 实际距离 - (原子范德华半径 + 溶剂探针半径)
+                float effectiveDistance = posDistance - (atom.vdwRadius + FPocketConstants.PROBE_RADIUS);
 
-                if (effectiveDistance < 0) continue; // 与原子重叠，跳过
-                if (effectiveDistance < minDistance) minDistance = effectiveDistance;
+                if (effectiveDistance < 0)
+                {
+                    // 与原子重叠，该网格点无法生成有效Alpha球
+                    alphaSphereRadius = -1;
+                    break;
+                }
+                if (effectiveDistance < alphaSphereRadius)
+                {
+                    alphaSphereRadius = effectiveDistance;
+                }
+            }
 
-                // 统计球内原子的疏水性/极性（FPocket规则：球内原子=距离<球半径+原子半径）
-                if (distance < (minDistance + atom.vdwRadius))
+            // 如果Alpha球半径无效，直接返回
+            if (alphaSphereRadius < FPocketConstants.ALPHA_SPHERE_MIN_RADIUS ||
+                alphaSphereRadius > FPocketConstants.ALPHA_SPHERE_MAX_RADIUS)
+            {
+                sphere.radius = -1;
+                return sphere;
+            }
+            sphere.radius = alphaSphereRadius;
+
+            // 第二步：统计Alpha球包裹的原子数（修正核心逻辑）
+            int hydrophobicCount = 0;
+            int polarCount = 0;
+            foreach (var atom in atoms)
+            {
+                float posDistance = Vector3.Distance(gridPos, atom.position);
+                // 正确条件：原子中心到Alpha球中心的距离 < Alpha球半径 + 原子范德华半径
+                if (posDistance < (sphere.radius + atom.vdwRadius))
                 {
                     sphere.enclosedAtoms++;
                     if (atom.atomType == 0) hydrophobicCount++;
@@ -550,12 +576,17 @@ namespace AIDrugDiscovery
                 }
             }
 
-            // Alpha球半径=最小有效距离
-            sphere.radius = minDistance;
-            // 疏水性占比=疏水原子数/总原子数
-            sphere.hydrophobicity = sphere.enclosedAtoms > 0 ? (float)hydrophobicCount / sphere.enclosedAtoms : 0.0f;
-            // 极性占比=极性原子数/总原子数
-            sphere.polarity = sphere.enclosedAtoms > 0 ? (float)polarCount / sphere.enclosedAtoms : 0.0f;
+            // 计算疏水性/极性占比（避免除0）
+            if (sphere.enclosedAtoms > 0)
+            {
+                sphere.hydrophobicity = (float)hydrophobicCount / sphere.enclosedAtoms;
+                sphere.polarity = (float)polarCount / sphere.enclosedAtoms;
+            }
+            else
+            {
+                // 无包裹原子的Alpha球标记为无效
+                sphere.radius = -1;
+            }
 
             return sphere;
         }
