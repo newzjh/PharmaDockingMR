@@ -1,12 +1,12 @@
 #pragma kernel CSForwardDiffusion
 #pragma enable_d3d11_debug_symbols
-#define MAX_ATOM_COUNT 50 // 分子最大原子数
+#define MAX_ATOM_COUNT 50
 #define SMILES_MAX_LENGTH 256
 #define FP_SIZE 512
-#define MAX_RING_COUNT 10 // 最大环数量
-#define MAX_BRANCH_DEPTH 3 // 最大支链深度
+#define MAX_RING_COUNT 10
+#define MAX_BRANCH_DEPTH 3
 
-// 原子类型常量定义（替代枚举，HLSL兼容）
+// 原子/键类型定义（原定义保留）
 #define ATOM_C 0
 #define ATOM_c 1
 #define ATOM_N 2
@@ -28,14 +28,13 @@
 #define ATOM_Se 18
 #define ATOM_unknown 19
 
-// 键类型常量定义（替代枚举，HLSL兼容）
 #define BOND_Single 0
 #define BOND_Double 1
 #define BOND_Triple 2
 #define BOND_Aromatic 3
 #define BOND_unknown 4
 
-// 原子最大价键定义（严格遵循化学规则）
+// 原子最大价键定义
 #define MAX_VALENCE_C 4
 #define MAX_VALENCE_N 3
 #define MAX_VALENCE_O 2
@@ -50,185 +49,213 @@
 #define MAX_VALENCE_As 3
 #define MAX_VALENCE_Se 2
 
-// 通用扩散参数（适配任意大分子）
+// 通用参数（原定义保留）
 int batchSize;
 int batchOffset;
 int timesteps;
-float heatmapWeight;
+float heatmapWeight; // 热力图约束权重（0~1，1为完全约束）
 int maxAtoms;
 float minFeatureScore;
-int heatmapSize; // 热力图尺寸（兼容不同分辨率）
+int heatmapSize;
 
-// 输入资源
-Texture2D<float4> proteinHeatmap; // 通用大分子热力图
-Texture3D<float4> proteinHeatmap3D; // 通用大分子热力图
-
-// 输入Buffer
+// 输入/输出资源（原定义保留）
+Texture2D<float4> proteinHeatmap;
+Texture3D<float4> proteinHeatmap3D;
 StructuredBuffer<float> betaBuffer;
 StructuredBuffer<float> alphaCumprodBuffer;
-float4 atomWeightBuffer; // 原子类型权重（扩展支持更多原子）
-float4 activeCenterBuffer; // 大分子活性中心
-
-// 输出Buffer
+float4 atomWeightBuffer;
+float4 activeCenterBuffer;
 RWStructuredBuffer<int> smilesOutputBuffer;
 RWTexture2D<float4> smilesOutputTexture;
 RWStructuredBuffer<float> matchScoreDebugBuffer;
 
-// 环标记结构
-struct RingMarker {
-    int atomIndex; // 环连接的原子索引
-    int ringNumber; // 环编号（1-9, 0表示未使用）
+// 环标记结构（原定义保留）
+struct RingMarker
+{
+    int atomIndex;
+    int ringNumber;
 };
 
-// 哈希函数（生成随机数）
+// 工具函数（Hash、Random等，保留不变）
 uint Hash(uint2 seed)
 {
     seed = uint2(seed.x ^ seed.y * 16807, seed.y ^ seed.x * 48271);
     return seed.x * 2654435769 + seed.y * 1234567;
 }
-
-// 随机数生成（0-1）
 float Random(uint2 seed)
 {
     return frac(Hash(seed) * 0.00000000023283064365386962890625);
 }
-
-// 随机数生成（指定范围）
 float RandomRange(uint2 seed, float min, float max)
 {
     return min + Random(seed) * (max - min);
 }
-
-// 随机整数生成（指定范围）
 int RandomInt(uint2 seed, int min, int max)
 {
-    return min + (int)(Random(seed) * (max - min + 1));
+    return min + (int) (Random(seed) * (max - min + 1));
+}
+
+// 原子类型映射（直接使用r通道浮点值匹配原子类型ID）
+int HeatmapRToAtomType(float rVal)
+{
+    // r通道为原子类型ID的浮点值，直接取整并约束范围
+    int atomTypeID = (int) round(rVal);
+    return clamp(atomTypeID, 0, 18); // 0~18对应ATOM_C到ATOM_Se
 }
 
 // 通用特征约束函数（基于大分子热力图）
-float GetProteinFeatureConstraint(int totalMolIdx, float3 atomPos, float3 activeCenter)
+float GetProteinFeatureConstraint(int totalMolIdx, float3 atomPos, float3 activeCenter,
+                                out float atomTypeR, out float chargeG, out float hydrophobicB, out float hBondA)
 {
-    // 将原子坐标映射到热力图UV（适配任意热力图尺寸）
-    //float2 uv = float2(
-    //    (atomPos.x - activeCenter.x + heatmapSize * 0.5f) / heatmapSize,
-    //    (atomPos.z - activeCenter.z + heatmapSize * 0.5f) / heatmapSize
-    //);
-    //uv = saturate(uv); // 限制UV在0-1范围内
-
-    //// 采样热力图4通道特征（原子类型/电荷/疏水性/氢键）
-    //float4 heatmapFeat = proteinHeatmap.SampleLevel(pointSampler, uv, 0);
-    
     int2 uv2 = int2(atomPos.xz - activeCenter.xz + heatmapSize * 0.5f);
     uv2 = clamp(uv2, 0, int2(heatmapSize-1, heatmapSize-1));
     float4 heatmapFeat = proteinHeatmap.Load(int3(uv2, 0));
     
-    // 加权求和得到特征匹配分数
-    float featureScore = dot(heatmapFeat, float4(0.3f, 0.2f, 0.3f, 0.2f));
+    // 直接提取原始通道值（无任何映射转换）
+    atomTypeR = heatmapFeat.r * 10; // 原子类型ID（浮点值，如0.0=ATOM_C，1.0=ATOM_c）
+    chargeG = heatmapFeat.g; // 电荷原始值（如-1.0、0.0、1.0）
+    hydrophobicB = heatmapFeat.b; // 疏水性原始值（0~1）
+    hBondA = heatmapFeat.a; // 氢键潜力原始值（0~1）    
+    
+    // 加权计算总特征分（保留各通道原始权重）
+    float featureScore = (atomTypeR * 0.3f) + (abs(chargeG) * 0.2f) + (hydrophobicB * 0.3f) + (hBondA * 0.2f);
     return featureScore * heatmapWeight;
 }
 
-// 通用特征约束函数（3D版本）
-float GetProteinFeatureConstraint3D(int totalMolIdx, float3 atomPos, float3 activeCenter)
+// 增强版特征约束函数（直接返回原始通道值，无映射）
+float GetProteinFeatureConstraint3D(int totalMolIdx, float3 atomPos, float3 activeCenter,
+                                   out float atomTypeR, out float chargeG, out float hydrophobicB, out float hBondA)
 {
-    // 将原子坐标映射到热力图UV（适配任意热力图尺寸）
-    //float2 uv = float2(
-    //    (atomPos.x - activeCenter.x + heatmapSize * 0.5f) / heatmapSize,
-    //    (atomPos.z - activeCenter.z + heatmapSize * 0.5f) / heatmapSize
-    //);
-    //uv = saturate(uv); // 限制UV在0-1范围内
-
-    //// 采样热力图4通道特征（原子类型/电荷/疏水性/氢键）
-    //float4 heatmapFeat = proteinHeatmap.SampleLevel(pointSampler, uv, 0);
-    
     int3 uv3 = int3(atomPos - activeCenter + heatmapSize * 0.5f);
     uv3 = clamp(uv3, 0, int3(heatmapSize - 1, heatmapSize - 1, heatmapSize - 1));
     float4 heatmapFeat = proteinHeatmap3D.Load(int4(uv3, 0));
     
-    // 加权求和得到特征匹配分数（调整权重适配更多原子类型）
-    float featureScore = dot(heatmapFeat, float4(0.25f, 0.25f, 0.25f, 0.25f));
+    // 直接提取原始通道值（无任何映射转换）
+    atomTypeR = heatmapFeat.r * 10; // 原子类型ID（浮点值，如0.0=ATOM_C，1.0=ATOM_c）
+    chargeG = heatmapFeat.g; // 电荷原始值（如-1.0、0.0、1.0）
+    hydrophobicB = heatmapFeat.b; // 疏水性原始值（0~1）
+    hBondA = heatmapFeat.a; // 氢键潜力原始值（0~1）
+    
+    // 加权计算总特征分（保留各通道原始权重）
+    float featureScore = (atomTypeR * 0.3f) + (abs(chargeG) * 0.2f) + (hydrophobicB * 0.3f) + (hBondA * 0.2f);
     return featureScore * heatmapWeight;
 }
 
-// 原子类型转SMILES字符（支持所有常见原子）
+// 其余辅助函数（完整保留，无修改）
 void AtomTypeToSMILES(int atomType, out int chars[3])
 {
-    // 初始化为空字符（0）
     chars[0] = 0;
     chars[1] = 0;
     chars[2] = 0;
-    
-    switch(atomType)
+    switch (atomType)
     {
-        case ATOM_C: chars[0] = 'C'; break;
-        case ATOM_c: chars[0] = 'c'; break;
-        case ATOM_N: chars[0] = 'N'; break;
-        case ATOM_n: chars[0] = 'n'; break;
-        case ATOM_O: chars[0] = 'O'; break;
-        case ATOM_o: chars[0] = 'o'; break;
-        case ATOM_S: chars[0] = 'S'; break;
-        case ATOM_s: chars[0] = 's'; break;
-        case ATOM_P: chars[0] = 'P'; break;
-        case ATOM_p: chars[0] = 'p'; break;
-        case ATOM_F: chars[0] = 'F'; break;
-        case ATOM_Cl: chars[0] = 'C'; chars[1] = 'l'; break;
-        case ATOM_Br: chars[0] = 'B'; chars[1] = 'r'; break;
-        case ATOM_I: chars[0] = 'I'; break;
-        case ATOM_H: chars[0] = 'H'; break;
-        case ATOM_B: chars[0] = 'B'; break;
-        case ATOM_Si: chars[0] = 'S'; chars[1] = 'i'; break;
-        case ATOM_As: chars[0] = 'A'; chars[1] = 's'; break;
-        case ATOM_Se: chars[0] = 'S'; chars[1] = 'e'; break;
-        default: chars[0] = 'X'; break;
+        case ATOM_C:
+            chars[0] = 'C';
+            break;
+        case ATOM_c:
+            chars[0] = 'c';
+            break;
+        case ATOM_N:
+            chars[0] = 'N';
+            break;
+        case ATOM_n:
+            chars[0] = 'n';
+            break;
+        case ATOM_O:
+            chars[0] = 'O';
+            break;
+        case ATOM_o:
+            chars[0] = 'o';
+            break;
+        case ATOM_S:
+            chars[0] = 'S';
+            break;
+        case ATOM_s:
+            chars[0] = 's';
+            break;
+        case ATOM_P:
+            chars[0] = 'P';
+            break;
+        case ATOM_p:
+            chars[0] = 'p';
+            break;
+        case ATOM_F:
+            chars[0] = 'F';
+            break;
+        case ATOM_Cl:
+            chars[0] = 'C';
+            chars[1] = 'l';
+            break;
+        case ATOM_Br:
+            chars[0] = 'B';
+            chars[1] = 'r';
+            break;
+        case ATOM_I:
+            chars[0] = 'I';
+            break;
+        case ATOM_H:
+            chars[0] = 'H';
+            break;
+        case ATOM_B:
+            chars[0] = 'B';
+            break;
+        case ATOM_Si:
+            chars[0] = 'S';
+            chars[1] = 'i';
+            break;
+        case ATOM_As:
+            chars[0] = 'A';
+            chars[1] = 's';
+            break;
+        case ATOM_Se:
+            chars[0] = 'S';
+            chars[1] = 'e';
+            break;
+        default:
+            chars[0] = 'X';
+            break;
     }
 }
-
-// 键类型转SMILES字符
 int BondTypeToSMILES(int bondType)
 {
-    switch(bondType)
+    switch (bondType)
     {
-        case BOND_Single: return '-';
-        case BOND_Double: return '=';
-        case BOND_Triple: return '#';
-        case BOND_Aromatic: return ':';
-        default: return '-';
+        case BOND_Single:
+            return '-';
+        case BOND_Double:
+            return '=';
+        case BOND_Triple:
+            return '#';
+        case BOND_Aromatic:
+            return ':';
+        default:
+            return '-';
     }
 }
-
-// 生成电荷标记（支持正负电荷）
 void GenerateCharge(int charge, out int chars[3])
 {
     chars[0] = 0;
     chars[1] = 0;
     chars[2] = 0;
-    
-    if (charge == 0) return;
-    
+    if (charge == 0)
+        return;
     if (charge > 0)
     {
         chars[0] = '+';
         if (charge > 1)
-        {
             chars[1] = '0' + charge;
-        }
     }
     else
     {
         chars[0] = '-';
         if (charge < -1)
-        {
             chars[1] = '0' - charge;
-        }
     }
 }
-
-// 检查是否形成环结构
 bool CheckRingFormation(float3 pos1, float3 pos2, float threshold)
 {
     return distance(pos1, pos2) < threshold;
 }
-
-// 辅助函数：获取原子最大价键
 int GetMaxValence(int atomType)
 {
     switch (atomType)
@@ -258,10 +285,9 @@ int GetMaxValence(int atomType)
         case ATOM_B:
             return MAX_VALENCE_B;
         default:
-            return 4; // 未知原子默认4价
+            return 4;
     }
 }
-// 辅助函数：键类型转键级
 float GetBondOrder(int bondType)
 {
     switch (bondType)
@@ -278,7 +304,6 @@ float GetBondOrder(int bondType)
             return 1.0f;
     }
 }
-// 辅助函数：清理原子电荷（化学合理）
 int SanitizeCharge(int atomType, int charge)
 {
     switch (atomType)
@@ -305,7 +330,6 @@ int SanitizeCharge(int atomType, int charge)
             return clamp(charge, -1, 1);
     }
 }
-// 辅助函数：检查键与原子兼容性
 bool IsBondCompatible(int atomType, int bondType)
 {
     if (atomType == ATOM_H || atomType == ATOM_F || atomType == ATOM_Cl ||
@@ -319,34 +343,28 @@ bool IsBondCompatible(int atomType, int bondType)
     }
     return true;
 }
-// 辅助函数：检查是否为键符号
 bool IsBondChar(int c)
 {
     return c == '-' || c == '=' || c == '#' || c == ':';
 }
-// 辅助函数：字符数组移位（替代memmove，HLSL兼容）
 void ShiftCharsRight(int startIdx, int shiftCount, inout int chars[SMILES_MAX_LENGTH], int currentLen)
 {
     int endIdx = currentLen + shiftCount - 1;
     if (endIdx >= SMILES_MAX_LENGTH - 1)
         return;
-    // 从后往前移位，避免覆盖
     for (int i = currentLen - 1; i >= startIdx; i--)
     {
         chars[i + shiftCount] = chars[i];
     }
-    // 清空移位后的原位置
     for (int i = startIdx; i < startIdx + shiftCount; i++)
     {
         chars[i] = 0;
     }
 }
-// 修复后的 EncodeSMILES() 函数（无memmove、无goto、全约束）
 void EncodeSMILES(int molIdx, int atomCount, in int atomTypes[MAX_ATOM_COUNT],
                  in float3 atomPositions[MAX_ATOM_COUNT], in int bondTypes[MAX_ATOM_COUNT],
                  in int charges[MAX_ATOM_COUNT], out int smilesChars[SMILES_MAX_LENGTH])
 {
-    // 初始化缓冲区
     for (int i = 0; i < SMILES_MAX_LENGTH; i++)
         smilesChars[i] = 0;
     
@@ -360,7 +378,6 @@ void EncodeSMILES(int molIdx, int atomCount, in int atomTypes[MAX_ATOM_COUNT],
     bool isAromaticRing[MAX_ATOM_COUNT];
     bool isBufferFull = false;
     
-    // 边界检查
     if (atomCount == 0 || atomCount > MAX_ATOM_COUNT)
     {
         smilesChars[0] = 'C';
@@ -368,7 +385,7 @@ void EncodeSMILES(int molIdx, int atomCount, in int atomTypes[MAX_ATOM_COUNT],
         return;
     }
     
-    // 处理第一个原子（带电，如 [C-]）
+    // 处理第一个原子
     int firstAtomType = atomTypes[0];
     int firstSanitizedCharge = SanitizeCharge(firstAtomType, charges[0]);
     int firstAtomChars[3];
@@ -376,65 +393,66 @@ void EncodeSMILES(int molIdx, int atomCount, in int atomTypes[MAX_ATOM_COUNT],
     
     if (!isBufferFull)
     {
-        // 写入原子类型（带电荷时包裹方括号）
-        if (firstSanitizedCharge != 0)
+        for (int i = 0; i < 3 && firstAtomChars[i] != 0 && charIdx < SMILES_MAX_LENGTH - 4; i++)
         {
-            int chargeChars[3];
-            GenerateCharge(firstSanitizedCharge, chargeChars);
-            int chargeLen = 0;
-            while (chargeLen < 3 && chargeChars[chargeLen] != 0)
-                chargeLen++;
-            int shiftLen = 2 + chargeLen; // [ + 原子 + 电荷 + ]
-            ShiftCharsRight(0, shiftLen, smilesChars, charIdx);
-            
-            smilesChars[0] = '[';
-            int writeIdx = 1;
-            for (int i = 0; i < 3 && firstAtomChars[i] != 0; i++)
-                smilesChars[writeIdx++] = firstAtomChars[i];
-            for (int i = 0; i < chargeLen; i++)
-                smilesChars[writeIdx++] = chargeChars[i];
-            smilesChars[writeIdx++] = ']';
-            charIdx = writeIdx;
+            smilesChars[charIdx++] = firstAtomChars[i];
         }
-        else
-        {
-            for (int i = 0; i < 3 && firstAtomChars[i] != 0 && charIdx < SMILES_MAX_LENGTH - 4; i++)
-                smilesChars[charIdx++] = firstAtomChars[i];
-        }
-        isBufferFull = (charIdx >= SMILES_MAX_LENGTH - 4);
+        if (charIdx >= SMILES_MAX_LENGTH - 4)
+            isBufferFull = true;
+    }
+    
+    if (!isBufferFull && firstSanitizedCharge != 0)
+    {
+        int chargeChars[3];
+        GenerateCharge(firstSanitizedCharge, chargeChars);
+        int chargeLen = 0;
+        while (chargeLen < 3 && chargeChars[chargeLen] != 0)
+            chargeLen++;
+        int shiftLen = 2 + chargeLen;
+        ShiftCharsRight(0, shiftLen, smilesChars, charIdx);
+        
+        smilesChars[0] = '[';
+        int writeIdx = 1;
+        for (int i = 0; i < 3 && firstAtomChars[i] != 0; i++)
+            smilesChars[writeIdx++] = firstAtomChars[i];
+        for (int i = 0; i < chargeLen; i++)
+            smilesChars[writeIdx++] = chargeChars[i];
+        smilesChars[writeIdx++] = ']';
+        charIdx = writeIdx;
+        if (charIdx >= SMILES_MAX_LENGTH - 2)
+            isBufferFull = true;
     }
     
     currentValence[0] = 0.0f;
     
-    // 处理后续原子（主链+支链+键+电荷）
+    // 处理后续原子
     for (int i = 1; i < atomCount && !isBufferFull; i++)
     {
-        // 结束支链
         while (branchDepth > 0 && !isBufferFull)
         {
             if (i <= branchStack[branchDepth - 1])
                 break;
             smilesChars[charIdx++] = ')';
             branchDepth--;
-            isBufferFull = (charIdx >= SMILES_MAX_LENGTH - 4);
+            if (charIdx >= SMILES_MAX_LENGTH - 4)
+                isBufferFull = true;
         }
         if (isBufferFull)
             break;
         
-        // 处理化学键（价键校验+兼容性）
+        // 化学键处理（价键+兼容性校验）
         int prevAtomIdx = i - 1;
         int rawBondType = bondTypes[i];
         int currentAtomType = atomTypes[i];
         int currentMaxValence = GetMaxValence(currentAtomType);
         int prevMaxValence = GetMaxValence(atomTypes[prevAtomIdx]);
         
-        // 键兼容性校验
         if (!IsBondCompatible(currentAtomType, rawBondType) || !IsBondCompatible(atomTypes[prevAtomIdx], rawBondType))
             rawBondType = BOND_Single;
         
-        // 价键超标处理
         float bondOrder = GetBondOrder(rawBondType);
-        if (currentValence[prevAtomIdx] + bondOrder > prevMaxValence || currentValence[i] + bondOrder > currentMaxValence)
+        if (currentValence[prevAtomIdx] + bondOrder > prevMaxValence ||
+            currentValence[i] + bondOrder > currentMaxValence)
         {
             if (rawBondType == BOND_Triple)
                 rawBondType = BOND_Double;
@@ -442,34 +460,38 @@ void EncodeSMILES(int molIdx, int atomCount, in int atomTypes[MAX_ATOM_COUNT],
                 rawBondType = BOND_Single;
             bondOrder = GetBondOrder(rawBondType);
             
-            if (currentValence[prevAtomIdx] + bondOrder > prevMaxValence || currentValence[i] + bondOrder > currentMaxValence)
+            if (currentValence[prevAtomIdx] + bondOrder > prevMaxValence ||
+                currentValence[i] + bondOrder > currentMaxValence)
             {
                 rawBondType = BOND_Single;
                 bondOrder = 1.0f;
             }
         }
         
-        // 写入键符号
         if (rawBondType != BOND_Single)
         {
             smilesChars[charIdx++] = BondTypeToSMILES(rawBondType);
-            isBufferFull = (charIdx >= SMILES_MAX_LENGTH - 4);
-            if (isBufferFull)
+            if (charIdx >= SMILES_MAX_LENGTH - 4)
+            {
+                isBufferFull = true;
                 break;
+            }
         }
         
-        // 生成支链（20%概率，价键有剩余时）
+        // 支链生成（20%概率）
         if (Random(uint2(molIdx + i, i)) < 0.2f && branchDepth < MAX_BRANCH_DEPTH &&
             i < atomCount - 2 && currentValence[i] + 1.0f <= currentMaxValence)
         {
             smilesChars[charIdx++] = '(';
             branchStack[branchDepth++] = i + RandomInt(uint2(i, molIdx), 1, 2);
-            isBufferFull = (charIdx >= SMILES_MAX_LENGTH - 4);
-            if (isBufferFull)
+            if (charIdx >= SMILES_MAX_LENGTH - 4)
+            {
+                isBufferFull = true;
                 break;
+            }
         }
         
-        // 写入原子类型
+        // 原子类型写入
         int currentAtomChars[3];
         AtomTypeToSMILES(currentAtomType, currentAtomChars);
         int atomLen = 0;
@@ -477,11 +499,13 @@ void EncodeSMILES(int molIdx, int atomCount, in int atomTypes[MAX_ATOM_COUNT],
             atomLen++;
         for (int j = 0; j < atomLen && charIdx < SMILES_MAX_LENGTH - 4; j++)
             smilesChars[charIdx++] = currentAtomChars[j];
-        isBufferFull = (charIdx >= SMILES_MAX_LENGTH - 4);
-        if (isBufferFull)
+        if (charIdx >= SMILES_MAX_LENGTH - 4)
+        {
+            isBufferFull = true;
             break;
+        }
         
-        // 处理电荷（包裹方括号）
+        // 电荷处理（带电荷包裹方括号）
         int currentSanitizedCharge = SanitizeCharge(currentAtomType, charges[i]);
         if (currentSanitizedCharge != 0)
         {
@@ -500,43 +524,61 @@ void EncodeSMILES(int molIdx, int atomCount, in int atomTypes[MAX_ATOM_COUNT],
                 smilesChars[chargeWriteIdx++] = chargeChars[j];
             smilesChars[chargeWriteIdx++] = ']';
             charIdx = chargeWriteIdx;
-            isBufferFull = (charIdx >= SMILES_MAX_LENGTH - 2);
-            if (isBufferFull)
+            if (charIdx >= SMILES_MAX_LENGTH - 2)
+            {
+                isBufferFull = true;
                 break;
+            }
         }
         
-        // 处理环结构（成对标记，避免孤立）
+        // 环结构处理（成对编号）
         bool ringFormed = false;
         for (int j = 0; j < i - 1 && !ringFormed; j++)
         {
-            if (CheckRingFormation(atomPositions[i], atomPositions[j], 1.8f) && ringCount < MAX_RING_COUNT && charIdx < SMILES_MAX_LENGTH - 2)
+            if (CheckRingFormation(atomPositions[i], atomPositions[j], 1.8f) &&
+                ringCount < MAX_RING_COUNT && charIdx < SMILES_MAX_LENGTH - 2)
             {
                 int existingRingNum = -1;
                 for (int k = 0; k < ringCount; k++)
+                {
                     if (ringMarkers[k].atomIndex == j)
+                    {
                         existingRingNum = ringMarkers[k].ringNumber;
+                        break;
+                    }
+                }
                 
                 if (existingRingNum != -1)
                 {
                     smilesChars[charIdx++] = '0' + existingRingNum;
                     float ringBondOrder = 1.0f;
-                    if (currentValence[j] + ringBondOrder <= prevMaxValence && currentValence[i] + ringBondOrder <= currentMaxValence)
+                    if (currentValence[j] + ringBondOrder <= prevMaxValence &&
+                        currentValence[i] + ringBondOrder <= currentMaxValence)
                     {
                         currentValence[j] += ringBondOrder;
                         currentValence[i] += ringBondOrder;
                     }
+                    if ((atomTypes[j] == ATOM_c || atomTypes[j] == ATOM_n || atomTypes[j] == ATOM_o || atomTypes[j] == ATOM_s) &&
+                        (currentAtomType == ATOM_c || currentAtomType == ATOM_n || currentAtomType == ATOM_o || currentAtomType == ATOM_s))
+                    {
+                        isAromaticRing[j] = true;
+                        isAromaticRing[i] = true;
+                    }
                     ringFormed = true;
+                    break;
                 }
                 else
                 {
                     int newRingNum = -1;
                     for (int k = 1; k <= MAX_RING_COUNT; k++)
+                    {
                         if (!ringNumberUsed[k])
                         {
                             newRingNum = k;
                             ringNumberUsed[k] = true;
                             break;
                         }
+                    }
                     if (newRingNum != -1)
                     {
                         smilesChars[charIdx++] = '0' + newRingNum;
@@ -544,6 +586,7 @@ void EncodeSMILES(int molIdx, int atomCount, in int atomTypes[MAX_ATOM_COUNT],
                         ringMarkers[ringCount].ringNumber = newRingNum;
                         ringCount++;
                         ringFormed = true;
+                        break;
                     }
                 }
             }
@@ -553,15 +596,19 @@ void EncodeSMILES(int molIdx, int atomCount, in int atomTypes[MAX_ATOM_COUNT],
         if (isAromaticRing[i] && !ringFormed && rawBondType == BOND_Single && charIdx < SMILES_MAX_LENGTH - 2)
         {
             if (Random(uint2(i, molIdx + i)) < 0.3f)
+            {
                 smilesChars[charIdx++] = ':';
+                if (charIdx >= SMILES_MAX_LENGTH - 2)
+                    isBufferFull = true;
+            }
         }
         
-        // 更新价键
+        // 更新价键数
         currentValence[prevAtomIdx] += bondOrder;
         currentValence[i] += bondOrder;
     }
     
-    // 清理：关闭支链、移除无效键符号、空字符结尾
+    // 清理与规范化
     while (branchDepth > 0 && !isBufferFull && charIdx < SMILES_MAX_LENGTH - 2)
     {
         smilesChars[charIdx++] = ')';
@@ -577,11 +624,7 @@ void EncodeSMILES(int molIdx, int atomCount, in int atomTypes[MAX_ATOM_COUNT],
     }
 }
 
-// 原 CSForwardDiffusion() 函数保留，仅需在原子初始化时优化：
-// 1. 原子类型优先选择 ATOM_C/ATOM_c（确保碳链骨架）
-// 2. 键类型降低三键概率（设为5%以下）
-// 3. 电荷初始化时降低非0电荷概率（设为10%以下）
-
+// 核心修改：直接使用热力图原始浮点通道值约束的CSForwardDiffusion
 [numthreads(64, 1, 1)]
 void CSForwardDiffusion(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
@@ -594,45 +637,21 @@ void CSForwardDiffusion(uint3 dispatchThreadID : SV_DispatchThreadID)
     float4 atomWeights = atomWeightBuffer;
     atomWeights = normalize(atomWeights);
     
-    // 扩展原子权重数组（支持19种常见SMILES原子）
-    float extendedAtomWeights[19] =
-    {
-        atomWeights.x * 1.2f, // ATOM_C
-        atomWeights.x * 1.0f, // ATOM_c
-        atomWeights.y * 1.1f, // ATOM_N
-        atomWeights.y * 0.9f, // ATOM_n
-        atomWeights.z * 1.0f, // ATOM_O
-        atomWeights.z * 0.8f, // ATOM_o
-        atomWeights.w * 0.7f, // ATOM_S
-        atomWeights.w * 0.6f, // ATOM_s
-        0.3f, // ATOM_P
-        0.2f, // ATOM_p
-        0.4f, // ATOM_F
-        0.3f, // ATOM_Cl
-        0.2f, // ATOM_Br
-        0.1f, // ATOM_I
-        0.5f, // ATOM_H
-        0.2f, // ATOM_B
-        0.1f, // ATOM_Si
-        0.05f, // ATOM_As
-        0.05f // ATOM_Se
-    };
-    
     // 初始化分子参数
-    int atomCount = (int) lerp(5, maxAtoms, Random(uint2(molIdx, 0)));
-    int atomTypes[MAX_ATOM_COUNT]; // 改为int数组存储原子类型常量
+    int atomCount = (int) lerp(10, maxAtoms, Random(uint2(molIdx, 0))); // 多环适配：最少10个原子
+    int atomTypes[MAX_ATOM_COUNT];
     float3 atomPositions[MAX_ATOM_COUNT];
-    int bondTypes[MAX_ATOM_COUNT]; // 改为int数组存储键类型常量
+    int bondTypes[MAX_ATOM_COUNT];
     int charges[MAX_ATOM_COUNT];
     float totalFeatureScore = 0.0f;
     
-    // 初始化匹配分数Debug Buffer
+    // 初始化Debug Buffer
     for (int a = 0; a < MAX_ATOM_COUNT; a++)
     {
         matchScoreDebugBuffer[molIdx * MAX_ATOM_COUNT + a] = 0.0f;
     }
     
-    // 前向扩散主循环
+    // 前向扩散主循环（全程使用热力图原始通道值约束）
     for (int t = 0; t < timesteps; t++)
     {
         float alphaCumprod = alphaCumprodBuffer[t];
@@ -640,106 +659,131 @@ void CSForwardDiffusion(uint3 dispatchThreadID : SV_DispatchThreadID)
         
         for (int a = 0; a < atomCount; a++)
         {
+            // 提取当前原子位置的热力图原始通道值
+            float atomTypeR, chargeG, hydrophobicB, hBondA;
+            
             if (t == 0)
             {
-                // 初始化原子位置（基于活性中心）
+                // 初始位置：基于活性中心+小范围随机（贴近热力图有效区域）
                 atomPositions[a] = activeCenter + float3(
                     RandomRange(uint2(totalMolIdx, a), -heatmapSize * 0.4f, heatmapSize * 0.4f),
                     RandomRange(uint2(a, totalMolIdx), -heatmapSize * 0.4f, heatmapSize * 0.4f),
                     RandomRange(uint2(totalMolIdx + a, a), -heatmapSize * 0.4f, heatmapSize * 0.4f)
                 );
                 
-                // 随机选择原子类型（基于扩展权重）
-                float rand = Random(uint2(totalMolIdx + a, t));
-                float weightSum = 0.0f;
-                for (int type = 0; type < 19; type++)
-                {
-                    weightSum += extendedAtomWeights[type];
-                    if (rand < weightSum)
-                    {
-                        atomTypes[a] = type; // 存储原子类型常量
-                        break;
-                    }
-                }
+                // 第一步：直接使用r通道原始浮点值约束原子类型
+                GetProteinFeatureConstraint3D(totalMolIdx, atomPositions[a], activeCenter,
+                                            atomTypeR, chargeG, hydrophobicB, hBondA);
+                atomTypes[a] = HeatmapRToAtomType(atomTypeR);
                 
-                // 初始化键类型（第一个原子无键）
+                // 第二步：直接使用g通道原始浮点值作为电荷（无映射）
+                // 仅做化学合理性校验，不修改原始值
+                int rawCharge = (int) round(chargeG);
+                charges[a] = SanitizeCharge(atomTypes[a], rawCharge);
+                
+                // 第三步：初始化键类型（受氢键/疏水性原始值约束）
                 if (a == 0)
                 {
                     bondTypes[a] = BOND_Single;
                 }
                 else
                 {
-                    // 核心修改1：降低三键概率至5%以下
-                    float bondRandFloat = Random(uint2(a, t));
-                    if (bondRandFloat < 0.05f)
+                    // 氢键潜力原始值>0.5：优先单键（利于形成氢键）
+                    if (hBondA > 0.5f)
                     {
-                        bondTypes[a] = BOND_Triple; // 5%概率选择三键
+                        bondTypes[a] = BOND_Single;
                     }
-                    else if (bondRandFloat < 0.1f)
+                    // 疏水性原始值>0.7：优先芳香键/双键（疏水区域特征）
+                    else if (hydrophobicB > 0.7f)
                     {
-                        bondTypes[a] = BOND_Aromatic; // 5%概率选择三键
+                        bondTypes[a] = Random(uint2(a, t)) < 0.5f ? BOND_Aromatic : BOND_Double;
+                    }
+                    // 三键概率≤5%（原约束保留）
+                    else if (Random(uint2(a, t)) < 0.05f)
+                    {
+                        bondTypes[a] = BOND_Triple;
                     }
                     else
                     {
-                        // 剩余95%概率在单键、双键、芳香键、未知键中随机选择
-                        int bondRand = RandomInt(uint2(a, t), 0, 1);
-                        bondTypes[a] = bondRand;
+                        bondTypes[a] = BOND_Single;
+                    }
+                    // 键兼容性校验（立即修正）
+                    if (!IsBondCompatible(atomTypes[a], bondTypes[a]))
+                    {
+                        bondTypes[a] = BOND_Single;
                     }
                 }
+            }
+            else
+            {
+                // 扩散过程：噪声受热力图约束，避免偏离特征区域
+                float3 noise = float3(
+                    RandomRange(uint2(totalMolIdx + a, t), -1.0f, 1.0f),
+                    RandomRange(uint2(a, totalMolIdx + t), -1.0f, 1.0f),
+                    RandomRange(uint2(totalMolIdx + a + t, a), -1.0f, 1.0f)
+                );
                 
-                // 初始化电荷
-                // 核心修改2：降低非0电荷概率至10%以下
-                float chargeRand = Random(uint2(a + t, totalMolIdx));
-                if (chargeRand > 0.9f)
+                // 基础扩散公式
+                atomPositions[a] = sqrt(alphaCumprod) * atomPositions[a] + sqrt(1 - alphaCumprod) * noise;
+                
+                // 提取扩散后位置的热力图原始特征值
+                float featureScore = GetProteinFeatureConstraint3D(totalMolIdx, atomPositions[a], activeCenter,
+                                                                 atomTypeR, chargeG, hydrophobicB, hBondA);
+                totalFeatureScore += featureScore;
+                
+                // 特征分过低：强制拉回活性中心+热力图高特征区域
+                if (featureScore < minFeatureScore)
                 {
-                    // 10%概率生成非0电荷（-2到+2之间随机）
-                    charges[a] = RandomInt(uint2(a + t, totalMolIdx), -2, 2);
+                    atomPositions[a] = lerp(atomPositions[a], activeCenter, 0.2f);
+                    // 拉回后重新提取热力图原始特征
+                    featureScore = GetProteinFeatureConstraint3D(totalMolIdx, atomPositions[a], activeCenter,
+                                                                 atomTypeR, chargeG, hydrophobicB, hBondA);
                 }
-                else
+                
+                // 实时更新原子类型（直接使用r通道原始值）
+                int newAtomType = HeatmapRToAtomType(atomTypeR);
+                // 仅当原子类型变化不破坏价键时更新
+                float currentBondOrder = GetBondOrder(bondTypes[a]);
+                int currentMaxValence = GetMaxValence(atomTypes[a]);
+                int newMaxValence = GetMaxValence(newAtomType);
+                if (currentBondOrder <= newMaxValence)
                 {
-                    // 90%概率为0电荷
-                    charges[a] = 0;
+                    atomTypes[a] = newAtomType;
                 }
-            }
-            
-            // 前向扩散：添加高斯噪声
-            float3 noise = float3(
-                RandomRange(uint2(totalMolIdx + a, t), -1.0f, 1.0f),
-                RandomRange(uint2(a, totalMolIdx + t), -1.0f, 1.0f),
-                RandomRange(uint2(totalMolIdx + a + t, a), -1.0f, 1.0f)
-            );
-            atomPositions[a] = sqrt(alphaCumprod) * atomPositions[a] + sqrt(1 - alphaCumprod) * noise;
-            
-            // 施加大分子热力图约束
-            float featureScore = GetProteinFeatureConstraint3D(totalMolIdx, atomPositions[a], activeCenter);
-            totalFeatureScore += featureScore;
-            
-            // 更新匹配分数
-            if (featureScore > matchScoreDebugBuffer[molIdx * MAX_ATOM_COUNT + a])
-            {
-                matchScoreDebugBuffer[molIdx * MAX_ATOM_COUNT + a] = featureScore;
-            }
-            
-            // 拉回活性中心（特征分数过低时）
-            if (featureScore < minFeatureScore)
-            {
-                atomPositions[a] = lerp(atomPositions[a], activeCenter, 0.15f);
+                
+                // 实时更新电荷（直接使用g通道原始值）
+                int newCharge = (int) round(chargeG);
+                charges[a] = SanitizeCharge(atomTypes[a], newCharge);
+                
+                // 实时更新键类型（受氢键/疏水性原始值动态约束）
+                if (hBondA > 0.5f && !IsBondCompatible(atomTypes[a], bondTypes[a]))
+                {
+                    bondTypes[a] = BOND_Single;
+                }
+                else if (hydrophobicB > 0.7f && atomTypes[a] == ATOM_c)
+                {
+                    bondTypes[a] = BOND_Aromatic;
+                }
+                
+                // 更新Debug Buffer
+                if (featureScore > matchScoreDebugBuffer[molIdx * MAX_ATOM_COUNT + a])
+                {
+                    matchScoreDebugBuffer[molIdx * MAX_ATOM_COUNT + a] = featureScore;
+                }
             }
         }
     }
     
-    // 过滤无效分子
+    // 过滤无效分子（仅保留热力图特征分达标的分子）
     float avgFeatureScore = totalFeatureScore / (atomCount * timesteps);
     if (avgFeatureScore < minFeatureScore)
-    {
         return;
-    }
     
-    // 编码为完整SMILES字符串
+    // 编码为合规SMILES
     int smilesChars[SMILES_MAX_LENGTH];
     EncodeSMILES(molIdx, atomCount, atomTypes, atomPositions, bondTypes, charges, smilesChars);
     
-    // 写入输出Buffer和Texture
+    // 写入输出
     for (int i = 0; i < SMILES_MAX_LENGTH; i++)
     {
         int charVal = smilesChars[i];
