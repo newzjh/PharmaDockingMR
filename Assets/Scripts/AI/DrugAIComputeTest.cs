@@ -39,7 +39,7 @@ namespace AIDrugDiscovery
             string pdbqtFullPath = tempfolder + "/" + "1AQ1" + ".pdb";
 
             pocketdetector.pdbqtFilePath = pdbqtFullPath;
-            pocketdetector.RunFPocketComputeShaderDetection();
+            pocketdetector.RunFPocketGPU();
             //pocketdetector.RunFPocketCSharpDetection();
 
             return;

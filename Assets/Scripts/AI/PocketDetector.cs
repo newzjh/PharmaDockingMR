@@ -1,873 +1,826 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Runtime.InteropServices;
 using UnityEngine;
 using System.Linq;
+using AIDrugDiscovery;
 
-namespace AIDrugDiscovery
+// 严格复刻 FPocket v3.0 常量（源码级对齐）
+public static class FPocketConstants
 {
+    // 核心参数（源码默认值）
+    public const float PROBE_RADIUS = 1.4f;        // 水分子探针半径（固定）
+    public const float MIN_ALPHA_SPHERE_RADIUS = 0.8f; // 最小Alpha球半径
+    public const float MAX_ALPHA_SPHERE_RADIUS = 6.0f; // 最大Alpha球半径
+    public const float SPHERE_ATOM_EPS = 0.1f;     // 空球判断阈值（源码默认0.1Å）
 
-
-    // 对齐FPocket官方参数的常量
-    public static class FPocketConstants
+    // 原子范德华半径表（FPocket源码：vdw_radii.h）
+    public static readonly Dictionary<string, float> VdwRadii = new Dictionary<string, float>
     {
-        // 基础参数
-        public const float PROBE_RADIUS = 1.4f;       // 溶剂探针半径（水）
-        public const float GRID_STEP = 0.5f;          // 表面网格步长（FPocket默认0.5Å）
-        public const float ALPHA_SPHERE_MIN_RADIUS = 0.8f; // alpha球最小半径
-        public const float ALPHA_SPHERE_MAX_RADIUS = 6.0f; // alpha球最大半径
+        { "H", 1.20f }, { "C", 1.70f }, { "N", 1.55f }, { "O", 1.52f },
+        { "S", 1.80f }, { "P", 1.80f }, { "F", 1.47f }, { "CL", 1.75f },
+        { "BR", 1.85f }, { "I", 1.98f }, { "OTHER", 1.60f }
+    };
 
-        // 聚类参数（DBSCAN）
-        public const int DBSCAN_MIN_POINTS = 5;       // 最小聚类点数
-        public const float DBSCAN_EPS = 3.5f;         // 邻域半径（FPocket默认3.5Å）
-
-        // 评分参数（FPocket权重）
-        public const float SCORE_VOLUME_WEIGHT = 0.4f;    // 体积权重
-        public const float SCORE_HYDROPHOBIC_WEIGHT = 0.3f; // 疏水性权重
-        public const float SCORE_POLAR_WEIGHT = 0.1f;      // 极性权重
-        public const float SCORE_DEPTH_WEIGHT = 0.2f;      // 口袋深度权重
-
-        // 过滤参数
-        public const float MIN_POCKET_VOLUME = 10.0f;  // 最小口袋体积（Å³）
-        public const float MIN_ALPHA_SPHERE_DENSITY = 0.05f; // 最小alpha球密度
-
-        // 缓冲区尺寸限制
-        public const int MAX_ALPHA_SPHERES = 2000000;   // 最大Alpha球数
-        public const int MAX_POCKETS = 100;            // 最大口袋数
-    }
-
-    // 原子数据结构
-    [Serializable]
-    public struct AtomData
+    // 原子疏水权重表（FPocket源码：hydrophobicity.h）
+    public static readonly Dictionary<string, float> HydrophobicWeights = new Dictionary<string, float>
     {
-        public Vector3 position; // 原子坐标
-        public float vdwRadius;  // 范德华半径
-        public float charge;     // 电荷
-        public int atomType;     // 0=疏水(C/H), 1=极性(N/O/S/P), 2=其他
-        public float hydrophobicity; // 疏水权重（C=1.0，其他=0）
-    }
+        { "C", 1.0f }, { "H", 1.0f }, { "N", 0.0f }, { "O", 0.0f },
+        { "S", 0.2f }, { "P", 0.1f }, { "F", 0.8f }, { "CL", 0.7f },
+        { "BR", 0.6f }, { "I", 0.5f }, { "OTHER", 0.0f }
+    };
 
-    // Alpha球结构（FPocket核心：包围口袋的空球）
-    public struct AlphaSphere
+    // DBSCAN参数（源码默认）
+    public const int DBSCAN_MIN_POINTS = 5;
+    public const float DBSCAN_EPS = 3.5f;
+
+    // 过滤参数
+    public const float MIN_POCKET_VOLUME = 10.0f;
+    public const int MAX_ALPHA_SPHERES = 100000;
+    public const int MAX_POCKETS = 100;
+
+    // 线程组配置（避免溢出的核心）
+    public const int THREAD_GROUP_SIZE_X = 32; // i维度线程组大小
+    public const int THREAD_GROUP_SIZE_Y = 32; // j维度线程组大小
+}
+
+// FPocket原子结构体（源码级对齐：atom.h）
+[Serializable]
+public struct FPocketAtom
+{
+    public int id;                 // 原子ID
+    public Vector3 pos;            // 三维坐标（Å）
+    public string name;            // 原子名称（如C, N, O）
+    public float vdw_radius;       // 范德华半径
+    public float hydrophobicity;   // 疏水权重
+    public int res_id;             // 残基ID（保留）
+}
+
+// FPocket Alpha球结构体（源码级对齐：alpha_sphere.h）
+[Serializable]
+public struct FPocketAlphaSphere
+{
+    public Vector3 center;         // 球心坐标
+    public float radius;           // 球半径（Å）
+    public int nb_atoms;           // 包裹原子数
+    public float hydrophobicity;   // 平均疏水权重
+    public float polarity;         // 极性权重（1 - 疏水）
+    public int visited;            // DBSCAN标记：0=未访问，1=已访问，2=噪声
+    public int[] parent_atoms;     // 生成该球的3个原子ID（源码核心）
+}
+
+// FPocket口袋结构体（源码级对齐：pocket.h）
+[Serializable]
+public struct FPocketResult
+{
+    public int id;                 // 口袋ID
+    public Vector3 center;         // 口袋中心
+    public float volume;           // 体积（Å³）
+    public float score;            // 综合评分
+    public float hydrophobic_score;// 疏水性评分
+    public float polar_score;      // 极性评分
+    public float depth_score;      // 深度评分
+    public int nb_alpha_spheres;   // Alpha球数量
+    public int nb_atoms;           // 关联原子数
+    public float density;          // 密度（Alpha球数/体积）
+}
+
+// GPU版结构体（与Compute Shader严格对齐）
+[StructLayout(LayoutKind.Sequential)]
+public struct FPocketAtomCS
+{
+    public int id;
+    public Vector3 pos;
+    public float vdw_radius;
+    public float hydrophobicity;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public struct FPocketAlphaSphereCS
+{
+    public Vector3 center;
+    public float radius;
+    public int nb_atoms;
+    public float hydrophobicity;
+    public float polarity;
+    public int visited;
+    public int parent_atom1; // 替代数组，适配ComputeBuffer
+    public int parent_atom2;
+    public int parent_atom3;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public struct FPocketResultCS
+{
+    public int id;
+    public Vector3 center;
+    public float volume;
+    public float score;
+    public float hydrophobic_score;
+    public float polar_score;
+    public float depth_score;
+    public int nb_alpha_spheres;
+    public int nb_atoms;
+    public float density;
+    public int lockFlag; // 自旋锁标记
+}
+
+public class PocketDetector : MonoBehaviour
+{
+    [Header("文件配置")]
+    public string pdbqtFilePath;   // PDBQT文件路径（如：Assets/protein.pdbqt）
+
+    [Header("GPU配置")]
+    public ComputeShader fpocketComputeShader; // 绑定Compute Shader文件
+
+    // 运行时数据
+    private List<FPocketAtom> atoms;
+    private List<FPocketAlphaSphere> alphaSpheres;
+
+    /// <summary>
+    /// 运行CPU版FPocket官方算法（复刻源码逻辑）
+    /// </summary>
+    [ContextMenu("Run FPocket CPU Version")]
+    public void RunFPocketCPU()
     {
-        public Vector3 center;       // Alpha球中心
-        public float radius;         // Alpha球半径
-        public int enclosedAtoms;    // 球内包裹的原子数
-        public float hydrophobicity; // 球内疏水原子占比
-        public float polarity;       // 球内极性原子占比
-        public int visited;          // DBSCAN标记：0=未访问，1=已访问，2=噪声
-    }
-
-    // FPocket风格的口袋结果（扩展评分维度）
-    [Serializable]
-    public struct FPocketResult
-    {
-        public Vector3 center;          // 口袋中心点
-        public float volume;            // 口袋体积（alpha球体积和）
-        public float score;             // 综合评分
-        public float hydrophobicScore;  // 疏水性评分
-        public float polarScore;        // 极性评分
-        public float depthScore;        // 口袋深度评分
-        public int alphaSphereCount;    // alpha球数量
-        public int atomCount;           // 关联原子数
-        public int id;                  // 口袋ID
-        public float density;           // 口袋密度（alpha球数/体积）
-        public int lockFlag;            // 自旋锁标记：0=未锁定，1=已锁定
-    }
-
-    public class PocketDetector : MonoBehaviour
-    {
-        public ComputeShader fpocketComputeShader; // 赋值优化后的Compute Shader
-        public string pdbqtFilePath; // PDBQT文件路径（如"Assets/protein.pdbqt"）
-
-        // Compute Buffer定义（需手动释放）
-        private ComputeBuffer atomBuffer;
-        private ComputeBuffer alphaSphereBuffer;
-        private ComputeBuffer pocketResultBuffer;
-        private ComputeBuffer clusterCountBuffer;
-
-        /// <summary>
-        /// 启动纯C#版本口袋检测
-        /// </summary>
-        [ContextMenu("Run FPocket C# Detection")]
-        public void RunFPocketCSharpDetection()
+        // 1. 加载原子（复刻read_pdbqt函数）
+        atoms = LoadAtomsFromPDBQT(pdbqtFilePath);
+        if (atoms.Count < 3)
         {
-            // 原有C#版本逻辑（无修改）
-            List<AtomData> atoms = LoadAndPreprocessPDBQT(pdbqtFilePath);
-            if (atoms.Count == 0) return;
+            Debug.LogError("原子数不足3个，无法生成Alpha球");
+            return;
+        }
+        Debug.Log($"[CPU版] 加载原子数：{atoms.Count}");
 
-            Bounds moleculeBounds = GetMoleculeBounds(atoms);
-            Debug.Log($"分子边界框：{moleculeBounds.min} ~ {moleculeBounds.max}");
+        // 2. 生成Alpha球（复刻generate_alpha_spheres函数）
+        alphaSpheres = GenerateAlphaSpheresFromAtomTriples(atoms);
+        Debug.Log($"[CPU版] 生成Alpha球数：{alphaSpheres.Count}");
 
-            List<AlphaSphere> alphaSpheres = GenerateAlphaSpheres(atoms, moleculeBounds);
-            Debug.Log($"生成Alpha球数量：{alphaSpheres.Count}");
+        // 3. 过滤Alpha球（复刻filter_alpha_spheres函数）
+        List<FPocketAlphaSphere> validSpheres = FilterAlphaSpheres(alphaSpheres);
+        Debug.Log($"[CPU版] 有效Alpha球数：{validSpheres.Count}");
 
-            List<AlphaSphere> validAlphaSpheres = FilterAlphaSpheres(alphaSpheres);
-            Debug.Log($"过滤后有效Alpha球数量：{validAlphaSpheres.Count}");
+        // 4. DBSCAN聚类（复刻cluster_alpha_spheres函数）
+        List<List<FPocketAlphaSphere>> clusters = DBSCANCluster(validSpheres);
+        Debug.Log($"[CPU版] 聚类得到口袋数：{clusters.Count}");
 
-            List<List<AlphaSphere>> pocketClusters = DBSCANCluster(validAlphaSpheres);
-            Debug.Log($"DBSCAN聚类得到口袋数：{pocketClusters.Count}");
+        // 5. 计算口袋特征（复刻compute_pocket_features函数）
+        List<FPocketResult> pockets = ComputePocketFeatures(clusters);
+        List<FPocketResult> finalPockets = pockets.Where(p => p.volume >= FPocketConstants.MIN_POCKET_VOLUME).ToList();
 
-            List<FPocketResult> pocketResults = CalculatePocketFeatures(pocketClusters, atoms);
-            List<FPocketResult> finalPockets = pocketResults.Where(p => p.volume >= FPocketConstants.MIN_POCKET_VOLUME).ToList();
+        // 6. 输出结果
+        PrintPocketResults(finalPockets);
+    }
 
-            PrintFPocketResults(finalPockets, "C#版本");
+    /// <summary>
+    /// 运行GPU版FPocket（二维线程组拆分i/j，k内循环，避免溢出）
+    /// </summary>
+    [ContextMenu("Run FPocket GPU Version (No Overflow)")]
+    public void RunFPocketGPU()
+    {
+        if (fpocketComputeShader == null)
+        {
+            Debug.LogError("请先绑定Compute Shader文件！");
+            return;
         }
 
-        /// <summary>
-        /// 启动Compute Shader版本FPocket检测（新增核心逻辑）
-        /// </summary>
-        [ContextMenu("Run FPocket Compute Shader Detection")]
-        public void RunFPocketComputeShaderDetection()
+        // 1. 加载原子
+        atoms = LoadAtomsFromPDBQT(pdbqtFilePath);
+        if (atoms.Count < 3)
         {
-            // 1. 加载并预处理原子数据
-            List<AtomData> atoms = LoadAndPreprocessPDBQT(pdbqtFilePath);
-            if (atoms.Count == 0)
-            {
-                Debug.LogError("原子数据加载失败，终止Compute Shader检测");
-                return;
-            }
-
-            // 2. 计算分子边界框
-            Bounds moleculeBounds = GetMoleculeBounds(atoms);
-            Debug.Log($"[Compute Shader] 分子边界框：{moleculeBounds.min} ~ {moleculeBounds.max}");
-
-            // 3. 计算网格点总数（用于初始化Alpha球缓冲区）
-            int gridPointCount = CalculateGridPointCount(moleculeBounds);
-            if (gridPointCount > FPocketConstants.MAX_ALPHA_SPHERES)
-            {
-                Debug.LogWarning($"网格点数量({gridPointCount})超过最大限制({FPocketConstants.MAX_ALPHA_SPHERES})，将截断");
-                gridPointCount = FPocketConstants.MAX_ALPHA_SPHERES;
-            }
-
-            try
-            {
-                // 4. 初始化所有Compute Buffer
-                InitComputeBuffers(atoms, gridPointCount);
-
-                // 5. 分步调度Compute Shader Kernel
-                // 5.1 Kernel 1：生成Alpha球
-                var alphaSpheres = DispatchGenerateAlphaSpheresKernel(atoms.Count, moleculeBounds, gridPointCount);
-
-                List<AlphaSphere> validAlphaSpheres = FilterAlphaSpheres(alphaSpheres);
-                Debug.Log($"过滤后有效Alpha球数量：{validAlphaSpheres.Count}");
-
-                List<List<AlphaSphere>> pocketClusters = DBSCANCluster(validAlphaSpheres);
-                Debug.Log($"DBSCAN聚类得到口袋数：{pocketClusters.Count}");
-
-                List<FPocketResult> pocketResults = CalculatePocketFeatures(pocketClusters, atoms);
-                List<FPocketResult> finalPockets = pocketResults.Where(p => p.volume >= FPocketConstants.MIN_POCKET_VOLUME).ToList();
-
-                PrintFPocketResults(finalPockets, "Compute Shader版本");
-
-                // 5.2 Kernel 2：过滤有效Alpha球
-                //DispatchFilterAlphaSpheresKernel(gridPointCount);
-
-                //// 5.3 Kernel 3：DBSCAN聚类生成口袋
-                //DispatchDBSCANClusterKernel(gridPointCount);
-
-                //// 5.4 Kernel 4：计算口袋最终评分
-                //DispatchCalculatePocketScoresKernel(atoms.Count);
-
-                //// 6. 读取并输出结果
-                //List<FPocketResult> finalPockets = ReadComputeShaderResults(atoms.Count);
-                //PrintFPocketResults(finalPockets, "Compute Shader版本");
-            }
-            catch (Exception e)
-            {
-                Debug.LogError($"[Compute Shader] 检测过程出错：{e.Message}\n{e.StackTrace}");
-            }
-            finally
-            {
-                // 7. 释放所有Compute Buffer（必须释放，避免内存泄漏）
-                ReleaseComputeBuffers();
-            }
+            Debug.LogError("原子数不足3个，无法生成Alpha球");
+            return;
         }
+        int atomCount = atoms.Count;
+        Debug.Log($"[GPU版] 加载原子数：{atomCount}");
 
-        #region Compute Shader核心调用逻辑（新增）
-        /// <summary>
-        /// 初始化所有Compute Buffer（与Shader中结构体对齐）
-        /// </summary>
-        private void InitComputeBuffers(List<AtomData> atoms, int gridPointCount)
+        // 2. 计算二维线程组数（拆分i/j维度，避免溢出）
+        int threadGroupsX = Mathf.CeilToInt((float)atomCount / FPocketConstants.THREAD_GROUP_SIZE_X);
+        int threadGroupsY = Mathf.CeilToInt((float)atomCount / FPocketConstants.THREAD_GROUP_SIZE_Y);
+        Debug.Log($"[GPU版] 线程组配置：X={threadGroupsX}, Y={threadGroupsY}");
+
+        // 3. 初始化缓冲区
+        ComputeBuffer atomBuffer = null;
+        ComputeBuffer alphaSphereBuffer = null;
+        ComputeBuffer pocketResultBuffer = null;
+        ComputeBuffer sphereCountBuffer = null;
+        ComputeBuffer clusterCountBuffer = null;
+
+        try
         {
-            // 原子缓冲区：尺寸=原子数，步长=结构体大小
-            int atomStride = System.Runtime.InteropServices.Marshal.SizeOf(typeof(AtomData));
-            atomBuffer = new ComputeBuffer(atoms.Count, atomStride);
-            atomBuffer.SetData(atoms);
-            Debug.Log($"[Compute Shader] 原子缓冲区初始化完成，原子数：{atoms.Count}");
-
-            // Alpha球缓冲区：尺寸=网格点总数，步长=结构体大小
-            int alphaSphereStride = System.Runtime.InteropServices.Marshal.SizeOf(typeof(AlphaSphere));
-            alphaSphereBuffer = new ComputeBuffer(gridPointCount, alphaSphereStride);
-            // 初始化空Alpha球数据
-            AlphaSphere[] emptyAlphaSpheres = new AlphaSphere[gridPointCount];
-            for (int i = 0; i < emptyAlphaSpheres.Length; i++)
-            {
-                emptyAlphaSpheres[i] = new AlphaSphere
-                {
-                    center = Vector3.zero,
-                    radius = -1f, // 初始标记为无效
-                    enclosedAtoms = 0,
-                    hydrophobicity = 0f,
-                    polarity = 0f,
-                    visited = 0
-                };
-            }
-            alphaSphereBuffer.SetData(emptyAlphaSpheres);
-            Debug.Log($"[Compute Shader] Alpha球缓冲区初始化完成，网格点数量：{gridPointCount}");
-
-            // 口袋结果缓冲区：尺寸=最大口袋数，步长=结构体大小
-            int pocketStride = System.Runtime.InteropServices.Marshal.SizeOf(typeof(FPocketResult));
-            pocketResultBuffer = new ComputeBuffer(FPocketConstants.MAX_POCKETS, pocketStride);
-            // 初始化空口袋数据
-            FPocketResult[] emptyPockets = new FPocketResult[FPocketConstants.MAX_POCKETS];
-            for (int i = 0; i < emptyPockets.Length; i++)
-            {
-                emptyPockets[i] = new FPocketResult
-                {
-                    center = Vector3.zero,
-                    volume = 0f,
-                    score = 0f,
-                    hydrophobicScore = 0f,
-                    polarScore = 0f,
-                    depthScore = 0f,
-                    alphaSphereCount = 0,
-                    atomCount = 0,
-                    id = -1, // 标记为未使用
-                    density = 0f,
-                    lockFlag = 0 // 初始未锁定
-                };
-            }
-            pocketResultBuffer.SetData(emptyPockets);
-
-            // 聚类计数缓冲区：尺寸=1，步长=int大小（用于生成唯一聚类ID）
+            atomBuffer = InitAtomBuffer(atoms);
+            alphaSphereBuffer = InitAlphaSphereBuffer();
+            pocketResultBuffer = InitPocketResultBuffer();
+            sphereCountBuffer = new ComputeBuffer(1, sizeof(int));
             clusterCountBuffer = new ComputeBuffer(1, sizeof(int));
-            int[] clusterCount = { 0 }; // 初始聚类数=0
-            clusterCountBuffer.SetData(clusterCount);
 
-            Debug.Log("[Compute Shader] 所有缓冲区初始化完成");
-        }
+            // 初始化计数缓冲区
+            int[] initCount = { 0 };
+            sphereCountBuffer.SetData(initCount);
+            clusterCountBuffer.SetData(initCount);
 
-        /// <summary>
-        /// 调度Kernel 1：生成Alpha球
-        /// </summary>
-        private AlphaSphere[] DispatchGenerateAlphaSpheresKernel(int atomCount, Bounds bounds, int gridPointCount)
-        {
-            int kernelId = fpocketComputeShader.FindKernel("CSGenerateAlphaSpheres");
-            if (kernelId == -1)
+            // 4. 设置Shader参数（核心：传递原子总数，用于k循环边界）
+            SetShaderConstants(fpocketComputeShader, atomCount);
+
+            // 5. 调度Kernel 1：生成Alpha球（二维线程组，k内循环）
+            int kernel1 = fpocketComputeShader.FindKernel("CSGenerateAlphaSpheres");
+            fpocketComputeShader.SetBuffer(kernel1, "atomBuffer", atomBuffer);
+            fpocketComputeShader.SetBuffer(kernel1, "alphaSphereBuffer", alphaSphereBuffer);
+            fpocketComputeShader.SetBuffer(kernel1, "sphereCountBuffer", sphereCountBuffer);
+            fpocketComputeShader.Dispatch(kernel1, threadGroupsX, threadGroupsY, 1);
+
+            // 6. 调度Kernel 2：过滤Alpha球
+            int kernel2 = fpocketComputeShader.FindKernel("CSFilterAlphaSpheres");
+            fpocketComputeShader.SetBuffer(kernel2, "alphaSphereBuffer", alphaSphereBuffer);
+            int threadGroupsFilter = Mathf.CeilToInt(FPocketConstants.MAX_ALPHA_SPHERES / 256f);
+            fpocketComputeShader.Dispatch(kernel2, threadGroupsFilter, 1, 1);
+
+            FPocketAlphaSphereCS[] data = new FPocketAlphaSphereCS[FPocketConstants.MAX_ALPHA_SPHERES];
+            alphaSphereBuffer.GetData(data);
+            List<FPocketAlphaSphere> validSpheres = new();
+            foreach (var sphere in data)
             {
-                Debug.LogError("[Compute Shader] 找不到Kernel：CSGenerateAlphaSpheres");
-                return null;
-            }
-
-            // 设置常量缓冲区参数
-            fpocketComputeShader.SetFloat("PROBE_RADIUS", FPocketConstants.PROBE_RADIUS);
-            fpocketComputeShader.SetFloat("GRID_STEP", FPocketConstants.GRID_STEP);
-            fpocketComputeShader.SetFloat("ALPHA_SPHERE_MIN_RADIUS", FPocketConstants.ALPHA_SPHERE_MIN_RADIUS);
-            fpocketComputeShader.SetFloat("ALPHA_SPHERE_MAX_RADIUS", FPocketConstants.ALPHA_SPHERE_MAX_RADIUS);
-            fpocketComputeShader.SetVector("boundsMin", bounds.min);
-            fpocketComputeShader.SetVector("boundsMax", bounds.max);
-            fpocketComputeShader.SetInt("atomCount", atomCount);
-            fpocketComputeShader.SetInt("gridPointCount", gridPointCount);
-            fpocketComputeShader.SetInt("maxAlphaSpheres", FPocketConstants.MAX_ALPHA_SPHERES);
-
-            // 设置缓冲区
-            fpocketComputeShader.SetBuffer(kernelId, "atomBuffer", atomBuffer);
-            fpocketComputeShader.SetBuffer(kernelId, "alphaSphereBuffer", alphaSphereBuffer);
-
-            // 调度Kernel（线程组大小=64，向上取整）
-            int threadGroups = Mathf.CeilToInt(gridPointCount / 64f);
-            fpocketComputeShader.Dispatch(kernelId, threadGroups, 1, 1);
-            Debug.Log($"[Compute Shader] Kernel 1（生成Alpha球）调度完成，线程组数：{threadGroups}");
-
-            AlphaSphere[] AlphaSpheres = new AlphaSphere[gridPointCount];
-            alphaSphereBuffer.GetData(AlphaSpheres);
-            return AlphaSpheres;
-        }
-
-        /// <summary>
-        /// 调度Kernel 2：过滤有效Alpha球
-        /// </summary>
-        private void DispatchFilterAlphaSpheresKernel(int gridPointCount)
-        {
-            int kernelId = fpocketComputeShader.FindKernel("CSFilterAlphaSpheres");
-            if (kernelId == -1)
-            {
-                Debug.LogError("[Compute Shader] 找不到Kernel：CSFilterAlphaSpheres");
-                return;
-            }
-
-            // 设置参数和缓冲区
-            fpocketComputeShader.SetInt("maxAlphaSpheres", FPocketConstants.MAX_ALPHA_SPHERES);
-            fpocketComputeShader.SetBuffer(kernelId, "alphaSphereBuffer", alphaSphereBuffer);
-
-            // 调度Kernel
-            int threadGroups = Mathf.CeilToInt(gridPointCount / 64f);
-            fpocketComputeShader.Dispatch(kernelId, threadGroups, 1, 1);
-            Debug.Log($"[Compute Shader] Kernel 2（过滤Alpha球）调度完成，线程组数：{threadGroups}");
-        }
-
-        /// <summary>
-        /// 调度Kernel 3：DBSCAN聚类生成口袋
-        /// </summary>
-        private void DispatchDBSCANClusterKernel(int gridPointCount)
-        {
-            int kernelId = fpocketComputeShader.FindKernel("CSDBSCANCluster");
-            if (kernelId == -1)
-            {
-                Debug.LogError("[Compute Shader] 找不到Kernel：CSDBSCANCluster");
-                return;
-            }
-
-            // 设置常量参数
-            fpocketComputeShader.SetInt("DBSCAN_MIN_POINTS", FPocketConstants.DBSCAN_MIN_POINTS);
-            fpocketComputeShader.SetFloat("DBSCAN_EPS", FPocketConstants.DBSCAN_EPS);
-            fpocketComputeShader.SetInt("maxAlphaSpheres", FPocketConstants.MAX_ALPHA_SPHERES);
-            fpocketComputeShader.SetInt("maxPockets", FPocketConstants.MAX_POCKETS);
-
-            // 设置缓冲区
-            fpocketComputeShader.SetBuffer(kernelId, "alphaSphereBuffer", alphaSphereBuffer);
-            fpocketComputeShader.SetBuffer(kernelId, "pocketResultBuffer", pocketResultBuffer);
-            fpocketComputeShader.SetBuffer(kernelId, "clusterCountBuffer", clusterCountBuffer);
-
-            // 调度Kernel
-            int threadGroups = Mathf.CeilToInt(gridPointCount / 64f);
-            fpocketComputeShader.Dispatch(kernelId, threadGroups, 1, 1);
-            Debug.Log($"[Compute Shader] Kernel 3（DBSCAN聚类）调度完成，线程组数：{threadGroups}");
-        }
-
-        /// <summary>
-        /// 调度Kernel 4：计算口袋最终评分
-        /// </summary>
-        private void DispatchCalculatePocketScoresKernel(int atomCount)
-        {
-            int kernelId = fpocketComputeShader.FindKernel("CSCalculatePocketScores");
-            if (kernelId == -1)
-            {
-                Debug.LogError("[Compute Shader] 找不到Kernel：CSCalculatePocketScores");
-                return;
-            }
-
-            // 设置常量参数
-            fpocketComputeShader.SetFloat("MIN_POCKET_VOLUME", FPocketConstants.MIN_POCKET_VOLUME);
-            fpocketComputeShader.SetInt("atomCount", atomCount);
-            fpocketComputeShader.SetInt("maxPockets", FPocketConstants.MAX_POCKETS);
-
-            // 设置缓冲区
-            fpocketComputeShader.SetBuffer(kernelId, "atomBuffer", atomBuffer);
-            fpocketComputeShader.SetBuffer(kernelId, "pocketResultBuffer", pocketResultBuffer);
-
-            // 调度Kernel（按最大口袋数调度）
-            int threadGroups = Mathf.CeilToInt(FPocketConstants.MAX_POCKETS / 64f);
-            fpocketComputeShader.Dispatch(kernelId, threadGroups, 1, 1);
-            Debug.Log($"[Compute Shader] Kernel 4（计算评分）调度完成，线程组数：{threadGroups}");
-        }
-
-        /// <summary>
-        /// 读取Compute Shader计算结果并过滤有效口袋
-        /// </summary>
-        private List<FPocketResult> ReadComputeShaderResults(int atomCount)
-        {
-            // 读取口袋结果缓冲区
-            FPocketResult[] allPockets = new FPocketResult[FPocketConstants.MAX_POCKETS];
-            pocketResultBuffer.GetData(allPockets);
-
-            // 过滤有效口袋（ID有效+体积达标）
-            List<FPocketResult> validPockets = allPockets
-                .Where(p => p.id >= 0 && p.volume >= FPocketConstants.MIN_POCKET_VOLUME)
-                .OrderByDescending(p => p.score) // 按评分降序
-                .ToList();
-
-            // 补充计算关联原子数（Shader中未计算，C#端补充）
-            AtomData[] atoms = new AtomData[atomCount];
-            atomBuffer.GetData(atoms);
-            foreach (var pocket in validPockets)
-            {
-                FPocketResult updatedPocket = pocket;
-                // 计算中心点6Å内的疏水原子数
-                updatedPocket.atomCount = atoms.Count(a =>
-                    a.atomType == 0 &&
-                    Vector3.Distance(a.position, pocket.center) < 6.0f);
-                // 重新计算密度（确保准确性）
-                updatedPocket.density = updatedPocket.volume > 0
-                    ? updatedPocket.alphaSphereCount / updatedPocket.volume
-                    : 0f;
-            }
-
-            Debug.Log($"[Compute Shader] 读取到有效口袋数：{validPockets.Count}");
-            return validPockets;
-        }
-
-        /// <summary>
-        /// 释放所有Compute Buffer（避免内存泄漏）
-        /// </summary>
-        private void ReleaseComputeBuffers()
-        {
-            if (atomBuffer != null)
-            {
-                atomBuffer.Release();
-                atomBuffer = null;
-            }
-            if (alphaSphereBuffer != null)
-            {
-                alphaSphereBuffer.Release();
-                alphaSphereBuffer = null;
-            }
-            if (pocketResultBuffer != null)
-            {
-                pocketResultBuffer.Release();
-                pocketResultBuffer = null;
-            }
-            if (clusterCountBuffer != null)
-            {
-                clusterCountBuffer.Release();
-                clusterCountBuffer = null;
-            }
-            Debug.Log("[Compute Shader] 所有缓冲区已释放");
-        }
-
-        /// <summary>
-        /// 计算网格点总数（边界框内按GRID_STEP划分）
-        /// </summary>
-        private int CalculateGridPointCount(Bounds bounds)
-        {
-            int xCount = Mathf.CeilToInt((bounds.max.x - bounds.min.x) / FPocketConstants.GRID_STEP) + 1;
-            int yCount = Mathf.CeilToInt((bounds.max.y - bounds.min.y) / FPocketConstants.GRID_STEP) + 1;
-            int zCount = Mathf.CeilToInt((bounds.max.z - bounds.min.z) / FPocketConstants.GRID_STEP) + 1;
-
-            int totalCount = xCount * yCount * zCount;
-            Debug.Log($"[Compute Shader] 网格点计算：X={xCount}, Y={yCount}, Z={zCount}，总数={totalCount}");
-            return totalCount;
-        }
-        #endregion
-
-        #region 原有C#版本逻辑（无修改）
-        /// <summary>
-        /// 加载并预处理PDBQT（对齐FPocket原子类型和疏水性权重）
-        /// </summary>
-        private List<AtomData> LoadAndPreprocessPDBQT(string filePath)
-        {
-            List<AtomData> atoms = PDBQTLoader.LoadPDBQT(filePath);
-            // 重新赋值原子类型和疏水性权重（FPocket规则）
-            for (int i = 0; i < atoms.Count; i++)
-            {
-                AtomData atom = atoms[i];
-                string atomSymbol = GetAtomSymbolFromRadius(atom.vdwRadius);
-                // FPocket原子类型规则：C/H=疏水(0), N/O/S/P=极性(1), 其他=2
-                if (atomSymbol == "C" || atomSymbol == "H")
+                if (sphere.radius > 0)
                 {
-                    atom.atomType = 0;
-                    atom.hydrophobicity = 1.0f; // 疏水权重1.0
+                    FPocketAlphaSphere newsphere = new FPocketAlphaSphere();
+                    newsphere.center = sphere.center;
+                    newsphere.radius = sphere.radius;
+                    newsphere.nb_atoms = sphere.nb_atoms;
+                    newsphere.hydrophobicity = sphere.hydrophobicity;
+                    newsphere.polarity = sphere.polarity;
+                    newsphere.visited = sphere.visited;
+                    newsphere.parent_atoms = new int[] { sphere.parent_atom1, sphere.parent_atom2, sphere.parent_atom3 };
+                    validSpheres.Add(newsphere);
                 }
-                else if (new[] { "N", "O", "S", "P" }.Contains(atomSymbol))
-                {
-                    atom.atomType = 1;
-                    atom.hydrophobicity = 0.0f; // 极性权重0.0
-                }
-                else
-                {
-                    atom.atomType = 2;
-                    atom.hydrophobicity = 0.0f;
-                }
-                atoms[i] = atom;
             }
+
+            // 7. DBSCAN聚类（复刻cluster_alpha_spheres函数）
+            List<List<FPocketAlphaSphere>> clusters = DBSCANCluster(validSpheres);
+            Debug.Log($"[CPU版] 聚类得到口袋数：{clusters.Count}");
+
+            // 8. 计算口袋特征（复刻compute_pocket_features函数）
+            List<FPocketResult> pockets = ComputePocketFeatures(clusters);
+            List<FPocketResult> finalPockets = pockets.Where(p => p.volume >= FPocketConstants.MIN_POCKET_VOLUME).ToList();
+
+            PrintPocketResults(finalPockets);
+
+            //// 7. 调度Kernel 3：DBSCAN聚类
+            //int kernel3 = fpocketComputeShader.FindKernel("CSDBSCANCluster");
+            //fpocketComputeShader.SetBuffer(kernel3, "alphaSphereBuffer", alphaSphereBuffer);
+            //fpocketComputeShader.SetBuffer(kernel3, "pocketResultBuffer", pocketResultBuffer);
+            //fpocketComputeShader.SetBuffer(kernel3, "clusterCountBuffer", clusterCountBuffer);
+            //fpocketComputeShader.Dispatch(kernel3, threadGroupsFilter, 1, 1);
+
+            //// 8. 调度Kernel 4：计算评分
+            //int kernel4 = fpocketComputeShader.FindKernel("CSCalculatePocketScores");
+            //fpocketComputeShader.SetBuffer(kernel4, "atomBuffer", atomBuffer);
+            //fpocketComputeShader.SetBuffer(kernel4, "pocketResultBuffer", pocketResultBuffer);
+            //int threadGroupsScore = Mathf.CeilToInt(FPocketConstants.MAX_POCKETS / 256f);
+            //fpocketComputeShader.Dispatch(kernel4, threadGroupsScore, 1, 1);
+
+            //// 9. 读取并输出GPU结果
+            //ReadAndPrintGPUResults(pocketResultBuffer);
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"GPU版运行出错：{e.Message}\n{e.StackTrace}");
+        }
+        finally
+        {
+            // 10. 释放缓冲区（必须执行，避免内存泄漏）
+            ReleaseBuffers(atomBuffer, alphaSphereBuffer, pocketResultBuffer, sphereCountBuffer, clusterCountBuffer);
+        }
+    }
+
+    #region CPU版核心逻辑（复刻FPocket源码）
+    /// <summary>
+    /// 复刻FPocket源码：遍历原子三元组生成Alpha球（alpha_sphere.c: generate_alpha_spheres）
+    /// </summary>
+    private List<FPocketAlphaSphere> GenerateAlphaSpheresFromAtomTriples(List<FPocketAtom> atoms)
+    {
+        List<FPocketAlphaSphere> alphaSpheres = new List<FPocketAlphaSphere>();
+        int atomCount = atoms.Count;
+
+        // FPocket核心：3层for遍历所有原子三元组（i<j<k，避免重复）
+        for (int i = 0; i < atomCount - 2; i++)
+        {
+            for (int j = i + 1; j < atomCount - 1; j++)
+            {
+                for (int k = j + 1; k < atomCount; k++)
+                {
+                    FPocketAtom a1 = atoms[i];
+                    FPocketAtom a2 = atoms[j];
+                    FPocketAtom a3 = atoms[k];
+
+                    // 步骤1：计算3个原子的外接球（复刻compute_circumsphere函数）
+                    (Vector3 center, float radius) = ComputeCircumsphere(a1.pos, a2.pos, a3.pos);
+                    if (radius < FPocketConstants.MIN_ALPHA_SPHERE_RADIUS || radius > FPocketConstants.MAX_ALPHA_SPHERE_RADIUS)
+                        continue;
+
+                    // 步骤2：空球判断（复刻is_empty_sphere函数）
+                    bool isEmpty = IsEmptySphere(center, radius, atoms, i, j, k);
+                    if (!isEmpty) continue;
+
+                    // 步骤3：探针半径修正（球半径需≥探针半径，且球心在分子外）
+                    if (radius < FPocketConstants.PROBE_RADIUS) continue;
+                    if (!IsSphereCenterOutsideMolecule(center, atoms)) continue;
+
+                    // 步骤4：统计包裹的原子数（复刻count_enclosed_atoms函数）
+                    (int nbAtoms, float totalHydro) = CountEnclosedAtoms(center, radius, atoms);
+
+                    // 步骤5：创建Alpha球（源码级赋值）
+                    FPocketAlphaSphere sphere = new FPocketAlphaSphere
+                    {
+                        center = center,
+                        radius = radius,
+                        nb_atoms = nbAtoms,
+                        hydrophobicity = nbAtoms > 0 ? totalHydro / nbAtoms : 0f,
+                        polarity = 1f - (nbAtoms > 0 ? totalHydro / nbAtoms : 0f),
+                        visited = 0,
+                        parent_atoms = new[] { i, j, k } // 记录生成该球的3个原子ID
+                    };
+
+                    alphaSpheres.Add(sphere);
+
+                    // 限制最大数量，避免内存溢出
+                    if (alphaSpheres.Count >= FPocketConstants.MAX_ALPHA_SPHERES)
+                        goto ExitTripleLoop;
+                }
+            }
+        }
+        ExitTripleLoop:
+
+        return alphaSpheres;
+    }
+
+    /// <summary>
+    /// 计算3个点的外接球（复刻FPocket: compute_circumsphere）
+    /// </summary>
+    private (Vector3 center, float radius) ComputeCircumsphere(Vector3 p1, Vector3 p2, Vector3 p3)
+    {
+        // 计算向量
+        Vector3 v1 = p2 - p1;
+        Vector3 v2 = p3 - p1;
+
+        // 计算法向量（垂直于平面）
+        Vector3 n = Vector3.Cross(v1, v2);
+        if (n.magnitude < 1e-6) // 三点共线，跳过
+            return (Vector3.zero, 0f);
+
+        // 解线性方程组求外接圆圆心
+        float a11 = 2 * (p2.x - p1.x);
+        float a12 = 2 * (p2.y - p1.y);
+        float a13 = 2 * (p2.z - p1.z);
+        float b1 = p2.sqrMagnitude - p1.sqrMagnitude;
+
+        float a21 = 2 * (p3.x - p1.x);
+        float a22 = 2 * (p3.y - p1.y);
+        float a23 = 2 * (p3.z - p1.z);
+        float b2 = p3.sqrMagnitude - p1.sqrMagnitude;
+
+        float a31 = n.x;
+        float a32 = n.y;
+        float a33 = n.z;
+        float b3 = Vector3.Dot(n, p1);
+
+        // 克莱姆法则求解
+        float det = a11 * (a22 * a33 - a23 * a32) - a12 * (a21 * a33 - a23 * a31) + a13 * (a21 * a32 - a22 * a31);
+        if (Mathf.Abs(det) < 1e-6)
+            return (Vector3.zero, 0f);
+
+        float detX = b1 * (a22 * a33 - a23 * a32) - a12 * (b2 * a33 - a23 * b3) + a13 * (b2 * a32 - a22 * b3);
+        float detY = a11 * (b2 * a33 - a23 * b3) - b1 * (a21 * a33 - a23 * a31) + a13 * (a21 * b3 - b2 * a31);
+        float detZ = a11 * (a22 * b3 - b2 * a32) - a12 * (a21 * b3 - b2 * a31) + b1 * (a21 * a32 - a22 * a31);
+
+        Vector3 center = new Vector3(detX / det, detY / det, detZ / det);
+        float radius = Vector3.Distance(center, p1);
+
+        return (center, radius);
+    }
+
+    /// <summary>
+    /// 空球判断：球内是否包含其他原子（复刻FPocket: is_empty_sphere）
+    /// </summary>
+    private bool IsEmptySphere(Vector3 center, float radius, List<FPocketAtom> atoms, int i, int j, int k)
+    {
+        float radiusSq = (radius - FPocketConstants.SPHERE_ATOM_EPS) * (radius - FPocketConstants.SPHERE_ATOM_EPS);
+
+        foreach (var atom in atoms)
+        {
+            // 跳过生成该球的3个原子
+            if (atom.id == i || atom.id == j || atom.id == k)
+                continue;
+
+            // 计算原子中心到球心的距离平方
+            float distSq = (atom.pos - center).sqrMagnitude;
+
+            // 空球判断：距离 ≥ 球半径 - 阈值（避免浮点误差）
+            if (distSq < radiusSq)
+                return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// 判断球心是否在分子范德华表面外（复刻FPocket: is_outside_molecule）
+    /// </summary>
+    private bool IsSphereCenterOutsideMolecule(Vector3 center, List<FPocketAtom> atoms)
+    {
+        foreach (var atom in atoms)
+        {
+            float dist = Vector3.Distance(center, atom.pos);
+            // 球心需在原子范德华表面外 + 探针半径
+            if (dist < atom.vdw_radius + FPocketConstants.PROBE_RADIUS)
+                return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// 统计包裹的原子数和总疏水权重（复刻FPocket: count_enclosed_atoms）
+    /// </summary>
+    private (int nbAtoms, float totalHydro) CountEnclosedAtoms(Vector3 center, float radius, List<FPocketAtom> atoms)
+    {
+        int nbAtoms = 0;
+        float totalHydro = 0f;
+
+        foreach (var atom in atoms)
+        {
+            float dist = Vector3.Distance(center, atom.pos);
+            // FPocket判断条件：距离 < 球半径 + 原子范德华半径
+            if (dist < radius + atom.vdw_radius)
+            {
+                nbAtoms++;
+                totalHydro += atom.hydrophobicity;
+            }
+        }
+
+        return (nbAtoms, totalHydro);
+    }
+
+    /// <summary>
+    /// 过滤Alpha球（复刻FPocket: filter_alpha_spheres）
+    /// </summary>
+    private List<FPocketAlphaSphere> FilterAlphaSpheres(List<FPocketAlphaSphere> spheres)
+    {
+        return spheres.Where(s =>
+            s.radius >= FPocketConstants.MIN_ALPHA_SPHERE_RADIUS &&
+            s.radius <= FPocketConstants.MAX_ALPHA_SPHERE_RADIUS &&
+            s.nb_atoms >= 1 &&
+            s.hydrophobicity >= 0.1f
+        ).ToList();
+    }
+
+    /// <summary>
+    /// DBSCAN聚类（复刻FPocket: dbscan_cluster）
+    /// </summary>
+    private List<List<FPocketAlphaSphere>> DBSCANCluster(List<FPocketAlphaSphere> spheres)
+    {
+        List<List<FPocketAlphaSphere>> clusters = new List<List<FPocketAlphaSphere>>();
+        HashSet<int> visited = new HashSet<int>();
+        HashSet<int> noise = new HashSet<int>();
+
+        for (int i = 0; i < spheres.Count; i++)
+        {
+            if (visited.Contains(i)) continue;
+
+            List<int> neighbors = FindNeighbors(spheres, i);
+            if (neighbors.Count < FPocketConstants.DBSCAN_MIN_POINTS)
+            {
+                noise.Add(i);
+                visited.Add(i);
+                FPocketAlphaSphere s = spheres[i];
+                s.visited = 2;
+                spheres[i] = s;
+                continue;
+            }
+
+            List<FPocketAlphaSphere> cluster = new List<FPocketAlphaSphere>();
+            cluster.Add(spheres[i]);
+            visited.Add(i);
+            FPocketAlphaSphere core = spheres[i];
+            core.visited = 1;
+            spheres[i] = core;
+
+            Queue<int> queue = new Queue<int>(neighbors);
+            while (queue.Count > 0)
+            {
+                int j = queue.Dequeue();
+                if (visited.Contains(j)) continue;
+
+                visited.Add(j);
+                FPocketAlphaSphere js = spheres[j];
+                js.visited = 1;
+                spheres[j] = js;
+
+                List<int> jNeighbors = FindNeighbors(spheres, j);
+                if (jNeighbors.Count >= FPocketConstants.DBSCAN_MIN_POINTS)
+                {
+                    foreach (int n in jNeighbors)
+                    {
+                        if (!visited.Contains(n) && !queue.Contains(n))
+                            queue.Enqueue(n);
+                    }
+                }
+
+                cluster.Add(spheres[j]);
+            }
+
+            clusters.Add(cluster);
+        }
+
+        return clusters;
+    }
+
+    /// <summary>
+    /// 查找邻域点（复刻FPocket: find_neighbors）
+    /// </summary>
+    private List<int> FindNeighbors(List<FPocketAlphaSphere> spheres, int index)
+    {
+        List<int> neighbors = new List<int>();
+        Vector3 center = spheres[index].center;
+
+        for (int i = 0; i < spheres.Count; i++)
+        {
+            if (i == index) continue;
+            if (Vector3.Distance(center, spheres[i].center) < FPocketConstants.DBSCAN_EPS)
+                neighbors.Add(i);
+        }
+
+        return neighbors;
+    }
+
+    /// <summary>
+    /// 计算口袋特征（复刻FPocket: compute_pocket_features）
+    /// </summary>
+    private List<FPocketResult> ComputePocketFeatures(List<List<FPocketAlphaSphere>> clusters)
+    {
+        List<FPocketResult> pockets = new List<FPocketResult>();
+
+        for (int i = 0; i < clusters.Count; i++)
+        {
+            var cluster = clusters[i];
+            FPocketResult pocket = new FPocketResult();
+            pocket.id = i;
+            pocket.nb_alpha_spheres = cluster.Count;
+
+            // 口袋中心（Alpha球中心加权平均）
+            Vector3 weightedCenter = Vector3.zero;
+            float totalRadius = 0f;
+            foreach (var s in cluster)
+            {
+                weightedCenter += s.center * s.radius;
+                totalRadius += s.radius;
+            }
+            pocket.center = totalRadius > 0 ? weightedCenter / totalRadius : Vector3.zero;
+
+            // 体积（所有Alpha球体积和）
+            pocket.volume = cluster.Sum(s => (4f / 3f) * Mathf.PI * Mathf.Pow(s.radius, 3));
+
+            // 疏水性/极性评分
+            pocket.hydrophobic_score = cluster.Average(s => s.hydrophobicity);
+            pocket.polar_score = cluster.Average(s => s.polarity);
+
+            // 深度评分（口袋中心到分子表面的距离）
+            pocket.depth_score = CalculatePocketDepth(pocket.center);
+
+            // 综合评分（FPocket源码权重）
+            pocket.score =
+                (pocket.volume / 100) * 0.4f +          // 体积40%
+                pocket.hydrophobic_score * 0.3f +        // 疏水30%
+                (1 - pocket.polar_score) * 0.1f +        // 极性10%
+                pocket.depth_score * 0.2f;               // 深度20%
+
+            // 密度
+            pocket.density = pocket.volume > 0 ? pocket.nb_alpha_spheres / pocket.volume : 0f;
+
+            // 关联原子数
+            pocket.nb_atoms = cluster.Sum(s => s.nb_atoms);
+
+            pockets.Add(pocket);
+        }
+
+        // 按评分降序排序
+        return pockets.OrderByDescending(p => p.score).ToList();
+    }
+    #endregion
+
+    #region 通用辅助函数
+    /// <summary>
+    /// 加载PDBQT文件（复刻FPocket: read_pdbqt）
+    /// </summary>
+    private List<FPocketAtom> LoadAtomsFromPDBQT(string filePath)
+    {
+        List<FPocketAtom> atoms = new List<FPocketAtom>();
+        if (!File.Exists(filePath))
+        {
+            Debug.LogError($"PDBQT文件不存在：{filePath}");
             return atoms;
         }
 
-        /// <summary>
-        /// 计算分子边界框（扩展探针半径，避免网格遗漏）
-        /// </summary>
-        private Bounds GetMoleculeBounds(List<AtomData> atoms)
-        {
-            Vector3 min = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
-            Vector3 max = new Vector3(float.MinValue, float.MinValue, float.MinValue);
-            foreach (var atom in atoms)
-            {
-                min = Vector3.Min(min, atom.position - Vector3.one * (FPocketConstants.PROBE_RADIUS + 2.0f));
-                max = Vector3.Max(max, atom.position + Vector3.one * (FPocketConstants.PROBE_RADIUS + 2.0f));
-            }
-            return new Bounds((min + max) / 2, max - min);
-        }
+        string[] lines = File.ReadAllLines(filePath);
+        int atomId = 0;
 
-        /// <summary>
-        /// 生成Alpha球（FPocket核心：检测不与原子重叠的空球）
-        /// </summary>
-        private List<AlphaSphere> GenerateAlphaSpheres(List<AtomData> atoms, Bounds bounds)
+        foreach (string line in lines)
         {
-            List<AlphaSphere> alphaSpheres = new List<AlphaSphere>();
-
-            // 生成网格点（遍历分子边界框内的所有网格）
-            for (float x = bounds.min.x; x <= bounds.max.x; x += FPocketConstants.GRID_STEP)
+            if (line.StartsWith("ATOM") || line.StartsWith("HETATM"))
             {
-                for (float y = bounds.min.y; y <= bounds.max.y; y += FPocketConstants.GRID_STEP)
+                try
                 {
-                    for (float z = bounds.min.z; z <= bounds.max.z; z += FPocketConstants.GRID_STEP)
+                    // PDBQT格式解析（源码级对齐）
+                    float x = float.Parse(line.Substring(30, 8).Trim());
+                    float y = float.Parse(line.Substring(38, 8).Trim());
+                    float z = float.Parse(line.Substring(46, 8).Trim());
+                    string atomNameRaw = line.Substring(12, 2).Trim().ToUpper();
+                    string atomSymbol = ExtractAtomSymbol(atomNameRaw);
+
+                    // 范德华半径
+                    float vdwRadius = FPocketConstants.VdwRadii.ContainsKey(atomSymbol)
+                        ? FPocketConstants.VdwRadii[atomSymbol]
+                        : FPocketConstants.VdwRadii["OTHER"];
+
+                    // 疏水权重
+                    float hydro = FPocketConstants.HydrophobicWeights.ContainsKey(atomSymbol)
+                        ? FPocketConstants.HydrophobicWeights[atomSymbol]
+                        : FPocketConstants.HydrophobicWeights["OTHER"];
+
+                    atoms.Add(new FPocketAtom
                     {
-                        Vector3 gridPos = new Vector3(x, y, z);
-                        AlphaSphere sphere = CalculateAlphaSphere(gridPos, atoms);
-                        if (sphere.radius >= FPocketConstants.ALPHA_SPHERE_MIN_RADIUS &&
-                            sphere.radius <= FPocketConstants.ALPHA_SPHERE_MAX_RADIUS)
-                        {
-                            alphaSpheres.Add(sphere);
-                        }
-                    }
+                        id = atomId++,
+                        pos = new Vector3(x, y, z),
+                        name = atomSymbol,
+                        vdw_radius = vdwRadius,
+                        hydrophobicity = hydro,
+                        res_id = 0
+                    });
+                }
+                catch (Exception e)
+                {
+                    Debug.LogWarning($"解析PDBQT行失败：{line} | {e.Message}");
                 }
             }
-
-            return alphaSpheres;
         }
 
-        /// <summary>
-        /// 计算单个网格点的Alpha球（FPocket核心：最大空球）
-        /// </summary>
-        /// <summary>
-        /// 计算单个网格点的Alpha球（FPocket核心：最大空球，修正原子数统计）
-        /// </summary>
-        private AlphaSphere CalculateAlphaSphere(Vector3 gridPos, List<AtomData> atoms)
+        return atoms;
+    }
+
+    /// <summary>
+    /// 提取原子符号（复刻FPocket: extract_atom_symbol）
+    /// </summary>
+    private string ExtractAtomSymbol(string rawName)
+    {
+        if (string.IsNullOrEmpty(rawName)) return "OTHER";
+        if (rawName.StartsWith("CL") || rawName.StartsWith("BR") || rawName.StartsWith("I"))
+            return rawName.Substring(0, 2).ToUpper();
+        return rawName.Substring(0, 1).ToUpper();
+    }
+
+    /// <summary>
+    /// 计算口袋深度（复刻FPocket: compute_pocket_depth）
+    /// </summary>
+    private float CalculatePocketDepth(Vector3 center)
+    {
+        float minDist = float.MaxValue;
+        foreach (var atom in atoms)
         {
-            AlphaSphere sphere = new AlphaSphere();
-            sphere.center = gridPos;
-            sphere.enclosedAtoms = 0;
-            sphere.hydrophobicity = 0.0f;
-            sphere.polarity = 0.0f;
+            float dist = Vector3.Distance(center, atom.pos) - atom.vdw_radius;
+            if (dist < minDist) minDist = dist;
+        }
+        return Mathf.Clamp01(minDist / 10f);
+    }
 
-            // 第一步：先计算Alpha球的半径（到最近原子的有效距离）
-            float alphaSphereRadius = float.MaxValue;
-            foreach (var atom in atoms)
+    /// <summary>
+    /// 输出CPU版结果（复刻FPocket: print_results）
+    /// </summary>
+    private void PrintPocketResults(List<FPocketResult> pockets)
+    {
+        var validPockets = pockets.OrderByDescending(_ => _.score).ToList();
+
+        Debug.Log($"有效口袋数：{validPockets.Count}");
+
+        foreach (var p in validPockets)
+        {
+            Debug.Log($"[Pocket {p.id}]  中心：({p.center.x:F2}, {p.center.y:F2}, {p.center.z:F2})");
+            Debug.Log($"  体积：{p.volume:F2} Å³  Alpha球数：{p.nb_alpha_spheres} 综合评分：{p.score:F2}");
+        }
+    }
+    #endregion
+
+    #region GPU版辅助函数（缓冲区管理+结果读取）
+    /// <summary>
+    /// 设置Shader常量参数（核心：传递原子总数，用于k循环边界）
+    /// </summary>
+    private void SetShaderConstants(ComputeShader cs, int atomCount)
+    {
+        cs.SetFloat("PROBE_RADIUS", FPocketConstants.PROBE_RADIUS);
+        cs.SetFloat("MIN_ALPHA_SPHERE_RADIUS", FPocketConstants.MIN_ALPHA_SPHERE_RADIUS);
+        cs.SetFloat("MAX_ALPHA_SPHERE_RADIUS", FPocketConstants.MAX_ALPHA_SPHERE_RADIUS);
+        cs.SetFloat("SPHERE_ATOM_EPS", FPocketConstants.SPHERE_ATOM_EPS);
+        cs.SetInt("DBSCAN_MIN_POINTS", FPocketConstants.DBSCAN_MIN_POINTS);
+        cs.SetFloat("DBSCAN_EPS", FPocketConstants.DBSCAN_EPS);
+        cs.SetFloat("MIN_POCKET_VOLUME", FPocketConstants.MIN_POCKET_VOLUME);
+        cs.SetInt("atomCount", atomCount); // 关键：传递原子总数给Shader
+        cs.SetInt("maxAlphaSpheres", FPocketConstants.MAX_ALPHA_SPHERES);
+        cs.SetInt("maxPockets", FPocketConstants.MAX_POCKETS);
+        // 传递线程组大小，用于计算全局i/j索引
+        cs.SetInt("THREAD_GROUP_SIZE_X", FPocketConstants.THREAD_GROUP_SIZE_X);
+        cs.SetInt("THREAD_GROUP_SIZE_Y", FPocketConstants.THREAD_GROUP_SIZE_Y);
+    }
+
+    /// <summary>
+    /// 初始化原子缓冲区
+    /// </summary>
+    private ComputeBuffer InitAtomBuffer(List<FPocketAtom> atoms)
+    {
+        int stride = Marshal.SizeOf(typeof(FPocketAtomCS));
+        ComputeBuffer buffer = new ComputeBuffer(atoms.Count, stride, ComputeBufferType.Default);
+        FPocketAtomCS[] atomCS = atoms.Select(a => new FPocketAtomCS
+        {
+            id = a.id,
+            pos = a.pos,
+            vdw_radius = a.vdw_radius,
+            hydrophobicity = a.hydrophobicity
+        }).ToArray();
+        buffer.SetData(atomCS);
+        return buffer;
+    }
+
+    /// <summary>
+    /// 初始化Alpha球缓冲区
+    /// </summary>
+    private ComputeBuffer InitAlphaSphereBuffer()
+    {
+        int stride = Marshal.SizeOf(typeof(FPocketAlphaSphereCS));
+        ComputeBuffer buffer = new ComputeBuffer(FPocketConstants.MAX_ALPHA_SPHERES, stride, ComputeBufferType.Default);
+        FPocketAlphaSphereCS[] empty = new FPocketAlphaSphereCS[FPocketConstants.MAX_ALPHA_SPHERES];
+        for (int i = 0; i < empty.Length; i++)
+        {
+            empty[i].radius = -1.0f;
+            empty[i].visited = 0;
+            empty[i].parent_atom1 = empty[i].parent_atom2 = empty[i].parent_atom3 = -1;
+        }
+        buffer.SetData(empty);
+        return buffer;
+    }
+
+    /// <summary>
+    /// 初始化口袋结果缓冲区
+    /// </summary>
+    private ComputeBuffer InitPocketResultBuffer()
+    {
+        int stride = Marshal.SizeOf(typeof(FPocketResultCS));
+        ComputeBuffer buffer = new ComputeBuffer(FPocketConstants.MAX_POCKETS, stride, ComputeBufferType.Default);
+        FPocketResultCS[] empty = new FPocketResultCS[FPocketConstants.MAX_POCKETS];
+        for (int i = 0; i < empty.Length; i++)
+        {
+            empty[i].id = -1;
+            empty[i].lockFlag = 0;
+            empty[i].volume = 0f;
+        }
+        buffer.SetData(empty);
+        return buffer;
+    }
+
+    /// <summary>
+    /// 释放所有缓冲区（避免内存泄漏）
+    /// </summary>
+    private void ReleaseBuffers(params ComputeBuffer[] buffers)
+    {
+        foreach (var buf in buffers)
+        {
+            if (buf != null)
             {
-                // 原子中心到Alpha球中心的距离
-                float posDistance = Vector3.Distance(gridPos, atom.position);
-                // 有效距离 = 实际距离 - (原子范德华半径 + 溶剂探针半径)
-                float effectiveDistance = posDistance - (atom.vdwRadius + FPocketConstants.PROBE_RADIUS);
-
-                if (effectiveDistance < 0)
+                if (buf.IsValid())
                 {
-                    // 与原子重叠，该网格点无法生成有效Alpha球
-                    alphaSphereRadius = -1;
-                    break;
+                    buf.Release();
                 }
-                if (effectiveDistance < alphaSphereRadius)
-                {
-                    alphaSphereRadius = effectiveDistance;
-                }
+                buf.Dispose();
             }
-
-            // 如果Alpha球半径无效，直接返回
-            if (alphaSphereRadius < FPocketConstants.ALPHA_SPHERE_MIN_RADIUS ||
-                alphaSphereRadius > FPocketConstants.ALPHA_SPHERE_MAX_RADIUS)
-            {
-                sphere.radius = -1;
-                return sphere;
-            }
-            sphere.radius = alphaSphereRadius;
-
-            // 第二步：统计Alpha球包裹的原子数（修正核心逻辑）
-            int hydrophobicCount = 0;
-            int polarCount = 0;
-            foreach (var atom in atoms)
-            {
-                float posDistance = Vector3.Distance(gridPos, atom.position);
-                // 正确条件：原子中心到Alpha球中心的距离 < Alpha球半径 + 原子范德华半径
-                if (posDistance < (sphere.radius + atom.vdwRadius))
-                {
-                    sphere.enclosedAtoms++;
-                    if (atom.atomType == 0) hydrophobicCount++;
-                    else if (atom.atomType == 1) polarCount++;
-                }
-            }
-
-            // 计算疏水性/极性占比（避免除0）
-            if (sphere.enclosedAtoms > 0)
-            {
-                sphere.hydrophobicity = (float)hydrophobicCount / sphere.enclosedAtoms;
-                sphere.polarity = (float)polarCount / sphere.enclosedAtoms;
-            }
-            else
-            {
-                // 无包裹原子的Alpha球标记为无效
-                sphere.radius = -1;
-            }
-
-            return sphere;
-        }
-
-        /// <summary>
-        /// 过滤Alpha球（FPocket规则：高疏水性+有效半径）
-        /// </summary>
-        private List<AlphaSphere> FilterAlphaSpheres(List<AlphaSphere> spheres)
-        {
-            return spheres.Where(s =>
-                s.hydrophobicity >= 0.5f && // 至少50%疏水原子
-                s.radius >= FPocketConstants.ALPHA_SPHERE_MIN_RADIUS &&
-                s.enclosedAtoms >= 3 // 至少包裹3个原子
-            ).ToList();
-        }
-
-        /// <summary>
-        /// 过滤Alpha球（FPocket规则：高疏水性+有效半径）
-        /// </summary>
-        private List<AlphaSphere> FilterAlphaSpheres(AlphaSphere[] spheres)
-        {
-            return spheres.Where(s =>
-                s.hydrophobicity >= 0.5f && // 至少50%疏水原子
-                s.radius >= FPocketConstants.ALPHA_SPHERE_MIN_RADIUS &&
-                s.enclosedAtoms >= 3 // 至少包裹3个原子
-            ).ToList();
-        }
-
-        /// <summary>
-        /// DBSCAN密度聚类（FPocket使用的聚类算法）
-        /// </summary>
-        private List<List<AlphaSphere>> DBSCANCluster(List<AlphaSphere> spheres)
-        {
-            List<List<AlphaSphere>> clusters = new List<List<AlphaSphere>>();
-            HashSet<int> visited = new HashSet<int>();
-            HashSet<int> noise = new HashSet<int>();
-
-            for (int i = 0; i < spheres.Count; i++)
-            {
-                if (visited.Contains(i)) continue;
-
-                // 查找邻域点
-                List<int> neighbors = FindNeighbors(spheres, i);
-                if (neighbors.Count < FPocketConstants.DBSCAN_MIN_POINTS)
-                {
-                    noise.Add(i);
-                    visited.Add(i);
-                    continue;
-                }
-
-                // 生成新聚类
-                List<AlphaSphere> cluster = new List<AlphaSphere>();
-                cluster.Add(spheres[i]);
-                visited.Add(i);
-
-                // 扩展聚类（迭代查找邻域）
-                Queue<int> queue = new Queue<int>(neighbors);
-                while (queue.Count > 0)
-                {
-                    int j = queue.Dequeue();
-                    if (visited.Contains(j)) continue;
-
-                    visited.Add(j);
-                    List<int> jNeighbors = FindNeighbors(spheres, j);
-                    if (jNeighbors.Count >= FPocketConstants.DBSCAN_MIN_POINTS)
-                    {
-                        foreach (int n in jNeighbors)
-                        {
-                            if (!visited.Contains(n) && !queue.Contains(n))
-                            {
-                                queue.Enqueue(n);
-                            }
-                        }
-                    }
-
-                    cluster.Add(spheres[j]);
-                }
-
-                clusters.Add(cluster);
-            }
-
-            return clusters;
-        }
-
-        /// <summary>
-        /// 查找邻域点（距离<EPS的点）
-        /// </summary>
-        private List<int> FindNeighbors(List<AlphaSphere> spheres, int index)
-        {
-            List<int> neighbors = new List<int>();
-            Vector3 center = spheres[index].center;
-            for (int i = 0; i < spheres.Count; i++)
-            {
-                if (i == index) continue;
-                if (Vector3.Distance(center, spheres[i].center) < FPocketConstants.DBSCAN_EPS)
-                {
-                    neighbors.Add(i);
-                }
-            }
-            return neighbors;
-        }
-
-        /// <summary>
-        /// 计算口袋特征（对齐FPocket评分体系）
-        /// </summary>
-        private List<FPocketResult> CalculatePocketFeatures(List<List<AlphaSphere>> clusters, List<AtomData> atoms)
-        {
-            List<FPocketResult> results = new List<FPocketResult>();
-
-            for (int i = 0; i < clusters.Count; i++)
-            {
-                var cluster = clusters[i];
-                FPocketResult result = new FPocketResult();
-                result.id = i;
-                result.alphaSphereCount = cluster.Count;
-
-                // 1. 计算中心点（Alpha球中心的加权平均，权重=半径）
-                Vector3 weightedCenter = Vector3.zero;
-                float totalRadius = 0.0f;
-                foreach (var sphere in cluster)
-                {
-                    weightedCenter += sphere.center * sphere.radius;
-                    totalRadius += sphere.radius;
-                }
-                result.center = totalRadius > 0 ? weightedCenter / totalRadius : Vector3.zero;
-
-                // 2. 计算体积（所有Alpha球体积之和）
-                result.volume = cluster.Sum(s => (4.0f / 3.0f) * Mathf.PI * Mathf.Pow(s.radius, 3));
-
-                // 3. 计算疏水性评分（平均疏水性占比）
-                result.hydrophobicScore = cluster.Average(s => s.hydrophobicity);
-
-                // 4. 计算极性评分（平均极性占比）
-                result.polarScore = cluster.Average(s => s.polarity);
-
-                // 5. 计算口袋深度（FPocket：中心点到分子表面的距离）
-                result.depthScore = CalculatePocketDepth(result.center, atoms);
-
-                // 6. 综合评分（FPocket权重）
-                result.score =
-                    result.volume / 100 * FPocketConstants.SCORE_VOLUME_WEIGHT +
-                    result.hydrophobicScore * FPocketConstants.SCORE_HYDROPHOBIC_WEIGHT +
-                    (1 - result.polarScore) * FPocketConstants.SCORE_POLAR_WEIGHT +
-                    result.depthScore * FPocketConstants.SCORE_DEPTH_WEIGHT;
-
-                // 7. 计算密度（Alpha球数/体积）
-                result.density = result.volume > 0 ? result.alphaSphereCount / result.volume : 0.0f;
-
-                // 8. 关联原子数（中心点周围6Å内的疏水原子数）
-                result.atomCount = atoms.Count(a =>
-                    a.atomType == 0 &&
-                    Vector3.Distance(a.position, result.center) < 6.0f);
-
-                results.Add(result);
-            }
-
-            // 按评分降序排序（FPocket默认按评分排序）
-            return results.OrderByDescending(r => r.score).ToList();
-        }
-
-        /// <summary>
-        /// 计算口袋深度（FPocket：中心点到分子表面的最短距离）
-        /// </summary>
-        private float CalculatePocketDepth(Vector3 pocketCenter, List<AtomData> atoms)
-        {
-            float minDistance = float.MaxValue;
-            foreach (var atom in atoms)
-            {
-                float distance = Vector3.Distance(pocketCenter, atom.position) - atom.vdwRadius;
-                if (distance < minDistance) minDistance = distance;
-            }
-            // 归一化深度（0~1）
-            return Mathf.Clamp01(minDistance / 10.0f);
-        }
-
-        /// <summary>
-        /// 输出FPocket风格的结果
-        /// </summary>
-        private void PrintFPocketResults(List<FPocketResult> pockets, string version)
-        {
-            Debug.Log($"===== {version} 对齐FPocket的口袋检测结果 =====");
-            Debug.Log($"总计有效口袋数：{pockets.Count}（按评分降序）");
-            foreach (var pocket in pockets)
-            {
-                Debug.Log($"[Pocket {pocket.id}]");
-                Debug.Log($"  中心点：({pocket.center.x:F2}, {pocket.center.y:F2}, {pocket.center.z:F2})");
-                Debug.Log($"  体积：{pocket.volume:F2} Å³");
-                Debug.Log($"  Alpha球数：{pocket.alphaSphereCount}");
-                Debug.Log($"  疏水评分：{pocket.hydrophobicScore:F2}");
-                Debug.Log($"  极性评分：{pocket.polarScore:F2}");
-                Debug.Log($"  深度评分：{pocket.depthScore:F2}");
-                Debug.Log($"  综合评分：{pocket.score:F2}");
-                Debug.Log($"  密度：{pocket.density:F4}");
-                Debug.Log($"  关联疏水原子数：{pocket.atomCount}");
-                Debug.Log("----------------------------------");
-            }
-        }
-
-        /// <summary>
-        /// 从范德华半径反推原子类型
-        /// </summary>
-        private string GetAtomSymbolFromRadius(float radius)
-        {
-            if (Mathf.Abs(radius - 1.2f) < 0.1f) return "H";
-            if (Mathf.Abs(radius - 1.7f) < 0.1f) return "C";
-            if (Mathf.Abs(radius - 1.55f) < 0.1f) return "N";
-            if (Mathf.Abs(radius - 1.52f) < 0.1f) return "O";
-            if (Mathf.Abs(radius - 1.80f) < 0.1f) return "S";
-            return "OTHER";
-        }
-        #endregion
-
-        #region PDBQT加载器（无修改）
-        public class PDBQTLoader
-        {
-            public static List<AtomData> LoadPDBQT(string filePath)
-            {
-                List<AtomData> atoms = new List<AtomData>();
-                if (!File.Exists(filePath))
-                {
-                    Debug.LogError($"PDBQT文件不存在：{filePath}");
-                    return atoms;
-                }
-
-                string[] lines = File.ReadAllLines(filePath);
-                foreach (string line in lines)
-                {
-                    if (line.StartsWith("ATOM") || line.StartsWith("HETATM"))
-                    {
-                        try
-                        {
-                            float x = float.Parse(line.Substring(30, 8).Trim());
-                            float y = float.Parse(line.Substring(38, 8).Trim());
-                            float z = float.Parse(line.Substring(46, 8).Trim());
-                            string atomSymbol = line.Substring(77, 2).Trim();
-                            float vdwRadius = GetVdwRadius(atomSymbol);
-                            float charge = float.Parse(line.Substring(69, 7).Trim());
-
-                            atoms.Add(new AtomData
-                            {
-                                position = new Vector3(x, y, z),
-                                vdwRadius = vdwRadius,
-                                charge = charge,
-                                atomType = 0, // 后续会重新赋值
-                                hydrophobicity = 0.0f // 后续会重新赋值
-                            });
-                        }
-                        catch (Exception e)
-                        {
-                            Debug.LogWarning($"解析PDBQT行失败：{line} | 错误：{e.Message}");
-                        }
-                    }
-                }
-
-                Debug.Log($"成功加载PDBQT文件：{filePath}，原子数：{atoms.Count}");
-                return atoms;
-            }
-
-            private static float GetVdwRadius(string atomSymbol)
-            {
-                return atomSymbol switch
-                {
-                    "H" => 1.2f,
-                    "C" => 1.7f,
-                    "N" => 1.55f,
-                    "O" => 1.52f,
-                    "S" => 1.80f,
-                    "P" => 1.80f,
-                    _ => 1.6f
-                };
-            }
-        }
-        #endregion
-
-        /// <summary>
-        /// 确保退出时释放缓冲区
-        /// </summary>
-        private void OnDestroy()
-        {
-            ReleaseComputeBuffers();
         }
     }
 
+    /// <summary>
+    /// 读取并输出GPU版结果
+    /// </summary>
+    private void ReadAndPrintGPUResults(ComputeBuffer pocketBuffer)
+    {
+        FPocketResultCS[] gpuPockets = new FPocketResultCS[FPocketConstants.MAX_POCKETS];
+        pocketBuffer.GetData(gpuPockets);
+
+        // 过滤有效口袋
+        List<FPocketResultCS> validPockets = gpuPockets.Where(p => p.id != -1 && p.volume >= FPocketConstants.MIN_POCKET_VOLUME).ToList();
+
+        validPockets = validPockets.OrderByDescending(_=>_.score).ToList();
+
+        Debug.Log($"有效口袋数：{validPockets.Count}");
+
+        foreach (var p in validPockets)
+        {
+            Debug.Log($"[Pocket {p.id}]  中心：({p.center.x:F2}, {p.center.y:F2}, {p.center.z:F2})");
+            Debug.Log($"  体积：{p.volume:F2} Å³  Alpha球数：{p.nb_alpha_spheres} 综合评分：{p.score:F2}");
+        }
+    }
+    #endregion
 }
