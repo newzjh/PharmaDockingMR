@@ -242,6 +242,9 @@ public class FPocket : Singleton<FPocket>
         if (!File.Exists(path))
             return;
 
+        if (File.Exists(path + "qt"))
+            path+= "qt";
+
         //it is already being processing, wait
         if (pathtomolmap.ContainsKey(path))
             return;
