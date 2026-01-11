@@ -2,7 +2,7 @@ using UnityEngine;
 using System;
 using Cysharp.Threading.Tasks;
 using System.Collections;
-
+using UnityEngine.Rendering;
 
 namespace AIDrugDiscovery
 {
@@ -61,7 +61,10 @@ namespace AIDrugDiscovery
 
             // 7. 等待GPU计算完成（移动端必须，避免数据未写入就读取）
             //ComputeShader.SyncThread();
-            fpBuffer.GetData(allFP);
+
+            //fpBuffer.GetData(allFP);
+            var req = await AsyncGPUReadback.RequestAsync(fpBuffer);
+            allFP = req.GetData<int>().ToArray();
             fpBuffer.Dispose();
 
             Debug.Log($"512位指纹生成完成：批次大小={batchSize}，指纹Buffer长度={fpBufferCount}");

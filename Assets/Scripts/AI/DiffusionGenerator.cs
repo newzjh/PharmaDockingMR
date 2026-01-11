@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System;
 using Mirror.BouncyCastle.Asn1.Mozilla;
 using Cysharp.Threading.Tasks;
+using UnityEngine.Rendering;
 
 namespace AIDrugDiscovery
 {
@@ -134,7 +135,11 @@ namespace AIDrugDiscovery
             //}
 
             float[] scores = new float[effectiveBatchSize * config.maxAtomLimit];
-            matchScoreDebugBuffer.GetData(scores);
+            {
+                var req = await AsyncGPUReadback.RequestAsync(matchScoreDebugBuffer);
+                scores = req.GetData<float>().ToArray();
+            }
+            //matchScoreDebugBuffer.GetData(scores);
             for (int i = 0; i < effectiveBatchSize; i++)
             {
                 float avgScore = 0;
@@ -160,7 +165,11 @@ namespace AIDrugDiscovery
             {
                 resultChars[i] = new char[SMILES_MAX_LENGTH];
             }
-            smilesBuffer.GetData(initSmiles);
+            {
+                var req = await AsyncGPUReadback.RequestAsync(smilesBuffer);
+                initSmiles = req.GetData<int>().ToArray();
+            }
+            //smilesBuffer.GetData(initSmiles);
             for (int i = 0; i < effectiveBatchSize; i++)
             {
                 for (int j = 0; j < SMILES_MAX_LENGTH; j++)

@@ -4,6 +4,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using UnityEngine;
 using System.Linq;
+using UnityEngine.Rendering;
 
 namespace AIDrugDiscovery
 {
@@ -189,7 +190,7 @@ namespace AIDrugDiscovery
         /// 运行GPU版FPocket（二维线程组拆分i/j，k内循环，避免溢出）
         /// </summary>
         [ContextMenu("Run FPocket GPU Version (No Overflow)")]
-        public void RunFPocketGPU()
+        public async void RunFPocketGPU()
         {
             if (fpocketComputeShader == null)
             {
@@ -248,8 +249,10 @@ namespace AIDrugDiscovery
                 int threadGroupsFilter = Mathf.CeilToInt(FPocketConstants.MAX_ALPHA_SPHERES / 256f);
                 fpocketComputeShader.Dispatch(kernel2, threadGroupsFilter, 1, 1);
 
-                FPocketAlphaSphereCS[] data = new FPocketAlphaSphereCS[FPocketConstants.MAX_ALPHA_SPHERES];
-                alphaSphereBuffer.GetData(data);
+                //FPocketAlphaSphereCS[] data = new FPocketAlphaSphereCS[FPocketConstants.MAX_ALPHA_SPHERES];
+                //alphaSphereBuffer.GetData(data);
+                var req = await AsyncGPUReadback.RequestAsync(alphaSphereBuffer);
+                var data = req.GetData<FPocketAlphaSphereCS>().ToArray();
                 List<FPocketAlphaSphere> validSpheres = new();
                 foreach (var sphere in data)
                 {
