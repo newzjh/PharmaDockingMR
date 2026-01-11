@@ -4,6 +4,8 @@ using System.IO;
 using System.Collections.Generic;
 using System.Linq;
 using Cysharp.Threading.Tasks;
+using AIDrugDiscovery.UI;
+
 
 namespace AIDrugDiscovery
 {
@@ -26,7 +28,11 @@ namespace AIDrugDiscovery
         public Material templateMat;
 
 
-        public bool detectPocket = false;
+        public bool detectPocket = true;
+        public bool generateMesh = false;
+        public bool updateView = true;
+
+        public SMILESFlipPageView FlipPageView;
 
         public async void Start()
         {
@@ -43,13 +49,22 @@ namespace AIDrugDiscovery
             {
                 Directory.CreateDirectory(tempfolder);
             }
-            string pdbqtFullPath = tempfolder + "/" + "1AQ1" + ".pdb";
+            string pdbFullPath = tempfolder + "/" + "1AQ1" + ".pdb";
+            string pdbqtFullPath = tempfolder + "/" + "1AQ1" + ".pdbqt";
+
+            await UniTask.NextFrame();
+
+            OpenBabelPDBQTConverter.ConvertPDBToPDBQT(pdbFullPath, pdbqtFullPath);
+
+            await UniTask.NextFrame();
 
             if (detectPocket)
             {
                 pocketdetector.pdbqtFilePath = pdbqtFullPath;
                 pocketdetector.RunFPocketGPU();
                 //pocketdetector.RunFPocketCSharpDetection();
+
+                await UniTask.NextFrame();
             }
 
             // 2. 1AQ1活性配体SMILES列表（实验数据）
@@ -116,32 +131,52 @@ namespace AIDrugDiscovery
                             newfilter.Add(j);
                     }
 
-                    var meshes = await mg.GenerateBallStickMeshes(filters, smiletexture);
+                    List<Mesh> meshes = null;
+                    if (generateMesh)
+                    {
+                        meshes = await mg.GenerateBallStickMeshes(filters, smiletexture);
+                    }
+
                     RenderTexture.Destroy(smiletexture);
 
                     await UniTask.NextFrame();
 
-                    for(int i=0;i<filters.Count;i++)
+                    if (generateMesh)
                     {
-                        GameObject go = new GameObject(smiles[i]);
-                        go.transform.parent = parentgo.transform;
-                        go.transform.localScale = Vector3.one;
-                        go.transform.localEulerAngles = Vector3.zero;
-                        go.transform.localPosition = Vector3.forward * ligandCount * 2;
-                        var mf = go.AddComponent<MeshFilter>();
-                        mf.mesh = meshes[i];
-                        var mr = go.AddComponent<MeshRenderer>();
-                        mr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-                        mr.receiveShadows = false;
-                        mr.material = templateMat;
+                        for(int i=0;i<filters.Count;i++)
+                        {
+                            GameObject go = new GameObject(smiles[i]);
+                            go.transform.parent = parentgo.transform;
+                            go.transform.localScale = Vector3.one;
+                            go.transform.localEulerAngles = Vector3.zero;
+                            go.transform.localPosition = Vector3.forward * ligandCount * 2;
+                            var mf = go.AddComponent<MeshFilter>();
+                            mf.mesh = meshes[i];
+                            var mr = go.AddComponent<MeshRenderer>();
+                            mr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+                            mr.receiveShadows = false;
+                            mr.material = templateMat;
 
-                        ligandCount++;
+                            ligandCount++;
+                        }
                     }
+
+                    if (updateView)
+                    {
+                        for (int i = 0; i < filters.Count; i++)
+                        {
+                            FlipPageView.allSMILES.Add(smiles[i]);
+                            ligandCount++;
+                        }
+                        FlipPageView.UpdatePageDisplay();
+                    }
+
+
 
                     currentBatch++;
                     Debug.Log($"finish: {currentBatch}/{TOTAL_BATCHES}");
 
-                    await UniTask.Delay(15);
+                    await UniTask.WaitForSeconds(15);
                 }
 
                 if (isTerminated)
