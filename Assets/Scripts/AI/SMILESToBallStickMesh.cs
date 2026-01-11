@@ -4,6 +4,7 @@ using Cysharp.Threading.Tasks;
 using System;
 using System.Runtime.InteropServices;
 using Unity.Collections.LowLevel.Unsafe;
+using UnityEngine.Rendering;
 
 namespace AIDrugDiscovery
 {
@@ -104,17 +105,37 @@ namespace AIDrugDiscovery
 
             // 4. 读取原子数
             int[] atomCounts = new int[batchSize];
-            atomCountBuffer.GetData(atomCounts);
+            {
+                var req = await AsyncGPUReadback.RequestAsync(atomCountBuffer);
+                atomCounts = req.GetData<int>().ToArray();
+            }
+            //atomCountBuffer.GetData(atomCounts);
 
             // 5. 读取顶点和索引数据
             Vector3[] allPositions = new Vector3[maxVertexCount];
             Vector3[] allNormals = new Vector3[maxVertexCount];
             Vector4[] allColors = new Vector4[maxVertexCount];
             int[] allIndices = new int[maxIndexCount];
-            vertexBufferPosition.GetData(allPositions);
-            vertexBufferNormal.GetData(allNormals);
-            vertexBufferColor.GetData(allColors);
-            indexBuffer.GetData(allIndices);
+            //vertexBufferPosition.GetData(allPositions);
+            //vertexBufferNormal.GetData(allNormals);
+            //vertexBufferColor.GetData(allColors);
+            //indexBuffer.GetData(allIndices);
+            {
+                var req = await AsyncGPUReadback.RequestAsync(vertexBufferPosition);
+                allPositions = req.GetData<Vector3>().ToArray();
+            }
+            {
+                var req = await AsyncGPUReadback.RequestAsync(vertexBufferNormal);
+                allNormals = req.GetData<Vector3>().ToArray();
+            }
+            {
+                var req = await AsyncGPUReadback.RequestAsync(vertexBufferColor);
+                allColors = req.GetData<Vector4>().ToArray();
+            }
+            {
+                var req = await AsyncGPUReadback.RequestAsync(indexBuffer);
+                allIndices = req.GetData<int>().ToArray();
+            }
 
             // 6. 为每个筛选分子生成Mesh
             int vertexOffset = 0;
