@@ -108,6 +108,9 @@ namespace AIDrugDiscovery
                     if (isTerminated)
                         break;
 
+                    if (!Application.isPlaying)
+                        return;
+
                     var heatmap = await hg.GenerateProteinHeatmap(config);
                     var heatmap3D = await hg.GenerateProteinHeatmap3D(config);
                     var config2 = dg.diffusionConfigs.First();
@@ -117,10 +120,16 @@ namespace AIDrugDiscovery
                     var filters = unfilter.Item2;
                     var smiletexture = unfilter.Item3;
 
+                    if (!Application.isPlaying)
+                        return;
+
                     Texture2D.Destroy(heatmap);
                     RenderTexture.Destroy(heatmap3D);
 
                     await mfp.Generate512BitFP(smiletexture, smiletexture.height);
+
+                    if (!Application.isPlaying)
+                        return;
 
                     List<int> newfilter = new List<int>();
                     for (int j = 0; j < filters.Count; j++)
@@ -136,6 +145,9 @@ namespace AIDrugDiscovery
                     {
                         meshes = await mg.GenerateBallStickMeshes(filters, smiletexture);
                     }
+
+                    if (!Application.isPlaying)
+                        return;
 
                     RenderTexture.Destroy(smiletexture);
 
@@ -171,7 +183,8 @@ namespace AIDrugDiscovery
                         FlipPageView.UpdatePageDisplay();
                     }
 
-
+                    if (!Application.isPlaying)
+                        return;
 
                     currentBatch++;
                     Debug.Log($"finish: {currentBatch}/{TOTAL_BATCHES}");
