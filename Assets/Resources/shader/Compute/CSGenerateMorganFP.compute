@@ -1,4 +1,5 @@
 #pragma kernel CSGenerateMorganFP
+#pragma kernel CSGenerateMorganFPLegacy
 #pragma enable_d3d11_debug_symbols
 
 #include "AtomCommon.hlsl"
@@ -6,89 +7,221 @@
 
 int batchSize; // 分子批次数量
 int morganRadius; // Morgan指纹半径（推荐2）
+int packOutput;
+int useSmilesTextureInput;
 
 
 // 输入：Diffusion生成的SMILES Buffer（char数组，每个分子占SMILES_MAX_LENGTH长度）
+StructuredBuffer<int> smilesInputBuffer;
 Texture2D<float4> smilesInputTexture;
-//StructuredBuffer<int> smilesInputBuffer;
-// 输出：512位指纹Buffer（每个分子对应512个bool，batchSize * 512长度）
-RWStructuredBuffer<int> fpOutputBuffer;
+// 输出：512位指纹的 packed uint buffer（每分子16个uint）
+RWStructuredBuffer<uint> fpOutputBuffer;
 
-
-
-
-
-// 计算单个分子的512位Morgan指纹
-void ComputeMorganFP(in int atomTypes[MAX_ATOM_COUNT], in int atomCount, out int fp[FP_SIZE])
+void ComputeMorganFPLegacy(
+    in int atomTypes[MAX_ATOM_COUNT],
+    in int atomCount,
+    out int fp[FP_SIZE])
 {
-    // 初始化指纹为false（512位全0）
-    for (int i = 0;i <FP_SIZE; i++) fp[i] = 0;
+    for (int i = 0; i < FP_SIZE; i++)
+        fp[i] = 0;
 
-    // 遍历每个原子，计算指定半径内的邻域特征
-    for (int atomIdx = 0;atomIdx <atomCount; atomIdx++)
+    for (int atomIdx = 0; atomIdx < atomCount; atomIdx++)
     {
-        for (int r = 0;r <=morganRadius; r++)
+        for (int r = 0; r <= morganRadius; r++)
         {
-            // 提取原子特征：类型 + 半径 + 邻域原子数
-            uint atomType = (uint) atomTypes[atomIdx];
+            uint atomType = (uint)atomTypes[atomIdx];
             uint neighborCount = 0u;
 
-            // 统计半径r内的邻域原子（前后r个原子，模拟空间邻域）
             int startIdx = max(0, atomIdx - r);
             int endIdx = min(atomCount - 1, atomIdx + r);
-            for (int nIdx = startIdx;nIdx <=endIdx; nIdx++)
+            for (int nIdx = startIdx; nIdx <= endIdx; nIdx++)
             {
-                if (nIdx == atomIdx) continue; // 排除自身
+                if (nIdx == atomIdx)
+                    continue;
                 neighborCount++;
             }
 
-            // 组合特征并哈希到512位范围内
-            uint3 feature = uint3(atomType, (uint) r, neighborCount);
+            uint3 feature = uint3(atomType, (uint)r, neighborCount);
             uint fpIdx = Hash(feature);
-            fp[fpIdx] = 1; // 置为1，表示该特征存在
+            fp[fpIdx] = 1;
         }
     }
 }
 
-// 主Kernel：批量处理SMILES生成512位指纹
-[numthreads(32, 1, 1)] // 32线程组，适配移动端GPU warp尺寸
+void ComputeMorganFP(
+    in int atomTypes[MAX_ATOM_COUNT],
+    in int atomCount,
+    in int bondMatrix[MAX_ATOM_COUNT * MAX_ATOM_COUNT],
+    out int fp[FP_SIZE])
+{
+    for (int i = 0; i < FP_SIZE; i++)
+        fp[i] = 0;
+
+    for (int atomIdx = 0; atomIdx < atomCount; atomIdx++)
+    {
+        int centerDegree = CountAtomDegree(atomIdx, atomCount, bondMatrix);
+
+        for (int r = 0; r <= morganRadius; r++)
+        {
+            int visited[MAX_ATOM_COUNT];
+            int frontier[MAX_ATOM_COUNT];
+            int nextFrontier[MAX_ATOM_COUNT];
+            for (int i = 0; i < MAX_ATOM_COUNT; i++)
+                visited[i] = 0;
+
+            int frontierCount = 1;
+            frontier[0] = atomIdx;
+            visited[atomIdx] = 1;
+            int totalVisited = 1;
+            uint envHash = Hash(uint3((uint)atomTypes[atomIdx], (uint)r, (uint)centerDegree));
+
+            for (int depth = 1; depth <= r; depth++)
+            {
+                int nextCount = 0;
+                for (int f = 0; f < frontierCount; f++)
+                {
+                    int srcAtom = frontier[f];
+                    for (int neighbor = 0; neighbor < atomCount; neighbor++)
+                    {
+                        int bondType = GetBondValue(bondMatrix, srcAtom, neighbor);
+                        if (bondType == BOND_UNKNOWN || visited[neighbor] != 0)
+                            continue;
+
+                        visited[neighbor] = 1;
+                        nextFrontier[nextCount++] = neighbor;
+                        totalVisited++;
+
+                        uint packedFeature =
+                            (uint)atomTypes[neighbor] * 131u +
+                            (uint)CountAtomDegree(neighbor, atomCount, bondMatrix) * 17u +
+                            (uint)(bondType + 1) * 31u +
+                            (uint)depth * 53u;
+                        envHash = MixHash(envHash, packedFeature);
+                    }
+                }
+
+                frontierCount = nextCount;
+                for (int i = 0; i < nextCount; i++)
+                    frontier[i] = nextFrontier[i];
+            }
+
+            envHash = MixHash(envHash, (uint)totalVisited * 97u);
+            fp[envHash % FP_SIZE] = 1;
+        }
+    }
+}
+
+void PackMorganFP(in int fp[FP_SIZE], out uint packedFp[FP_SIZE / 32])
+{
+    for (int wordIdx = 0; wordIdx < FP_SIZE / 32; wordIdx++)
+        packedFp[wordIdx] = 0u;
+
+    for (int bitIdx = 0; bitIdx < FP_SIZE; bitIdx++)
+    {
+        if (fp[bitIdx] == 0)
+            continue;
+
+        int wordIdx = bitIdx >> 5;
+        int localBit = bitIdx & 31;
+        packedFp[wordIdx] |= (1u << localBit);
+    }
+}
+
+void ReadSmilesChars(int molIdx, out int smilesChars[SMILES_MAX_LENGTH])
+{
+    for (int i = 0; i < SMILES_MAX_LENGTH; i++)
+    {
+        if (useSmilesTextureInput != 0)
+            smilesChars[i] = (int)(smilesInputTexture[int2(i, molIdx)].r * 255.0f);
+        else
+            smilesChars[i] = smilesInputBuffer[molIdx * SMILES_MAX_LENGTH + i];
+    }
+}
+
+void ZeroMorganOutput(int molIdx)
+{
+    int zeroCount = packOutput != 0 ? (FP_SIZE / 32) : FP_SIZE;
+    int zeroStride = packOutput != 0 ? (FP_SIZE / 32) : FP_SIZE;
+    for (int i = 0; i < zeroCount; i++)
+    {
+        fpOutputBuffer[molIdx * zeroStride + i] = 0u;
+    }
+}
+
+void WriteMorganOutput(int molIdx, in int fp[FP_SIZE])
+{
+    if (packOutput != 0)
+    {
+        uint packedFp[FP_SIZE / 32];
+        PackMorganFP(fp, packedFp);
+
+        for (int i = 0; i < FP_SIZE / 32; i++)
+        {
+            int outputIdx = molIdx * (FP_SIZE / 32) + i;
+            fpOutputBuffer[outputIdx] = packedFp[i];
+        }
+    }
+    else
+    {
+        for (int i = 0; i < FP_SIZE; i++)
+        {
+            int outputIdx = molIdx * FP_SIZE + i;
+            fpOutputBuffer[outputIdx] = (uint)fp[i];
+        }
+    }
+}
+
+
+// 旧版轻量路径：不构建 bondMatrix，避免大型局部数组导致的卡顿/溢出。
+[numthreads(32, 1, 1)]
+void CSGenerateMorganFPLegacy(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    int molIdx = dispatchThreadID.x;
+    if (molIdx >= batchSize)
+        return;
+
+    int smilesChars[SMILES_MAX_LENGTH];
+    ReadSmilesChars(molIdx, smilesChars);
+
+    int atomTypes[MAX_ATOM_COUNT];
+    int atomCount;
+    ParseSMILESLegacy(smilesChars, atomTypes, atomCount);
+
+    if (atomCount <= 0)
+    {
+        ZeroMorganOutput(molIdx);
+        return;
+    }
+
+    int fp[FP_SIZE];
+    ComputeMorganFPLegacy(atomTypes, atomCount, fp);
+    WriteMorganOutput(molIdx, fp);
+}
+
+// 优化路径：基于显式拓扑图构建近似 Morgan 环境。
+[numthreads(32, 1, 1)]
 void CSGenerateMorganFP(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     int molIdx = dispatchThreadID.x;
     if (molIdx >= batchSize)
-        return; // 防止线程越界
+        return;
 
-    // 1. 从SMILES Buffer读取当前分子的字符数组
     int smilesChars[SMILES_MAX_LENGTH];
-    for (int i = 0; i < SMILES_MAX_LENGTH; i++)
-    {
-        //smilesChars[i] = smilesInputBuffer[molIdx * SMILES_MAX_LENGTH + i];
-        float r = smilesInputTexture[int2(i, molIdx)].r;
-        smilesChars[i] = (int) (r * 255.0f);
-    }
+    ReadSmilesChars(molIdx, smilesChars);
 
-    // 2. 解析SMILES得到原子类型和数量
     int atomTypes[MAX_ATOM_COUNT];
     int atomCount;
-    ParseSMILES(smilesChars, atomTypes, atomCount);
+    int bondMatrix[MAX_ATOM_COUNT * MAX_ATOM_COUNT];
+    int bondCount = 0;
+    ParseSMILESGraph(smilesChars, atomTypes, atomCount, bondMatrix, bondCount);
 
-    if (atomCount <= 0) // 无效分子，指纹全0
+    if (atomCount <= 0)
     {
-        for (int i = 0; i < FP_SIZE; i++)
-        {
-            fpOutputBuffer[molIdx * FP_SIZE + i] = 0;
-        }
+        ZeroMorganOutput(molIdx);
         return;
     }
 
-    // 3. 计算512位Morgan指纹
     int fp[FP_SIZE];
-    ComputeMorganFP(atomTypes, atomCount, fp);
-
-    // 4. 写入指纹输出Buffer
-    for (int i = 0; i < FP_SIZE; i++)
-    {
-        int outputIdx = molIdx * FP_SIZE + i;
-        fpOutputBuffer[outputIdx] = fp[i];
-    }
+    ComputeMorganFP(atomTypes, atomCount, bondMatrix, fp);
+    WriteMorganOutput(molIdx, fp);
 }

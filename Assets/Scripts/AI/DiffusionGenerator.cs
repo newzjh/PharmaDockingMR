@@ -7,42 +7,70 @@ using UnityEngine.Rendering;
 
 namespace AIDrugDiscovery
 {
-    // Í¨ÓÃÀ©É¢Ä£ÐÍÅäÖÃ£¨¿ÉÐòÁÐ»¯£¬Ö§³ÖInspectorÅäÖÃ¶àÊÜÌå£©
+    // Í¨ï¿½ï¿½ï¿½ï¿½É¢Ä£ï¿½ï¿½ï¿½ï¿½ï¿½Ã£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ð»ï¿½ï¿½ï¿½Ö§ï¿½ï¿½Inspectorï¿½ï¿½ï¿½Ã¶ï¿½ï¿½ï¿½ï¿½å£©
     [Serializable]
     public class ProteinDiffusionConfig
     {
-        [Header("»ù´¡ÅäÖÃ")]
-        public string proteinName = "1AQ1"; // ÊÜÌåÃû³Æ£¨Èç3CLpro¡¢EGFR£©
+        [Header("ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½")]
+        public string proteinName = "1AQ1"; // ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Æ£ï¿½ï¿½ï¿½3CLproï¿½ï¿½EGFRï¿½ï¿½
 
-        [Header("À©É¢ºËÐÄ²ÎÊý")]
-        public int batchSize = 1024; // µ¥´ÎÉú³É·Ö×ÓÊýÁ¿
-        public int timesteps = 1000; // À©É¢Ê±¼ä²½
-        public float betaStart = 0.0001f; // ÔëÉù³õÊ¼Ç¿¶È
-        public float betaEnd = 0.02f; // ÔëÉù×îÖÕÇ¿¶È
+        [Header("ï¿½ï¿½É¢ï¿½ï¿½ï¿½Ä²ï¿½ï¿½ï¿½")]
+        public int batchSize = 1024; // ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½É·ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+        public int timesteps = 1000; // ï¿½ï¿½É¢Ê±ï¿½ä²½
+        public float betaStart = 0.0001f; // ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê¼Ç¿ï¿½ï¿½
+        public float betaEnd = 0.02f; // ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ç¿ï¿½ï¿½
 
-        [Header("°ÐÏòÔ¼Êø²ÎÊý")]
-        public float heatmapWeight = 0.8f; // ÈÈÁ¦Í¼Ô¼ÊøÈ¨ÖØ
-        public int maxAtomLimit = 60; // ·Ö×Ó×î´óÔ­×ÓÊý
-        public float minFeatureScore = 0.3f; // ×îÐ¡ÌØÕ÷Æ¥Åä·ÖÊý£¨Ìæ´úÊèË®Õ¼±È£©
-        public Vector3 proteinActiveCenter = new Vector3(10.5f, 8.2f, 12.7f); // ´ó·Ö×Ó»îÐÔÖÐÐÄ
+        [Header("ï¿½ï¿½ï¿½ï¿½Ô¼ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½")]
+        public float heatmapWeight = 0.8f; // ï¿½ï¿½ï¿½ï¿½Í¼Ô¼ï¿½ï¿½È¨ï¿½ï¿½
+        public int maxAtomLimit = 60; // ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ô­ï¿½ï¿½ï¿½ï¿½
+        public float minFeatureScore = 0.3f; // ï¿½ï¿½Ð¡ï¿½ï¿½ï¿½ï¿½Æ¥ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ë®Õ¼ï¿½È£ï¿½
+        public Vector3 proteinActiveCenter = new Vector3(10.5f, 8.2f, 12.7f); // ï¿½ï¿½ï¿½ï¿½Ó»ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 
-        [Header("Ô­×ÓÀàÐÍÆ«ºÃ£¨ÊÊÅä²»Í¬ÊÜÌå£©")]
-        public float cWeight = 0.4f; // CÔ­×ÓÈ¨ÖØ
-        public float oWeight = 0.3f; // OÔ­×ÓÈ¨ÖØ
-        public float nWeight = 0.2f; // NÔ­×ÓÈ¨ÖØ
-        public float sWeight = 0.1f; // SÔ­×ÓÈ¨ÖØ
+        [Header("Ô­ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Æ«ï¿½Ã£ï¿½ï¿½ï¿½ï¿½ä²»Í¬ï¿½ï¿½ï¿½å£©")]
+        public float cWeight = 0.4f; // CÔ­ï¿½ï¿½È¨ï¿½ï¿½
+        public float oWeight = 0.3f; // OÔ­ï¿½ï¿½È¨ï¿½ï¿½
+        public float nWeight = 0.2f; // NÔ­ï¿½ï¿½È¨ï¿½ï¿½
+        public float sWeight = 0.1f; // SÔ­ï¿½ï¿½È¨ï¿½ï¿½
 
-        [Header("ÐÔÄÜÊÊÅä")]
-        public bool lowPowerMode = false; // ±ãÐ¯ÖÕ¶ËµÍ¹¦ºÄÄ£Ê½
+        [Header("ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½")]
+        public bool lowPowerMode = false; // ï¿½ï¿½Ð¯ï¿½Õ¶ËµÍ¹ï¿½ï¿½ï¿½Ä£Ê½
     }
 
     public class DiffusionGenerator : MonoBehaviour
     {
         public const int SMILES_MAX_LENGTH = 256;
 
-        [Header("ºËÐÄ×é¼þ")]
+        public sealed class GeneratedSmilesBatch : IDisposable
+        {
+            public ComputeBuffer SmilesBuffer { get; }
+            public int BatchSize { get; }
+            public RenderTexture SmilesTexture { get; }
+
+            public GeneratedSmilesBatch(ComputeBuffer smilesBuffer, int batchSize, RenderTexture smilesTexture = null)
+            {
+                SmilesBuffer = smilesBuffer;
+                BatchSize = batchSize;
+                SmilesTexture = smilesTexture;
+            }
+
+            public void Dispose()
+            {
+                if (SmilesBuffer != null)
+                {
+                    SmilesBuffer.Release();
+                    SmilesBuffer.Dispose();
+                }
+
+                if (SmilesTexture != null)
+                    RenderTexture.Destroy(SmilesTexture);
+            }
+        }
+
+        [Header("ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½")]
         public ComputeShader diffusionCS;
-        public List<ProteinDiffusionConfig> diffusionConfigs; // ¶àÊÜÌåÅäÖÃÁÐ±í
+        public List<ProteinDiffusionConfig> diffusionConfigs; // ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ð±ï¿½
+        public bool collectDebugScores = false;
+        public bool useLegacySmilesTextureTransport = true;
 
 
         public async void Begin(Texture2D heatmap, RenderTexture heatmap3D)
@@ -55,52 +83,53 @@ namespace AIDrugDiscovery
 
         public bool test = true;
 
-        // Í¨ÓÃ´ó·Ö×Ó°ÐÏò·Ö×ÓÉú³Éº¯Êý
+        // Í¨ï¿½Ã´ï¿½ï¿½ï¿½Ó°ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Éºï¿½ï¿½ï¿½
         
-        public async UniTask<ValueTuple<List<string>, List<int>, RenderTexture>> GenerateProteinTargetedMols(ProteinDiffusionConfig config, Texture2D proteinHeatmap, RenderTexture proteinHeatmap3D, int batchOffset)
+        public async UniTask<ValueTuple<List<string>, List<int>, GeneratedSmilesBatch>> GenerateProteinTargetedMols(ProteinDiffusionConfig config, Texture2D proteinHeatmap, RenderTexture proteinHeatmap3D, int batchOffset)
         {
             List<string> generatedSmiles = new List<string>();
             List<int> generatedIndices = new List<int>();
 
-            // 1. ²ÎÊýÐ£Ñé
+            // 1. ï¿½ï¿½ï¿½ï¿½Ð£ï¿½ï¿½
             if (proteinHeatmap == null)
             {
-                Debug.LogError($"[{config.proteinName}] ÈÈÁ¦Í¼Îª¿Õ£¬ÎÞ·¨Éú³É°ÐÏò·Ö×Ó");
+                Debug.LogError($"[{config.proteinName}] ï¿½ï¿½ï¿½ï¿½Í¼Îªï¿½Õ£ï¿½ï¿½Þ·ï¿½ï¿½ï¿½ï¿½É°ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½");
                 return (generatedSmiles, generatedIndices, null);
             }
 
-            // 2. µÍ¹¦ºÄÄ£Ê½ÊÊÅä
+            // 2. ï¿½Í¹ï¿½ï¿½ï¿½Ä£Ê½ï¿½ï¿½ï¿½ï¿½
             int effectiveBatchSize = config.lowPowerMode ? Mathf.RoundToInt(config.batchSize * 0.3f) : config.batchSize;
             int effectiveTimesteps = config.lowPowerMode ? Mathf.RoundToInt(config.timesteps * 0.5f) : config.timesteps;
 
-            // 3. Ô¤¼ÆËãÀ©É¢ÔëÉùµ÷¶È±í£¨beta/alpha/alpha_cumprod£©
+            // 3. Ô¤ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½É¢ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½È±ï¿½ï¿½ï¿½beta/alpha/alpha_cumprodï¿½ï¿½
             float[] betas = new float[effectiveTimesteps];
             float[] alphas = new float[effectiveTimesteps];
             float[] alphaCumprod = new float[effectiveTimesteps];
             ComputeBetaSchedule(betas, alphas, alphaCumprod, effectiveTimesteps, config);
 
-            // 4. ´´½¨Compute Buffer
-            // 4.1 ÔëÉùµ÷¶ÈBuffer
+            // 4. ï¿½ï¿½ï¿½ï¿½Compute Buffer
+            // 4.1 ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Buffer
             ComputeBuffer betaBuffer = new ComputeBuffer(effectiveTimesteps, sizeof(float));
             betaBuffer.SetData(betas);
             ComputeBuffer alphaCumprodBuffer = new ComputeBuffer(effectiveTimesteps, sizeof(float));
             alphaCumprodBuffer.SetData(alphaCumprod);
 
-            // 4.2 Ô­×ÓÀàÐÍÈ¨ÖØBuffer£¨ÊÊÅä²»Í¬ÊÜÌåµÄÆ«ºÃ£©
+            // 4.2 Ô­ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½È¨ï¿½ï¿½Bufferï¿½ï¿½ï¿½ï¿½ï¿½ä²»Í¬ï¿½ï¿½ï¿½ï¿½ï¿½Æ«ï¿½Ã£ï¿½
             Vector4 atomWeightBuffer = new Vector4(config.cWeight, config.oWeight, config.nWeight, config.sWeight);
 
-            // 4.3 »îÐÔÖÐÐÄBuffer£¨´«µÝ´ó·Ö×Ó»îÐÔÎ»µã×ø±ê£©
+            // 4.3 ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Bufferï¿½ï¿½ï¿½ï¿½ï¿½Ý´ï¿½ï¿½ï¿½Ó»ï¿½ï¿½ï¿½Î»ï¿½ï¿½ï¿½ï¿½ï¿½ê£©
 
-            // 4.4 SMILESÊä³öBuffer£¨Ã¿¸ö·Ö×Ó256×Ö·û£©
+            // 4.4 SMILESï¿½ï¿½ï¿½Bufferï¿½ï¿½Ã¿ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½256ï¿½Ö·ï¿½ï¿½ï¿½
             int smilesStride = SMILES_MAX_LENGTH * sizeof(int);
             ComputeBuffer smilesBuffer = new ComputeBuffer(effectiveBatchSize, smilesStride);
             int[] initSmiles = new int[effectiveBatchSize * SMILES_MAX_LENGTH];
             smilesBuffer.SetData(initSmiles);
+            RenderTexture boundSmilesTexture = new RenderTexture(SMILES_MAX_LENGTH, effectiveBatchSize, 0, UnityEngine.Experimental.Rendering.GraphicsFormat.R16_SFloat);
+            boundSmilesTexture.enableRandomWrite = true;
+            boundSmilesTexture.Create();
+            RenderTexture exportedSmilesTexture = useLegacySmilesTextureTransport ? boundSmilesTexture : null;
 
-            RenderTexture smilesTexture = new RenderTexture(SMILES_MAX_LENGTH, effectiveBatchSize, 0, UnityEngine.Experimental.Rendering.GraphicsFormat.R16_SFloat);
-            smilesTexture.enableRandomWrite = true;
-
-            // 5. ÅäÖÃCompute Shader²ÎÊý
+            // 5. ï¿½ï¿½ï¿½ï¿½Compute Shaderï¿½ï¿½ï¿½ï¿½
             int kernelId = diffusionCS.FindKernel("CSForwardDiffusion");
             diffusionCS.SetInt("batchSize", effectiveBatchSize);
             diffusionCS.SetInt("batchOffset", batchOffset);
@@ -108,9 +137,11 @@ namespace AIDrugDiscovery
             diffusionCS.SetFloat("heatmapWeight", config.heatmapWeight);
             diffusionCS.SetInt("maxAtoms", config.maxAtomLimit);
             diffusionCS.SetFloat("minFeatureScore", config.minFeatureScore);
-            diffusionCS.SetInt("heatmapSize", proteinHeatmap.width); // ´«µÝÈÈÁ¦Í¼³ß´ç
+            diffusionCS.SetInt("heatmapSize", proteinHeatmap.width); // ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Í¼ï¿½ß´ï¿½
+            diffusionCS.SetInt("writeDebugScores", collectDebugScores ? 1 : 0);
+            diffusionCS.SetInt("writeSmilesTexture", useLegacySmilesTextureTransport ? 1 : 0);
 
-            // °ó¶¨ÎÆÀíºÍBuffer
+            // ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Buffer
             diffusionCS.SetTexture(kernelId, "proteinHeatmap", proteinHeatmap);
             diffusionCS.SetTexture(kernelId, "proteinHeatmap3D", proteinHeatmap3D);
             diffusionCS.SetBuffer(kernelId, "betaBuffer", betaBuffer);
@@ -118,14 +149,13 @@ namespace AIDrugDiscovery
             diffusionCS.SetVector("atomWeightBuffer", atomWeightBuffer);
             diffusionCS.SetVector("activeCenterBuffer", config.proteinActiveCenter);
             diffusionCS.SetBuffer(kernelId, "smilesOutputBuffer", smilesBuffer);
-            diffusionCS.SetTexture(kernelId, "smilesOutputTexture", smilesTexture);
+            diffusionCS.SetTexture(kernelId, "smilesOutputTexture", boundSmilesTexture);
 
-            // ´´½¨Debug Buffer
-            ComputeBuffer matchScoreDebugBuffer = new ComputeBuffer(effectiveBatchSize * config.maxAtomLimit, sizeof(int));
-            // °ó¶¨µ½CS
+            // ï¿½ï¿½ï¿½ï¿½Debug Buffer
+            ComputeBuffer matchScoreDebugBuffer = new ComputeBuffer(effectiveBatchSize * config.maxAtomLimit, sizeof(float));
             diffusionCS.SetBuffer(kernelId, "matchScoreDebugBuffer", matchScoreDebugBuffer);
 
-            // 6. µ÷¶ÈCS£¨Ïß³Ì×éÊÊÅäbatchSize£©
+            // 6. ï¿½ï¿½ï¿½ï¿½CSï¿½ï¿½ï¿½ß³ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½batchSizeï¿½ï¿½
             int threadGroupX = Mathf.CeilToInt(effectiveBatchSize / 64f);
             diffusionCS.Dispatch(kernelId, threadGroupX, 1, 1);
             //while (test && Application.isPlaying)
@@ -134,32 +164,36 @@ namespace AIDrugDiscovery
             //    await UniTask.NextFrame();
             //}
 
-            float[] scores = new float[effectiveBatchSize * config.maxAtomLimit];
+            float[] scores = null;
+            if (collectDebugScores)
             {
-                var req = await AsyncGPUReadback.RequestAsync(matchScoreDebugBuffer);
-                scores = req.GetData<float>().ToArray();
-            }
-            //matchScoreDebugBuffer.GetData(scores);
-            for (int i = 0; i < effectiveBatchSize; i++)
-            {
-                float avgScore = 0;
-                int count = 0;
-                for (int a = 0; a < config.maxAtomLimit; a++)
+                scores = new float[effectiveBatchSize * config.maxAtomLimit];
                 {
-                    float s = scores[i * config.maxAtomLimit + a];
-                    if (s > 0)
-                    {
-                        avgScore += s;
-                        count++;
-                    }
+                    var req = await AsyncGPUReadback.RequestAsync(matchScoreDebugBuffer);
+                    scores = req.GetData<float>().ToArray();
                 }
-                if (count > 0)
-                    avgScore /= (float)count;
-                //if (avgScore > 0)
-                //    Debug.Log($"·Ö×Ó{i}Æ½¾ùÆ¥Åä·ÖÊý£º{avgScore}");
+
+                for (int i = 0; i < effectiveBatchSize; i++)
+                {
+                    float avgScore = 0;
+                    int count = 0;
+                    for (int a = 0; a < config.maxAtomLimit; a++)
+                    {
+                        float s = scores[i * config.maxAtomLimit + a];
+                        if (s > 0)
+                        {
+                            avgScore += s;
+                            count++;
+                        }
+                    }
+                    if (count > 0)
+                        avgScore /= (float)count;
+                    //if (avgScore > 0)
+                    //    Debug.Log($"ï¿½ï¿½ï¿½ï¿½{i}Æ½ï¿½ï¿½Æ¥ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½{avgScore}");
+                }
             }
 
-            // 7. ¶ÁÈ¡²¢½âÎöSMILES½á¹û
+            // 7. ï¿½ï¿½È¡ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½SMILESï¿½ï¿½ï¿½
             char[][] resultChars = new char[effectiveBatchSize][];
             for (int i = 0; i < effectiveBatchSize; i++)
             {
@@ -188,16 +222,20 @@ namespace AIDrugDiscovery
                 index++;
             }
 
-            // 8. ÊÍ·ÅËùÓÐBuffer£¨±ÜÃâÄÚ´æÐ¹Â©£©
+            // 8. ï¿½Í·ï¿½ï¿½ï¿½ï¿½ï¿½Bufferï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ú´ï¿½Ð¹Â©ï¿½ï¿½
             betaBuffer.Release();
             alphaCumprodBuffer.Release();
-            smilesBuffer.Release();
+            matchScoreDebugBuffer?.Release();
+            matchScoreDebugBuffer?.Dispose();
 
-            Debug.Log($"[{config.proteinName}] °ÐÏò·Ö×ÓÉú³ÉÍê³É£º¹²Éú³É{generatedSmiles.Count}¸öÓÐÐ§SMILES");
-            return (generatedSmiles, generatedIndices, smilesTexture);
+            Debug.Log($"[{config.proteinName}] ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½É£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½{generatedSmiles.Count}ï¿½ï¿½ï¿½ï¿½Ð§SMILES");
+            if (!useLegacySmilesTextureTransport)
+                RenderTexture.Destroy(boundSmilesTexture);
+
+            return (generatedSmiles, generatedIndices, new GeneratedSmilesBatch(smilesBuffer, effectiveBatchSize, exportedSmilesTexture));
         }
 
-        // ¸¨Öúº¯Êý£ºÔ¤¼ÆËãÀ©É¢ÔëÉùµ÷¶È±í£¨Ö§³Ö×Ô¶¨Òåbeta²ÎÊý£©
+        // ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ô¤ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½É¢ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½È±ï¿½ï¿½ï¿½Ö§ï¿½ï¿½ï¿½Ô¶ï¿½ï¿½ï¿½betaï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
         private void ComputeBetaSchedule(float[] betas, float[] alphas, float[] alphaCumprod, int timesteps, ProteinDiffusionConfig config)
         {
             float betaStep = (config.betaEnd - config.betaStart) / (timesteps - 1);

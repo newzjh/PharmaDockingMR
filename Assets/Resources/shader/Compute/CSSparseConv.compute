@@ -1,3 +1,4 @@
+#pragma kernel CSBuildHeatmap2D
 #pragma kernel CSSparseConv
 #pragma enable_d3d11_debug_symbols
 
@@ -23,6 +24,10 @@ float padding;
 float stride;
 int inChannels;
 int outChannels;
+int atomCount;
+float3 activeSiteCenter;
+float gridSpacing;
+float gridRadius;
 
 
 // 输入输出Buffer
@@ -30,6 +35,46 @@ StructuredBuffer<HeatmapPixel> heatmapInput;
 StructuredBuffer<float> kernelWeights;
 RWStructuredBuffer<HeatmapPixel> heatmapOutput;
 StructuredBuffer<AtomData> atomBuffer;
+RWStructuredBuffer<HeatmapPixel> rawHeatmapOutput;
+
+[numthreads(32,32,1)]
+void CSBuildHeatmap2D(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    int x = dispatchThreadID.x;
+    int y = dispatchThreadID.y;
+    if (x >= heatmapSize || y >= heatmapSize) return;
+
+    int idx = y * heatmapSize + x;
+    float4 features = float4(0, 0, 0, 0);
+    int atomInGrid = 0;
+
+    float gridX = activeSiteCenter.x + (x - heatmapSize / 2) * gridSpacing;
+    float gridZ = activeSiteCenter.z + (y - heatmapSize / 2) * gridSpacing;
+    float3 gridCenter = float3(gridX, activeSiteCenter.y, gridZ);
+
+    for (int i = 0; i < atomCount; i++)
+    {
+        float3 sampleCenter = float3(gridCenter.x, atomBuffer[i].position.y, gridCenter.z);
+        float distanceToAtom = distance(atomBuffer[i].position, sampleCenter);
+        if (distanceToAtom > gridRadius)
+            continue;
+
+        atomInGrid++;
+        features.x += atomBuffer[i].atomicNum / 10.0f;
+        features.y += atomBuffer[i].charge / 200.0f;
+        bool isHydrophobic = atomBuffer[i].atomicNum == 0 || atomBuffer[i].atomicNum == 3 ||
+                             atomBuffer[i].atomicNum == 6 || atomBuffer[i].atomicNum == 7 ||
+                             atomBuffer[i].atomicNum == 8 || atomBuffer[i].atomicNum == 9;
+        bool isHBond = atomBuffer[i].atomicNum == 1 || atomBuffer[i].atomicNum == 2;
+        features.z += isHydrophobic ? 1.0f : 0.0f;
+        features.w += isHBond ? 1.0f : 0.0f;
+    }
+
+    if (atomInGrid > 0)
+        features /= atomInGrid;
+
+    rawHeatmapOutput[idx].features = features;
+}
 
 // 稀疏卷积核心函数（跳过零值像素）
 [numthreads(32,32,1)]

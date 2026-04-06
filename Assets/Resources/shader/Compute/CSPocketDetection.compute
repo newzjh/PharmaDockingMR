@@ -15,6 +15,7 @@ cbuffer FPocketConstants : register(b0)
     float MIN_POCKET_VOLUME; // 最小口袋体积 10.0Å³
     
     int atomCount; // 原子总数（用于k循环边界）
+    int generatedSphereCount; // 当前批次真实生成的Alpha球数量
     int maxAlphaSpheres; // 最大Alpha球数 100000
     int maxPockets; // 最大口袋数 100
     int THREAD_GROUP_SIZE_X; // i维度线程组大小
@@ -265,7 +266,7 @@ void CSGenerateAlphaSpheres(uint3 id : SV_DispatchThreadID)
 void CSFilterAlphaSpheres(uint3 id : SV_DispatchThreadID)
 {
     int sphereIdx = id.x;
-    if (sphereIdx >= maxAlphaSpheres)
+    if (sphereIdx >= generatedSphereCount)
         return;
 
     FPocketAlphaSphereCS sphere = alphaSphereBuffer[sphereIdx];

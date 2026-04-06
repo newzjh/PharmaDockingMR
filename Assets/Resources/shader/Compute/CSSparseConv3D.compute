@@ -1,20 +1,36 @@
+#pragma kernel CSBuildHeatmap3D
 #pragma kernel CSSparseConv3D
 #pragma enable_d3d11_debug_symbols
 
 // 3D稀疏卷积核心参数（适配1AQ1 64×64×64热力图）
+int heatmapSize;
 int3 kernelSize;           // 3×3×3卷积核
 int3 stride;               // 步长1×1×1
 int3 padding;              // 填充1×1×1
 float sparseThreshold;     // 稀疏阈值（基于活性值x轴）
 float3 voxelResolution;    // 0.5Å/体素
+float3 activeSiteCenter;
+float gridSpacing;
+float gridRadius;
+int atomCount;
 //float3 activeSiteCenter;   // 1AQ1活性中心(10.5,8.2,12.7)
 
+struct AtomData {
+    float3 position;
+    int atomicNum;
+    int charge;
+    int hybridization;
+    int degree;
+    int molId;
+};
 
 // 输入：1AQ1 3D热力图Texture3D（每个体素float4特征）
 Texture3D<float4> InputHeatmap3D;
+StructuredBuffer<AtomData> atomBuffer;
 
 // 输出：3D卷积结果Texture3D（float4特征）
 RWTexture3D<float4> OutputHeatmap3D;
+RWTexture3D<float4> RawHeatmap3D;
 
 // 预定义3D高斯卷积核（4组权重，对应float4的4个特征维度）
 // 索引：0=活性值(x), 1=电荷(y), 2=疏水性(z), 3=氢键特征(w),
@@ -45,11 +61,48 @@ static const float convKernel3D[4][27] =
 // 3D体素边界检查
 bool IsInBounds(int3 voxelIdx)
 {
-    //uint3 texSize = InputHeatmap3D.GetDimensions();
-    uint3 texSize = uint3(32, 32, 32);
+    uint3 texSize = uint3(heatmapSize, heatmapSize, heatmapSize);
     return voxelIdx.x >= 0 && voxelIdx.x < (int)texSize.x &&
            voxelIdx.y >= 0 && voxelIdx.y < (int)texSize.y &&
            voxelIdx.z >= 0 && voxelIdx.z < (int)texSize.z;
+}
+
+[numthreads(8,8,8)]
+void CSBuildHeatmap3D(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    int3 voxelIdx = int3(dispatchThreadID);
+    if (!IsInBounds(voxelIdx))
+        return;
+
+    float gridX = activeSiteCenter.x + (voxelIdx.x - heatmapSize / 2) * gridSpacing;
+    float gridY = activeSiteCenter.y + (voxelIdx.y - heatmapSize / 2) * gridSpacing;
+    float gridZ = activeSiteCenter.z + (voxelIdx.z - heatmapSize / 2) * gridSpacing;
+    float3 gridCenter = float3(gridX, gridY, gridZ);
+
+    float4 features = float4(0, 0, 0, 0);
+    int atomInGrid = 0;
+
+    for (int i = 0; i < atomCount; i++)
+    {
+        float distanceToAtom = distance(atomBuffer[i].position, gridCenter);
+        if (distanceToAtom > gridRadius)
+            continue;
+
+        atomInGrid++;
+        features.x += atomBuffer[i].atomicNum / 10.0f;
+        features.y += atomBuffer[i].charge / 200.0f;
+        bool isHydrophobic = atomBuffer[i].atomicNum == 0 || atomBuffer[i].atomicNum == 3 ||
+                             atomBuffer[i].atomicNum == 6 || atomBuffer[i].atomicNum == 7 ||
+                             atomBuffer[i].atomicNum == 8 || atomBuffer[i].atomicNum == 9;
+        bool isHBond = atomBuffer[i].atomicNum == 1 || atomBuffer[i].atomicNum == 2;
+        features.z += isHydrophobic ? 1.0f : 0.0f;
+        features.w += isHBond ? 1.0f : 0.0f;
+    }
+
+    if (atomInGrid > 0)
+        features /= atomInGrid;
+
+    RawHeatmap3D[voxelIdx] = features;
 }
 
 // 动态稀疏3D卷积（float4多特征计算）
@@ -119,7 +172,7 @@ float4 ComputeSparseConv3D(int3 voxelIdx)
 void CSSparseConv3D(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
     int3 voxelIdx = int3(dispatchThreadID);
-    uint3 texSize = uint3(32, 32, 32);
+    uint3 texSize = uint3(heatmapSize, heatmapSize, heatmapSize);
     
     // 边界检查
     if (voxelIdx.x >= (int)texSize.x || voxelIdx.y >= (int)texSize.y || voxelIdx.z >= (int)texSize.z)

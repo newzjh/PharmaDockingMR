@@ -137,6 +137,11 @@ namespace AIDrugDiscovery
         [Header("GPU配置")]
         public ComputeShader fpocketComputeShader; // 绑定Compute Shader文件
 
+        [Header("调试开关")]
+        public bool useGeneratedSphereCountDispatch = true;
+        public bool onlyProcessGeneratedSphereRange = true;
+        public bool useSpatialHashDbscan = true;
+
         // 运行时数据
         private List<FPocketAtom> atoms;
         private List<FPocketAlphaSphere> alphaSpheres;
@@ -234,19 +239,32 @@ namespace AIDrugDiscovery
                 clusterCountBuffer.SetData(initCount);
 
                 // 4. 设置Shader参数（核心：传递原子总数，用于k循环边界）
-                SetShaderConstants(fpocketComputeShader, atomCount);
+                SetShaderConstants(fpocketComputeShader, atomCount, 0);
 
                 // 5. 调度Kernel 1：生成Alpha球（二维线程组，k内循环）
                 int kernel1 = fpocketComputeShader.FindKernel("CSGenerateAlphaSpheres");
                 fpocketComputeShader.SetBuffer(kernel1, "atomBuffer", atomBuffer);
                 fpocketComputeShader.SetBuffer(kernel1, "alphaSphereBuffer", alphaSphereBuffer);
+                fpocketComputeShader.SetBuffer(kernel1, "pocketResultBuffer", pocketResultBuffer);
                 fpocketComputeShader.SetBuffer(kernel1, "sphereCountBuffer", sphereCountBuffer);
+                fpocketComputeShader.SetBuffer(kernel1, "clusterCountBuffer", clusterCountBuffer);
                 fpocketComputeShader.Dispatch(kernel1, threadGroupsX, threadGroupsY, 1);
+
+                int[] generatedCountData = { 0 };
+                sphereCountBuffer.GetData(generatedCountData);
+                int generatedSphereCount = Mathf.Clamp(generatedCountData[0], 0, FPocketConstants.MAX_ALPHA_SPHERES);
+                int filterSphereCount = useGeneratedSphereCountDispatch ? generatedSphereCount : FPocketConstants.MAX_ALPHA_SPHERES;
+                int postProcessSphereCount = onlyProcessGeneratedSphereRange ? generatedSphereCount : FPocketConstants.MAX_ALPHA_SPHERES;
+                SetShaderConstants(fpocketComputeShader, atomCount, filterSphereCount);
 
                 // 6. 调度Kernel 2：过滤Alpha球
                 int kernel2 = fpocketComputeShader.FindKernel("CSFilterAlphaSpheres");
+                fpocketComputeShader.SetBuffer(kernel2, "atomBuffer", atomBuffer);
                 fpocketComputeShader.SetBuffer(kernel2, "alphaSphereBuffer", alphaSphereBuffer);
-                int threadGroupsFilter = Mathf.CeilToInt(FPocketConstants.MAX_ALPHA_SPHERES / 256f);
+                fpocketComputeShader.SetBuffer(kernel2, "pocketResultBuffer", pocketResultBuffer);
+                fpocketComputeShader.SetBuffer(kernel2, "sphereCountBuffer", sphereCountBuffer);
+                fpocketComputeShader.SetBuffer(kernel2, "clusterCountBuffer", clusterCountBuffer);
+                int threadGroupsFilter = Mathf.CeilToInt(Mathf.Max(1, filterSphereCount) / 256f);
                 fpocketComputeShader.Dispatch(kernel2, threadGroupsFilter, 1, 1);
 
                 //FPocketAlphaSphereCS[] data = new FPocketAlphaSphereCS[FPocketConstants.MAX_ALPHA_SPHERES];
@@ -254,8 +272,10 @@ namespace AIDrugDiscovery
                 var req = await AsyncGPUReadback.RequestAsync(alphaSphereBuffer);
                 var data = req.GetData<FPocketAlphaSphereCS>().ToArray();
                 List<FPocketAlphaSphere> validSpheres = new();
-                foreach (var sphere in data)
+                int sphereLoopCount = Mathf.Min(postProcessSphereCount, data.Length);
+                for (int sphereIdx = 0; sphereIdx < sphereLoopCount; sphereIdx++)
                 {
+                    var sphere = data[sphereIdx];
                     if (sphere.radius > 0)
                     {
                         FPocketAlphaSphere newsphere = new FPocketAlphaSphere();
@@ -504,9 +524,94 @@ namespace AIDrugDiscovery
         /// </summary>
         private List<List<FPocketAlphaSphere>> DBSCANCluster(List<FPocketAlphaSphere> spheres)
         {
+            if (!useSpatialHashDbscan)
+                return DBSCANClusterLegacy(spheres);
+
+            List<List<FPocketAlphaSphere>> clusters = new List<List<FPocketAlphaSphere>>();
+            int sphereCount = spheres.Count;
+            if (sphereCount == 0)
+                return clusters;
+
+            bool[] visited = new bool[sphereCount];
+            bool[] noise = new bool[sphereCount];
+            List<int>[] neighborCache = new List<int>[sphereCount];
+            float eps = FPocketConstants.DBSCAN_EPS;
+            float epsSqr = eps * eps;
+            var spatialIndex = BuildSpatialHash(spheres, eps);
+
+            for (int i = 0; i < sphereCount; i++)
+            {
+                if (visited[i]) continue;
+
+                List<int> neighbors = GetNeighbors(i, spheres, spatialIndex, neighborCache, epsSqr);
+                if (neighbors.Count < FPocketConstants.DBSCAN_MIN_POINTS)
+                {
+                    noise[i] = true;
+                    visited[i] = true;
+                    FPocketAlphaSphere s = spheres[i];
+                    s.visited = 2;
+                    spheres[i] = s;
+                    continue;
+                }
+
+                List<FPocketAlphaSphere> cluster = new List<FPocketAlphaSphere>();
+                cluster.Add(spheres[i]);
+                visited[i] = true;
+                FPocketAlphaSphere core = spheres[i];
+                core.visited = 1;
+                spheres[i] = core;
+
+                Queue<int> queue = new Queue<int>(neighbors);
+                bool[] enqueued = new bool[sphereCount];
+                foreach (int neighbor in neighbors)
+                    enqueued[neighbor] = true;
+                while (queue.Count > 0)
+                {
+                    int j = queue.Dequeue();
+                    enqueued[j] = false;
+                    if (visited[j]) continue;
+
+                    visited[j] = true;
+                    FPocketAlphaSphere js = spheres[j];
+                    js.visited = 1;
+                    spheres[j] = js;
+
+                    List<int> jNeighbors = GetNeighbors(j, spheres, spatialIndex, neighborCache, epsSqr);
+                    if (jNeighbors.Count >= FPocketConstants.DBSCAN_MIN_POINTS)
+                    {
+                        foreach (int n in jNeighbors)
+                        {
+                            if (!visited[n] && !enqueued[n])
+                            {
+                                queue.Enqueue(n);
+                                enqueued[n] = true;
+                            }
+                        }
+                    }
+
+                    cluster.Add(spheres[j]);
+                }
+
+                clusters.Add(cluster);
+            }
+
+            // ===== 新增：复刻FPocket源码的聚类剪枝 =====
+            List<List<FPocketAlphaSphere>> prunedClusters = new List<List<FPocketAlphaSphere>>();
+            foreach (var cluster in clusters)
+            {
+                // FPocket源码：cluster_alpha_spheres.c 要求聚类内Alpha球数≥10
+                if (cluster.Count >= 10)
+                {
+                    prunedClusters.Add(cluster);
+                }
+            }
+            return prunedClusters;
+        }
+
+        private List<List<FPocketAlphaSphere>> DBSCANClusterLegacy(List<FPocketAlphaSphere> spheres)
+        {
             List<List<FPocketAlphaSphere>> clusters = new List<List<FPocketAlphaSphere>>();
             HashSet<int> visited = new HashSet<int>();
-            HashSet<int> noise = new HashSet<int>();
 
             for (int i = 0; i < spheres.Count; i++)
             {
@@ -515,7 +620,6 @@ namespace AIDrugDiscovery
                 List<int> neighbors = FindNeighbors(spheres, i);
                 if (neighbors.Count < FPocketConstants.DBSCAN_MIN_POINTS)
                 {
-                    noise.Add(i);
                     visited.Add(i);
                     FPocketAlphaSphere s = spheres[i];
                     s.visited = 2;
@@ -557,17 +661,80 @@ namespace AIDrugDiscovery
                 clusters.Add(cluster);
             }
 
-            // ===== 新增：复刻FPocket源码的聚类剪枝 =====
             List<List<FPocketAlphaSphere>> prunedClusters = new List<List<FPocketAlphaSphere>>();
             foreach (var cluster in clusters)
             {
-                // FPocket源码：cluster_alpha_spheres.c 要求聚类内Alpha球数≥10
                 if (cluster.Count >= 10)
-                {
                     prunedClusters.Add(cluster);
-                }
             }
             return prunedClusters;
+        }
+
+        private Dictionary<Vector3Int, List<int>> BuildSpatialHash(List<FPocketAlphaSphere> spheres, float cellSize)
+        {
+            Dictionary<Vector3Int, List<int>> spatialIndex = new Dictionary<Vector3Int, List<int>>(spheres.Count);
+            for (int i = 0; i < spheres.Count; i++)
+            {
+                Vector3Int cell = GetSpatialCell(spheres[i].center, cellSize);
+                if (!spatialIndex.TryGetValue(cell, out var bucket))
+                {
+                    bucket = new List<int>();
+                    spatialIndex[cell] = bucket;
+                }
+                bucket.Add(i);
+            }
+            return spatialIndex;
+        }
+
+        private Vector3Int GetSpatialCell(Vector3 position, float cellSize)
+        {
+            return new Vector3Int(
+                Mathf.FloorToInt(position.x / cellSize),
+                Mathf.FloorToInt(position.y / cellSize),
+                Mathf.FloorToInt(position.z / cellSize)
+            );
+        }
+
+        private List<int> GetNeighbors(
+            int index,
+            List<FPocketAlphaSphere> spheres,
+            Dictionary<Vector3Int, List<int>> spatialIndex,
+            List<int>[] neighborCache,
+            float epsSqr)
+        {
+            if (neighborCache[index] != null)
+                return neighborCache[index];
+
+            List<int> neighbors = new List<int>();
+            Vector3 center = spheres[index].center;
+            Vector3Int cell = GetSpatialCell(center, FPocketConstants.DBSCAN_EPS);
+
+            for (int dx = -1; dx <= 1; dx++)
+            {
+                for (int dy = -1; dy <= 1; dy++)
+                {
+                    for (int dz = -1; dz <= 1; dz++)
+                    {
+                        Vector3Int neighborCell = new Vector3Int(cell.x + dx, cell.y + dy, cell.z + dz);
+                        if (!spatialIndex.TryGetValue(neighborCell, out var bucket))
+                            continue;
+
+                        for (int i = 0; i < bucket.Count; i++)
+                        {
+                            int candidate = bucket[i];
+                            if (candidate == index)
+                                continue;
+
+                            Vector3 delta = center - spheres[candidate].center;
+                            if (delta.sqrMagnitude < epsSqr)
+                                neighbors.Add(candidate);
+                        }
+                    }
+                }
+            }
+
+            neighborCache[index] = neighbors;
+            return neighbors;
         }
 
         /// <summary>
@@ -896,7 +1063,7 @@ namespace AIDrugDiscovery
         /// <summary>
         /// 设置Shader常量参数（核心：传递原子总数，用于k循环边界）
         /// </summary>
-        private void SetShaderConstants(ComputeShader cs, int atomCount)
+        private void SetShaderConstants(ComputeShader cs, int atomCount, int generatedSphereCount)
         {
             cs.SetFloat("PROBE_RADIUS", FPocketConstants.PROBE_RADIUS);
             cs.SetFloat("MIN_ALPHA_SPHERE_RADIUS", FPocketConstants.MIN_ALPHA_SPHERE_RADIUS);
@@ -906,6 +1073,7 @@ namespace AIDrugDiscovery
             cs.SetFloat("DBSCAN_EPS", FPocketConstants.DBSCAN_EPS);
             cs.SetFloat("MIN_POCKET_VOLUME", FPocketConstants.MIN_POCKET_VOLUME);
             cs.SetInt("atomCount", atomCount); // 关键：传递原子总数给Shader
+            cs.SetInt("generatedSphereCount", generatedSphereCount);
             cs.SetInt("maxAlphaSpheres", FPocketConstants.MAX_ALPHA_SPHERES);
             cs.SetInt("maxPockets", FPocketConstants.MAX_POCKETS);
             // 传递线程组大小，用于计算全局i/j索引

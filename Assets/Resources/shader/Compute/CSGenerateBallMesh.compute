@@ -3,7 +3,6 @@
 
 #include "AtomCommon.hlsl"
 
-
 // C#传递的参数
 int batchSize;
 int sphereSegments;

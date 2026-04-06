@@ -75,6 +75,8 @@ float heatmapWeight; // 热力图约束权重（0~1）
 int maxAtoms;
 float minFeatureScore;
 int heatmapSize;
+int writeDebugScores;
+int writeSmilesTexture;
 
 // 输入/输出资源
 Texture2D<float4> proteinHeatmap;
@@ -812,9 +814,12 @@ void CSForwardDiffusion(uint3 dispatchThreadID : SV_DispatchThreadID)
     float totalFeatureScore = 0.0f;
     
     // 初始化Debug Buffer
-    for (int a = 0; a < MAX_ATOM_COUNT; a++)
+    if (writeDebugScores != 0)
     {
-        matchScoreDebugBuffer[molIdx * MAX_ATOM_COUNT + a] = 0.0f;
+        for (int a = 0; a < MAX_ATOM_COUNT; a++)
+        {
+            matchScoreDebugBuffer[molIdx * MAX_ATOM_COUNT + a] = 0.0f;
+        }
     }
     
     // 前向扩散主循环
@@ -997,7 +1002,7 @@ void CSForwardDiffusion(uint3 dispatchThreadID : SV_DispatchThreadID)
                 }
                 
                 // 更新Debug Buffer
-                if (featureScore > matchScoreDebugBuffer[molIdx * MAX_ATOM_COUNT + a])
+                if (writeDebugScores != 0 && featureScore > matchScoreDebugBuffer[molIdx * MAX_ATOM_COUNT + a])
                 {
                     matchScoreDebugBuffer[molIdx * MAX_ATOM_COUNT + a] = featureScore;
                 }
@@ -1019,7 +1024,10 @@ void CSForwardDiffusion(uint3 dispatchThreadID : SV_DispatchThreadID)
     {
         int charVal = smilesChars[i];
         smilesOutputBuffer[molIdx * SMILES_MAX_LENGTH + i] = charVal;
-        float r = (float) charVal / 255.0f;
-        smilesOutputTexture[int2(i, molIdx)] = float4(r, 0, 0, 1);
+        if (writeSmilesTexture != 0)
+        {
+            float r = (float)charVal / 255.0f;
+            smilesOutputTexture[int2(i, molIdx)] = float4(r, 0, 0, 1);
+        }
     }
 }

@@ -1,7 +1,4 @@
-﻿#pragma kernel CSForwardDiffusion
-#pragma enable_d3d11_debug_symbols
-
-// ==================== 通用常量定义（整合AtomCommon.txt）====================
+﻿// ==================== 通用常量定义（整合AtomCommon.txt）====================
 // 原子类型常量（使用原子序数作为标识，兼容药物分子常见原子）
 #define ATOM_TYPE_H 1
 #define ATOM_TYPE_C 6
@@ -125,79 +122,294 @@ uint Hash(uint3 feature)
     return feature.z % FP_SIZE;
 }
 
-// 扩展SMILES解析函数（支持小写原子和多字符原子）
-void ParseSMILES(in int smilesChars[SMILES_MAX_LENGTH], out int atomTypes[MAX_ATOM_COUNT], out int atomCount)
+uint MixHash(uint seed, uint value)
+{
+    seed ^= value + 0x9e3779b9u + (seed << 6u) + (seed >> 2u);
+    return seed;
+}
+
+bool IsAromaticAtomType(int atomType)
+{
+    return atomType == ATOM_TYPE_c || atomType == ATOM_TYPE_n || atomType == ATOM_TYPE_o ||
+           atomType == ATOM_TYPE_s || atomType == ATOM_TYPE_p;
+}
+
+int GetBondMatrixIndex(int a, int b)
+{
+    return a * MAX_ATOM_COUNT + b;
+}
+
+void SetBondValue(inout int bondMatrix[MAX_ATOM_COUNT * MAX_ATOM_COUNT], int a, int b, int bondType)
+{
+    int idxAB = GetBondMatrixIndex(a, b);
+    int idxBA = GetBondMatrixIndex(b, a);
+    bondMatrix[idxAB] = bondType;
+    bondMatrix[idxBA] = bondType;
+}
+
+int GetBondValue(in int bondMatrix[MAX_ATOM_COUNT * MAX_ATOM_COUNT], int a, int b)
+{
+    return bondMatrix[GetBondMatrixIndex(a, b)];
+}
+
+int CountAtomDegree(int atomIdx, int atomCount, in int bondMatrix[MAX_ATOM_COUNT * MAX_ATOM_COUNT])
+{
+    int degree = 0;
+    for (int i = 0; i < atomCount; i++)
+    {
+        if (i != atomIdx && GetBondValue(bondMatrix, atomIdx, i) != BOND_UNKNOWN)
+            degree++;
+    }
+    return degree;
+}
+
+bool TryParseAtomToken(in int smilesChars[SMILES_MAX_LENGTH], int idx, out int atomType, out int consumedChars)
+{
+    atomType = ATOM_TYPE_UNKNOWN;
+    consumedChars = 0;
+
+    int c = smilesChars[idx];
+    int c2 = idx + 1 < SMILES_MAX_LENGTH ? smilesChars[idx + 1] : 0;
+
+    switch (c)
+    {
+        case 'C':
+            if (c2 == 'l')
+            {
+                atomType = ATOM_TYPE_Cl;
+                consumedChars = 2;
+            }
+            else
+            {
+                atomType = ATOM_TYPE_C;
+                consumedChars = 1;
+            }
+            return true;
+        case 'c': atomType = ATOM_TYPE_c; consumedChars = 1; return true;
+        case 'N': atomType = ATOM_TYPE_N; consumedChars = 1; return true;
+        case 'n': atomType = ATOM_TYPE_n; consumedChars = 1; return true;
+        case 'O': atomType = ATOM_TYPE_O; consumedChars = 1; return true;
+        case 'o': atomType = ATOM_TYPE_o; consumedChars = 1; return true;
+        case 'S':
+            if (c2 == 'i')
+            {
+                atomType = ATOM_TYPE_Si;
+                consumedChars = 2;
+            }
+            else if (c2 == 'e')
+            {
+                atomType = ATOM_TYPE_Se;
+                consumedChars = 2;
+            }
+            else
+            {
+                atomType = ATOM_TYPE_S;
+                consumedChars = 1;
+            }
+            return true;
+        case 's': atomType = ATOM_TYPE_s; consumedChars = 1; return true;
+        case 'P': atomType = ATOM_TYPE_P; consumedChars = 1; return true;
+        case 'p': atomType = ATOM_TYPE_p; consumedChars = 1; return true;
+        case 'F': atomType = ATOM_TYPE_F; consumedChars = 1; return true;
+        case 'B':
+            if (c2 == 'r')
+            {
+                atomType = ATOM_TYPE_Br;
+                consumedChars = 2;
+            }
+            else
+            {
+                atomType = ATOM_TYPE_B;
+                consumedChars = 1;
+            }
+            return true;
+        case 'I': atomType = ATOM_TYPE_I; consumedChars = 1; return true;
+        case 'H': atomType = ATOM_TYPE_H; consumedChars = 1; return true;
+        case 'A':
+            if (c2 == 's')
+            {
+                atomType = ATOM_TYPE_As;
+                consumedChars = 2;
+                return true;
+            }
+            break;
+    }
+
+    return false;
+}
+
+void ParseSMILESGraph(
+    in int smilesChars[SMILES_MAX_LENGTH],
+    out int atomTypes[MAX_ATOM_COUNT],
+    out int atomCount,
+    out int bondMatrix[MAX_ATOM_COUNT * MAX_ATOM_COUNT],
+    out int bondCount)
 {
     atomCount = 0;
+    bondCount = 0;
+
+    for (int i = 0; i < MAX_ATOM_COUNT; i++)
+    {
+        atomTypes[i] = ATOM_TYPE_UNKNOWN;
+    }
+
+    for (int i = 0; i < MAX_ATOM_COUNT * MAX_ATOM_COUNT; i++)
+    {
+        bondMatrix[i] = BOND_UNKNOWN;
+    }
+
+    int branchStack[MAX_BRANCH_DEPTH];
+    for (int i = 0; i < MAX_BRANCH_DEPTH; i++)
+        branchStack[i] = -1;
+
+    int ringAtomIndex[10];
+    int ringBondType[10];
+    for (int i = 0; i < 10; i++)
+    {
+        ringAtomIndex[i] = -1;
+        ringBondType[i] = BOND_UNKNOWN;
+    }
+
+    int branchDepth = 0;
+    int currentAtom = -1;
+    int pendingBondType = BOND_UNKNOWN;
+
     for (int i = 0; i < SMILES_MAX_LENGTH; i++)
     {
-        if (atomCount >= MAX_ATOM_COUNT) break;
-        
         int c = smilesChars[i];
-        if (c == 0) break; // 到达SMILES字符串末尾
-        
-        // 过滤SMILES特殊符号（键、括号、分支符、环编号、电荷）
-        if (c == '-' || c == '=' || c == '#' || c == ':' || c == '$' || c == '%' ||
-            c == '(' || c == ')' || c == '[' || c == ']' || c == '/' || /*c == '\\' ||*/
-            (c >= '0' && c <= '9') || c == '+' || c == '-')
+        if (c == 0 || atomCount >= MAX_ATOM_COUNT)
+            break;
+
+        if (c == '-' || c == '=' || c == '#' || c == ':')
         {
+            pendingBondType =
+                c == '-' ? BOND_SINGLE :
+                c == '=' ? BOND_DOUBLE :
+                c == '#' ? BOND_TRIPLE : BOND_AROMATIC;
             continue;
         }
-        
-        // 解析原子类型（支持常见药物原子+芳香原子）
-        switch (c)
+
+        if (c == '(')
         {
-            case 'C': atomTypes[atomCount++] = ATOM_TYPE_C; break;
-            case 'c': atomTypes[atomCount++] = ATOM_TYPE_c; break;
-            case 'N': atomTypes[atomCount++] = ATOM_TYPE_N; break;
-            case 'n': atomTypes[atomCount++] = ATOM_TYPE_n; break;
-            case 'O': atomTypes[atomCount++] = ATOM_TYPE_O; break;
-            case 'o': atomTypes[atomCount++] = ATOM_TYPE_o; break;
-            case 'S': atomTypes[atomCount++] = ATOM_TYPE_S; break;
-            //case 's': atomTypes[atomCount++] = ATOM_TYPE_s; break;
-            case 'F': atomTypes[atomCount++] = ATOM_TYPE_F; break;
-            case 'P': atomTypes[atomCount++] = ATOM_TYPE_P; break;
-            case 'p': atomTypes[atomCount++] = ATOM_TYPE_p; break;
-            case 'B': atomTypes[atomCount++] = ATOM_TYPE_B; break;
-            case 'I': atomTypes[atomCount++] = ATOM_TYPE_I; break;
-            // 多字符原子处理
-            case 'l': // Cl的第二个字符
-                if (i > 0 && smilesChars[i - 1] == 'C')
+            if (branchDepth < MAX_BRANCH_DEPTH && currentAtom >= 0)
+                branchStack[branchDepth++] = currentAtom;
+            continue;
+        }
+
+        if (c == ')')
+        {
+            if (branchDepth > 0)
+                currentAtom = branchStack[--branchDepth];
+            continue;
+        }
+
+        if (c >= '0' && c <= '9')
+        {
+            int ringNumber = c - '0';
+            if (currentAtom >= 0)
+            {
+                if (ringAtomIndex[ringNumber] < 0)
                 {
-                    atomTypes[atomCount - 1] = ATOM_TYPE_Cl;
-                }
-                break;
-            case 'r': // Br的第二个字符
-                if (i > 0 && smilesChars[i - 1] == 'B')
-                {
-                    atomTypes[atomCount - 1] = ATOM_TYPE_Br;
-                }
-                break;
-            case 'i': // Si的第二个字符
-                if (i > 0 && smilesChars[i - 1] == 'S')
-                {
-                    atomTypes[atomCount - 1] = ATOM_TYPE_Si;
-                }
-                break;
-            case 's': // As的第二个字符
-                if (i > 0 && smilesChars[i - 1] == 'A')
-                {
-                    atomTypes[atomCount - 1] = ATOM_TYPE_As;
+                    ringAtomIndex[ringNumber] = currentAtom;
+                    ringBondType[ringNumber] = pendingBondType;
                 }
                 else
                 {
-                    atomTypes[atomCount++] = ATOM_TYPE_s;
+                    int bondType = pendingBondType;
+                    if (bondType == BOND_UNKNOWN)
+                        bondType = ringBondType[ringNumber];
+                    if (bondType == BOND_UNKNOWN)
+                    {
+                        bool aromaticPair = IsAromaticAtomType(atomTypes[currentAtom]) && IsAromaticAtomType(atomTypes[ringAtomIndex[ringNumber]]);
+                        bondType = aromaticPair ? BOND_AROMATIC : BOND_SINGLE;
+                    }
+
+                    if (GetBondValue(bondMatrix, currentAtom, ringAtomIndex[ringNumber]) == BOND_UNKNOWN)
+                    {
+                        SetBondValue(bondMatrix, currentAtom, ringAtomIndex[ringNumber], bondType);
+                        bondCount++;
+                    }
+
+                    ringAtomIndex[ringNumber] = -1;
+                    ringBondType[ringNumber] = BOND_UNKNOWN;
                 }
-                break;
-            case 'e': // Se的第二个字符
-                if (i > 0 && smilesChars[i - 1] == 'S')
-                {
-                    atomTypes[atomCount - 1] = ATOM_TYPE_Se;
-                }
-                break;
-            default: atomTypes[atomCount++] = ATOM_TYPE_UNKNOWN; break;
+            }
+            pendingBondType = BOND_UNKNOWN;
+            continue;
         }
+
+        // HLSL 对反斜杠字符字面量兼容性较差，直接用 ASCII 码 92 避免解析成非法八进制常量。
+        if (c == '[' || c == ']' || c == '/' || c == 92 || c == '+' || c == '%' || c == '@')
+            continue;
+
+        int atomType;
+        int consumedChars;
+        if (!TryParseAtomToken(smilesChars, i, atomType, consumedChars))
+            continue;
+
+        int newAtom = atomCount++;
+        atomTypes[newAtom] = atomType;
+
+        if (currentAtom >= 0)
+        {
+            int bondType = pendingBondType;
+            if (bondType == BOND_UNKNOWN)
+            {
+                bool aromaticPair = IsAromaticAtomType(atomTypes[currentAtom]) && IsAromaticAtomType(atomType);
+                bondType = aromaticPair ? BOND_AROMATIC : BOND_SINGLE;
+            }
+
+            if (GetBondValue(bondMatrix, currentAtom, newAtom) == BOND_UNKNOWN)
+            {
+                SetBondValue(bondMatrix, currentAtom, newAtom, bondType);
+                bondCount++;
+            }
+        }
+
+        currentAtom = newAtom;
+        pendingBondType = BOND_UNKNOWN;
+        i += consumedChars - 1;
     }
+}
+
+// 旧版轻量解析：只提取原子序列，不构建拓扑图，适合 legacy 调试路径。
+void ParseSMILESLegacy(in int smilesChars[SMILES_MAX_LENGTH], out int atomTypes[MAX_ATOM_COUNT], out int atomCount)
+{
+    atomCount = 0;
+
+    for (int i = 0; i < MAX_ATOM_COUNT; i++)
+        atomTypes[i] = ATOM_TYPE_UNKNOWN;
+
+    for (int i = 0; i < SMILES_MAX_LENGTH; i++)
+    {
+        if (atomCount >= MAX_ATOM_COUNT)
+            break;
+
+        int c = smilesChars[i];
+        if (c == 0)
+            break;
+
+        if (c == '-' || c == '=' || c == '#' || c == ':' || c == '$' || c == '%' ||
+            c == '(' || c == ')' || c == '[' || c == ']' || c == '/' || c == 92 ||
+            (c >= '0' && c <= '9') || c == '+' || c == '@')
+        {
+            continue;
+        }
+
+        int atomType;
+        int consumedChars;
+        if (!TryParseAtomToken(smilesChars, i, atomType, consumedChars))
+            continue;
+
+        atomTypes[atomCount++] = atomType;
+        i += consumedChars - 1;
+    }
+}
+
+// 向后兼容旧调用点：默认保持轻量解析行为。
+void ParseSMILES(in int smilesChars[SMILES_MAX_LENGTH], out int atomTypes[MAX_ATOM_COUNT], out int atomCount)
+{
+    ParseSMILESLegacy(smilesChars, atomTypes, atomCount);
 }
 
 

@@ -57,6 +57,10 @@ namespace AIDrugDiscovery
         public ComputeShader sparseConv3DCS;
         public List<ProteinHeatmapConfig> proteinConfigs; // 支持多受体配置
 
+        [Header("调试开关")]
+        public bool useGpuHeatmapBuild2D = true;
+        public bool useGpuHeatmapBuild3D = true;
+
         [Header("可视化配置")]
         public bool autoVisualize = true; // 自动可视化热力图
         public float heatmapPlaneScale = 0.1f; // 热力图平面缩放系数
@@ -200,54 +204,9 @@ namespace AIDrugDiscovery
                 return null;
             }
 
-            // 3. 初始化原始热力图
-            int pixelCount = finalHeatmapSize * finalHeatmapSize;
-            HeatmapPixel[] rawHeatmap = new HeatmapPixel[pixelCount];
-
-            // 4. 计算每个像素的原子特征
-            for (int y = 0; y < finalHeatmapSize; y++)
-            {
-                for (int x = 0; x < finalHeatmapSize; x++)
-                {
-                    int idx = y * finalHeatmapSize + x;
-                    Vector4 features = Vector4.zero;
-
-                    // 计算像素对应的3D网格中心（基于活性位点）
-                    float gridX = config.activeSiteCenter.x + (x - finalHeatmapSize / 2) * config.gridSpacing;
-                    float gridZ = config.activeSiteCenter.z + (y - finalHeatmapSize / 2) * config.gridSpacing;
-                    Vector3 gridCenter = new Vector3(gridX, config.activeSiteCenter.y, gridZ);
-
-                    // 统计网格内原子特征（半径可配置）
-                    float gridRadius = config.lowPowerMode ? 1.5f : 1.0f;
-                    int atomInGrid = 0;
-
-                    foreach (var atom in proteinAtoms)
-                    {
-                        var gridCenter2 = gridCenter;
-                        gridCenter2.y = atom.position.y;
-                        float distance = Vector3.Distance(atom.position, gridCenter2);
-                        if (distance > gridRadius) 
-                            continue;
-
-                        atomInGrid++;
-                        // 通道1：原子类型（归一化）
-                        features.x += (float)atom.atomicNum / (int)AtomType.Other;
-                        // 通道2：电荷（归一化到-1~1）
-                        features.y += (float)atom.charge / 200f;
-                        // 通道3：疏水性（C/S/卤素为疏水）
-                        features.z += IsHydrophobic(atom.atomicNum) ? 1 : 0;
-                        // 通道4：氢键潜力（N/O为氢键供体/受体）
-                        features.w += IsHydrogenBond(atom.atomicNum) ? 1 : 0;
-                    }
-
-                    // 特征平均化
-                    if (atomInGrid > 0) features /= atomInGrid;
-                    rawHeatmap[idx] = new HeatmapPixel { features = features };
-                }
-            }
-
-            // 5. 调用CS执行稀疏卷积
-            Texture2D heatmapTex = await RunSparseConvCS(rawHeatmap, proteinAtoms, config, finalHeatmapSize);
+            Texture2D heatmapTex = useGpuHeatmapBuild2D
+                ? await RunSparseConvCS(proteinAtoms, config, finalHeatmapSize)
+                : await RunSparseConvCS(BuildRawHeatmap2DCPU(proteinAtoms, config, finalHeatmapSize), proteinAtoms, config, finalHeatmapSize);
 
             // 6. 自动可视化
             if (autoVisualize && heatmapTex != null)
@@ -273,62 +232,9 @@ namespace AIDrugDiscovery
                 return null;
             }
 
-            // 3. 初始化原始热力图
-            int pixelCount = finalHeatmapSize * finalHeatmapSize * finalHeatmapSize;
-            Texture3D rawHeatmap = new Texture3D(finalHeatmapSize, finalHeatmapSize, finalHeatmapSize, TextureFormat.RGBAHalf, false);
-            rawHeatmap.filterMode = FilterMode.Point;
-            rawHeatmap.wrapMode = TextureWrapMode.Clamp;
-            //Vector4[] rawHeatmapPixels = new Vector4[pixelCount];
-
-            // 4. 计算每个像素的原子特征
-            for (int z = 0; z < finalHeatmapSize; z++)
-            {
-                for (int y = 0; y < finalHeatmapSize; y++)
-                {
-                    for (int x = 0; x < finalHeatmapSize; x++)
-                    {
-                        int idx = z * finalHeatmapSize * finalHeatmapSize + y * finalHeatmapSize + x;
-                        Color features = Color.black;
-                        features.a = 0;
-
-                        // 计算像素对应的3D网格中心（基于活性位点）
-                        float gridX = config.activeSiteCenter.x + (x - finalHeatmapSize / 2) * config.gridSpacing;
-                        float gridY = config.activeSiteCenter.y + (y - finalHeatmapSize / 2) * config.gridSpacing;
-                        float gridZ = config.activeSiteCenter.z + (z - finalHeatmapSize / 2) * config.gridSpacing;
-                        Vector3 gridCenter = new Vector3(gridX, gridY, gridZ);
-
-                        // 统计网格内原子特征（半径可配置）
-                        float gridRadius = config.lowPowerMode ? 1.5f : 1.0f;
-                        int atomInGrid = 0;
-
-                        foreach (var atom in proteinAtoms)
-                        {
-                            float distance = Vector3.Distance(atom.position, gridCenter);
-                            if (distance > gridRadius)
-                                continue;
-
-                            atomInGrid++;
-                            // 通道1：原子类型（归一化）
-                            features.r += (float)atom.atomicNum / (int)AtomType.Other;
-                            // 通道2：电荷（归一化到-1~1）
-                            features.g += (float)atom.charge / 200f;
-                            // 通道3：疏水性（C/S/卤素为疏水）
-                            features.b += IsHydrophobic(atom.atomicNum) ? 1 : 0;
-                            // 通道4：氢键潜力（N/O为氢键供体/受体）
-                            features.a += IsHydrogenBond(atom.atomicNum) ? 1 : 0;
-                        }
-
-                        // 特征平均化
-                        if (atomInGrid > 0) features /= atomInGrid;
-                        //rawHeatmapPixels[idx] = features;
-                        rawHeatmap.SetPixel(x, y, z, features);
-                    }
-                }
-            }
-            rawHeatmap.Apply();
-
-            // 5. 调用CS执行稀疏卷积
-            RenderTexture heatmapTex = await RunSparseConvCS3D(rawHeatmap, proteinAtoms, config, finalHeatmapSize);
+            RenderTexture heatmapTex = useGpuHeatmapBuild3D
+                ? await RunSparseConvCS3D(proteinAtoms, config, finalHeatmapSize)
+                : await RunSparseConvCS3D(BuildRawHeatmap3DCPU(proteinAtoms, config, finalHeatmapSize), proteinAtoms, config, finalHeatmapSize);
 
             return heatmapTex;
         }
@@ -336,7 +242,91 @@ namespace AIDrugDiscovery
         #endregion
 
         #region 辅助函数：CS稀疏卷积执行
-        public async UniTask<Texture2D> RunSparseConvCS(HeatmapPixel[] rawHeatmap, AtomData[] proteinAtoms, ProteinHeatmapConfig config, int heatmapSize)
+        private HeatmapPixel[] BuildRawHeatmap2DCPU(AtomData[] proteinAtoms, ProteinHeatmapConfig config, int heatmapSize)
+        {
+            int pixelCount = heatmapSize * heatmapSize;
+            HeatmapPixel[] rawHeatmap = new HeatmapPixel[pixelCount];
+            float gridRadius = config.lowPowerMode ? 1.5f : 1.0f;
+
+            for (int y = 0; y < heatmapSize; y++)
+            {
+                for (int x = 0; x < heatmapSize; x++)
+                {
+                    int idx = y * heatmapSize + x;
+                    Vector4 features = Vector4.zero;
+                    float gridX = config.activeSiteCenter.x + (x - heatmapSize / 2) * config.gridSpacing;
+                    float gridZ = config.activeSiteCenter.z + (y - heatmapSize / 2) * config.gridSpacing;
+                    Vector3 gridCenter = new Vector3(gridX, config.activeSiteCenter.y, gridZ);
+                    int atomInGrid = 0;
+
+                    foreach (var atom in proteinAtoms)
+                    {
+                        Vector3 sampleCenter = new Vector3(gridCenter.x, atom.position.y, gridCenter.z);
+                        if (Vector3.Distance(atom.position, sampleCenter) > gridRadius)
+                            continue;
+
+                        atomInGrid++;
+                        features.x += (float)atom.atomicNum / (int)AtomType.Other;
+                        features.y += (float)atom.charge / 200f;
+                        features.z += IsHydrophobic(atom.atomicNum) ? 1 : 0;
+                        features.w += IsHydrogenBond(atom.atomicNum) ? 1 : 0;
+                    }
+
+                    if (atomInGrid > 0)
+                        features /= atomInGrid;
+
+                    rawHeatmap[idx] = new HeatmapPixel { features = features };
+                }
+            }
+
+            return rawHeatmap;
+        }
+
+        private Texture3D BuildRawHeatmap3DCPU(AtomData[] proteinAtoms, ProteinHeatmapConfig config, int heatmapSize)
+        {
+            Texture3D rawHeatmap = new Texture3D(heatmapSize, heatmapSize, heatmapSize, TextureFormat.RGBAHalf, false);
+            rawHeatmap.filterMode = FilterMode.Point;
+            rawHeatmap.wrapMode = TextureWrapMode.Clamp;
+            float gridRadius = config.lowPowerMode ? 1.5f : 1.0f;
+
+            for (int z = 0; z < heatmapSize; z++)
+            {
+                for (int y = 0; y < heatmapSize; y++)
+                {
+                    for (int x = 0; x < heatmapSize; x++)
+                    {
+                        Color features = Color.black;
+                        float gridX = config.activeSiteCenter.x + (x - heatmapSize / 2) * config.gridSpacing;
+                        float gridY = config.activeSiteCenter.y + (y - heatmapSize / 2) * config.gridSpacing;
+                        float gridZ = config.activeSiteCenter.z + (z - heatmapSize / 2) * config.gridSpacing;
+                        Vector3 gridCenter = new Vector3(gridX, gridY, gridZ);
+                        int atomInGrid = 0;
+
+                        foreach (var atom in proteinAtoms)
+                        {
+                            if (Vector3.Distance(atom.position, gridCenter) > gridRadius)
+                                continue;
+
+                            atomInGrid++;
+                            features.r += (float)atom.atomicNum / (int)AtomType.Other;
+                            features.g += (float)atom.charge / 200f;
+                            features.b += IsHydrophobic(atom.atomicNum) ? 1 : 0;
+                            features.a += IsHydrogenBond(atom.atomicNum) ? 1 : 0;
+                        }
+
+                        if (atomInGrid > 0)
+                            features /= atomInGrid;
+
+                        rawHeatmap.SetPixel(x, y, z, features);
+                    }
+                }
+            }
+
+            rawHeatmap.Apply();
+            return rawHeatmap;
+        }
+
+        public async UniTask<Texture2D> RunSparseConvCS(AtomData[] proteinAtoms, ProteinHeatmapConfig config, int heatmapSize)
         {
             int pixelCount = heatmapSize * heatmapSize;
 
@@ -346,9 +336,7 @@ namespace AIDrugDiscovery
             atomBuffer.SetData(proteinAtoms);
 
             int heatmapStride = System.Runtime.InteropServices.Marshal.SizeOf(typeof(HeatmapPixel));
-            ComputeBuffer inputBuffer = new ComputeBuffer(pixelCount, heatmapStride);
-            inputBuffer.SetData(rawHeatmap);
-
+            ComputeBuffer rawBuffer = new ComputeBuffer(pixelCount, heatmapStride);
             ComputeBuffer outputBuffer = new ComputeBuffer(pixelCount, heatmapStride);
             outputBuffer.SetData(new HeatmapPixel[pixelCount]);
 
@@ -361,6 +349,7 @@ namespace AIDrugDiscovery
             kernelBuffer.SetData(kernelWeights);
 
             // 3. 配置CS参数
+            int buildKernelId = heatmapConvCS.FindKernel("CSBuildHeatmap2D");
             int kernelId = heatmapConvCS.FindKernel("CSSparseConv");
             heatmapConvCS.SetInt("heatmapSize", heatmapSize);
             heatmapConvCS.SetInt("kernelSize", config.kernelSize);
@@ -368,15 +357,28 @@ namespace AIDrugDiscovery
             heatmapConvCS.SetFloat("stride", 1f);
             heatmapConvCS.SetInt("inChannels", config.inChannels);
             heatmapConvCS.SetInt("outChannels", config.outChannels);
+            heatmapConvCS.SetInt("atomCount", proteinAtoms.Length);
+            heatmapConvCS.SetVector("activeSiteCenter", config.activeSiteCenter);
+            heatmapConvCS.SetFloat("gridSpacing", config.gridSpacing);
+            heatmapConvCS.SetFloat("gridRadius", config.lowPowerMode ? 1.5f : 1.0f);
 
-            heatmapConvCS.SetBuffer(kernelId, "heatmapInput", inputBuffer);
+            // Unity 的 Compute 资源绑定是按 kernel 维度记录的，这里把两个 kernel 可能触达的资源都分别绑定。
+            heatmapConvCS.SetBuffer(buildKernelId, "atomBuffer", atomBuffer);
+            heatmapConvCS.SetBuffer(buildKernelId, "heatmapInput", rawBuffer);
+            heatmapConvCS.SetBuffer(buildKernelId, "kernelWeights", kernelBuffer);
+            heatmapConvCS.SetBuffer(buildKernelId, "heatmapOutput", outputBuffer);
+            heatmapConvCS.SetBuffer(buildKernelId, "rawHeatmapOutput", rawBuffer);
+
+            heatmapConvCS.SetBuffer(kernelId, "heatmapInput", rawBuffer);
             heatmapConvCS.SetBuffer(kernelId, "kernelWeights", kernelBuffer);
             heatmapConvCS.SetBuffer(kernelId, "heatmapOutput", outputBuffer);
             heatmapConvCS.SetBuffer(kernelId, "atomBuffer", atomBuffer);
+            heatmapConvCS.SetBuffer(kernelId, "rawHeatmapOutput", rawBuffer);
 
             // 4. 调度CS（适配线程组）
             int threadGroupX = Mathf.CeilToInt(heatmapSize / 32f);
             int threadGroupY = Mathf.CeilToInt(heatmapSize / 32f);
+            heatmapConvCS.Dispatch(buildKernelId, threadGroupX, threadGroupY, 1);
             heatmapConvCS.Dispatch(kernelId, threadGroupX, threadGroupY, 1);
 
             // 5. 读取输出并转换为Texture2D
@@ -402,6 +404,67 @@ namespace AIDrugDiscovery
 
             // 6. 释放Buffer
             atomBuffer.Release();
+            rawBuffer.Release();
+            outputBuffer.Release();
+            kernelBuffer.Release();
+
+            return heatmapTex;
+        }
+
+        public async UniTask<Texture2D> RunSparseConvCS(HeatmapPixel[] rawHeatmap, AtomData[] proteinAtoms, ProteinHeatmapConfig config, int heatmapSize)
+        {
+            int pixelCount = heatmapSize * heatmapSize;
+            int atomStride = System.Runtime.InteropServices.Marshal.SizeOf(typeof(AtomData));
+            ComputeBuffer atomBuffer = new ComputeBuffer(proteinAtoms.Length, atomStride);
+            atomBuffer.SetData(proteinAtoms);
+
+            int heatmapStride = System.Runtime.InteropServices.Marshal.SizeOf(typeof(HeatmapPixel));
+            ComputeBuffer inputBuffer = new ComputeBuffer(pixelCount, heatmapStride);
+            inputBuffer.SetData(rawHeatmap);
+            ComputeBuffer outputBuffer = new ComputeBuffer(pixelCount, heatmapStride);
+            outputBuffer.SetData(new HeatmapPixel[pixelCount]);
+
+            float[] kernelWeights = new float[config.kernelSize * config.kernelSize * config.inChannels * config.outChannels];
+            float weightVal = 1f / (config.kernelSize * config.kernelSize);
+            for (int i = 0; i < kernelWeights.Length; i++) kernelWeights[i] = weightVal;
+
+            ComputeBuffer kernelBuffer = new ComputeBuffer(kernelWeights.Length, sizeof(float));
+            kernelBuffer.SetData(kernelWeights);
+
+            int kernelId = heatmapConvCS.FindKernel("CSSparseConv");
+            heatmapConvCS.SetInt("heatmapSize", heatmapSize);
+            heatmapConvCS.SetInt("kernelSize", config.kernelSize);
+            heatmapConvCS.SetFloat("padding", 1f);
+            heatmapConvCS.SetFloat("stride", 1f);
+            heatmapConvCS.SetInt("inChannels", config.inChannels);
+            heatmapConvCS.SetInt("outChannels", config.outChannels);
+            heatmapConvCS.SetBuffer(kernelId, "heatmapInput", inputBuffer);
+            heatmapConvCS.SetBuffer(kernelId, "kernelWeights", kernelBuffer);
+            heatmapConvCS.SetBuffer(kernelId, "heatmapOutput", outputBuffer);
+            heatmapConvCS.SetBuffer(kernelId, "atomBuffer", atomBuffer);
+            heatmapConvCS.SetBuffer(kernelId, "rawHeatmapOutput", outputBuffer);
+
+            int threadGroupX = Mathf.CeilToInt(heatmapSize / 32f);
+            int threadGroupY = Mathf.CeilToInt(heatmapSize / 32f);
+            heatmapConvCS.Dispatch(kernelId, threadGroupX, threadGroupY, 1);
+
+            HeatmapPixel[] convHeatmap = new HeatmapPixel[pixelCount];
+            outputBuffer.GetData(convHeatmap);
+
+            Texture2D heatmapTex = new Texture2D(heatmapSize, heatmapSize, TextureFormat.RGBAFloat, false);
+            heatmapTex.filterMode = FilterMode.Point;
+            heatmapTex.wrapMode = TextureWrapMode.Clamp;
+
+            Color[] pixels = new Color[pixelCount];
+            for (int idx = 0; idx < pixelCount; idx++)
+            {
+                Vector4 feat = convHeatmap[idx].features;
+                pixels[idx] = new Color(feat.x, feat.y, feat.z, feat.w);
+            }
+            heatmapTex.SetPixels(pixels);
+            heatmapTex.Apply();
+
+            atomBuffer.Release();
             inputBuffer.Release();
             outputBuffer.Release();
             kernelBuffer.Release();
@@ -410,7 +473,7 @@ namespace AIDrugDiscovery
         }
 
         public bool test = true;
-        public async UniTask<RenderTexture> RunSparseConvCS3D(Texture3D inputHeatmap, AtomData[] proteinAtoms, ProteinHeatmapConfig config, int heatmapSize)
+        public async UniTask<RenderTexture> RunSparseConvCS3D(AtomData[] proteinAtoms, ProteinHeatmapConfig config, int heatmapSize)
         {
 
             // 1. 创建Compute Buffer
@@ -418,64 +481,60 @@ namespace AIDrugDiscovery
             ComputeBuffer atomBuffer = new ComputeBuffer(proteinAtoms.Length, atomStride);
             atomBuffer.SetData(proteinAtoms);
 
+            RenderTexture rawHeatmap = new RenderTexture(heatmapSize, heatmapSize, 0, RenderTextureFormat.ARGBHalf, 0);
+            rawHeatmap.filterMode = FilterMode.Point;
+            rawHeatmap.wrapMode = TextureWrapMode.Clamp;
+            rawHeatmap.enableRandomWrite = true;
+            rawHeatmap.name = "raw_heatmap" + heatmapSize + "x" + heatmapSize + "x" + heatmapSize;
+            rawHeatmap.dimension = UnityEngine.Rendering.TextureDimension.Tex3D;
+            rawHeatmap.volumeDepth = heatmapSize;
+            rawHeatmap.Create();
+
             RenderTexture outHeatmap = new RenderTexture(heatmapSize, heatmapSize, 0, RenderTextureFormat.ARGBHalf, 0);
             outHeatmap.filterMode = FilterMode.Point;
             outHeatmap.wrapMode = TextureWrapMode.Clamp;
             outHeatmap.enableRandomWrite = true;
-            outHeatmap.name = "heatmap" + heatmapSize + "x" + heatmapSize + "x" + heatmapSize; ;
-            outHeatmap.wrapMode = TextureWrapMode.Clamp;
+            outHeatmap.name = "heatmap" + heatmapSize + "x" + heatmapSize + "x" + heatmapSize;
             outHeatmap.dimension = UnityEngine.Rendering.TextureDimension.Tex3D;
             outHeatmap.volumeDepth = heatmapSize;
             outHeatmap.enableRandomWrite = true;
             outHeatmap.Create();
-
-
-            //ComputeBuffer outputBuffer = new ComputeBuffer(pixelCount, heatmapStride);
-            //outputBuffer.SetData(new HeatmapPixel[pixelCount]);
-
-            // 2. 初始化卷积核权重（平均卷积）
-            float[] kernelWeights = new float[config.kernelSize * config.kernelSize * config.inChannels * config.outChannels];
-            float weightVal = 1f / (config.kernelSize * config.kernelSize);
-            for (int i = 0; i < kernelWeights.Length; i++) kernelWeights[i] = weightVal;
-
-            ComputeBuffer kernelBuffer = new ComputeBuffer(kernelWeights.Length, sizeof(float));
-            kernelBuffer.SetData(kernelWeights);
-
-            // 3. 配置CS参数
-            //int kernelId = heatmapConvCS.FindKernel("CSSparseConv");
-            //heatmapConvCS.SetInt("heatmapSize", heatmapSize);
-            //heatmapConvCS.SetInt("kernelSize", config.kernelSize);
-            //heatmapConvCS.SetFloat("padding", 1f);
-            //heatmapConvCS.SetFloat("stride", 1f);
-            //heatmapConvCS.SetInt("inChannels", config.inChannels);
-            //heatmapConvCS.SetInt("outChannels", config.outChannels);
-
-            //heatmapConvCS.SetBuffer(kernelId, "heatmapInput", inputBuffer);
-            //heatmapConvCS.SetBuffer(kernelId, "kernelWeights", kernelBuffer);
-            //heatmapConvCS.SetBuffer(kernelId, "heatmapOutput", outputBuffer);
-            //heatmapConvCS.SetBuffer(kernelId, "atomBuffer", atomBuffer);
 
             Vector3Int stride = new Vector3Int(1, 1, 1);
             Vector3Int padding = new Vector3Int(1, 1, 1);
             Vector3 voxelResolution = new Vector3(0.5f, 0.5f, 0.5f);
             float sparseThreshold = 0.01f; // 基于活性值的稀疏阈值
 
+            int buildKernelId = sparseConv3DCS.FindKernel("CSBuildHeatmap3D");
             int kernelId = sparseConv3DCS.FindKernel("CSSparseConv3D");
+            sparseConv3DCS.SetInt("heatmapSize", heatmapSize);
             sparseConv3DCS.SetInts("kernelSize", config.kernelSize, config.kernelSize, config.kernelSize);
             sparseConv3DCS.SetInts("stride", stride.x, stride.y, stride.z);
             sparseConv3DCS.SetInts("padding", padding.x, padding.y, padding.z);
             sparseConv3DCS.SetFloat("sparseThreshold", sparseThreshold);
             sparseConv3DCS.SetVector("voxelResolution", voxelResolution);
-            //sparseConv3DCS.SetVector("activeSiteCenter", activeSiteCenter);
+            sparseConv3DCS.SetVector("activeSiteCenter", config.activeSiteCenter);
+            sparseConv3DCS.SetFloat("gridSpacing", config.gridSpacing);
+            sparseConv3DCS.SetFloat("gridRadius", config.lowPowerMode ? 1.5f : 1.0f);
+            sparseConv3DCS.SetInt("atomCount", proteinAtoms.Length);
+
+            // 同一 shader 的不同 kernel 需要分别绑定各自会引用到的资源。
+            sparseConv3DCS.SetBuffer(buildKernelId, "atomBuffer", atomBuffer);
+            sparseConv3DCS.SetTexture(buildKernelId, "InputHeatmap3D", rawHeatmap);
+            sparseConv3DCS.SetTexture(buildKernelId, "OutputHeatmap3D", outHeatmap);
+            sparseConv3DCS.SetTexture(buildKernelId, "RawHeatmap3D", rawHeatmap);
 
             // 4. 绑定输入输出Texture3D（float4特征）
-            sparseConv3DCS.SetTexture(kernelId, "InputHeatmap3D", inputHeatmap);
+            sparseConv3DCS.SetBuffer(kernelId, "atomBuffer", atomBuffer);
+            sparseConv3DCS.SetTexture(kernelId, "InputHeatmap3D", rawHeatmap);
             sparseConv3DCS.SetTexture(kernelId, "OutputHeatmap3D", outHeatmap);
+            sparseConv3DCS.SetTexture(kernelId, "RawHeatmap3D", rawHeatmap);
 
             // 4. 调度CS（适配线程组）
             int threadGroupX = Mathf.CeilToInt(heatmapSize / 8f);
             int threadGroupY = Mathf.CeilToInt(heatmapSize / 8f);
             int threadGroupZ = Mathf.CeilToInt(heatmapSize / 8f);
+            sparseConv3DCS.Dispatch(buildKernelId, threadGroupX, threadGroupY, threadGroupZ);
             sparseConv3DCS.Dispatch(kernelId, threadGroupX, threadGroupY, threadGroupZ);
 
             //while (test && Application.isPlaying)
@@ -507,10 +566,50 @@ namespace AIDrugDiscovery
 
             // 6. 释放Buffer
             atomBuffer.Release();
-            Texture3D.Destroy(inputHeatmap);
-            //outputBuffer.Release();
-            kernelBuffer.Release();
+            RenderTexture.Destroy(rawHeatmap);
 
+            return outHeatmap;
+        }
+
+        public async UniTask<RenderTexture> RunSparseConvCS3D(Texture3D inputHeatmap, AtomData[] proteinAtoms, ProteinHeatmapConfig config, int heatmapSize)
+        {
+            int atomStride = System.Runtime.InteropServices.Marshal.SizeOf(typeof(AtomData));
+            ComputeBuffer atomBuffer = new ComputeBuffer(proteinAtoms.Length, atomStride);
+            atomBuffer.SetData(proteinAtoms);
+
+            RenderTexture outHeatmap = new RenderTexture(heatmapSize, heatmapSize, 0, RenderTextureFormat.ARGBHalf, 0);
+            outHeatmap.filterMode = FilterMode.Point;
+            outHeatmap.wrapMode = TextureWrapMode.Clamp;
+            outHeatmap.enableRandomWrite = true;
+            outHeatmap.name = "heatmap" + heatmapSize + "x" + heatmapSize + "x" + heatmapSize;
+            outHeatmap.dimension = UnityEngine.Rendering.TextureDimension.Tex3D;
+            outHeatmap.volumeDepth = heatmapSize;
+            outHeatmap.Create();
+
+            Vector3Int stride = new Vector3Int(1, 1, 1);
+            Vector3Int padding = new Vector3Int(1, 1, 1);
+            Vector3 voxelResolution = new Vector3(0.5f, 0.5f, 0.5f);
+            float sparseThreshold = 0.01f;
+
+            int kernelId = sparseConv3DCS.FindKernel("CSSparseConv3D");
+            sparseConv3DCS.SetInt("heatmapSize", heatmapSize);
+            sparseConv3DCS.SetInts("kernelSize", config.kernelSize, config.kernelSize, config.kernelSize);
+            sparseConv3DCS.SetInts("stride", stride.x, stride.y, stride.z);
+            sparseConv3DCS.SetInts("padding", padding.x, padding.y, padding.z);
+            sparseConv3DCS.SetFloat("sparseThreshold", sparseThreshold);
+            sparseConv3DCS.SetVector("voxelResolution", voxelResolution);
+            sparseConv3DCS.SetBuffer(kernelId, "atomBuffer", atomBuffer);
+            sparseConv3DCS.SetTexture(kernelId, "InputHeatmap3D", inputHeatmap);
+            sparseConv3DCS.SetTexture(kernelId, "OutputHeatmap3D", outHeatmap);
+            sparseConv3DCS.SetTexture(kernelId, "RawHeatmap3D", outHeatmap);
+
+            int threadGroupX = Mathf.CeilToInt(heatmapSize / 8f);
+            int threadGroupY = Mathf.CeilToInt(heatmapSize / 8f);
+            int threadGroupZ = Mathf.CeilToInt(heatmapSize / 8f);
+            sparseConv3DCS.Dispatch(kernelId, threadGroupX, threadGroupY, threadGroupZ);
+
+            atomBuffer.Release();
+            Texture3D.Destroy(inputHeatmap);
             return outHeatmap;
         }
         #endregion

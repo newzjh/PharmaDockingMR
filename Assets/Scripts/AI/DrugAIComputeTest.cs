@@ -118,7 +118,7 @@ namespace AIDrugDiscovery
                     var unfilter = await dg.GenerateProteinTargetedMols(config2, heatmap, heatmap3D, currentBatch * 1024);
                     var smiles = unfilter.Item1;
                     var filters = unfilter.Item2;
-                    var smiletexture = unfilter.Item3;
+                    var smilesBatch = unfilter.Item3;
 
                     if (!Application.isPlaying)
                         return;
@@ -126,7 +126,7 @@ namespace AIDrugDiscovery
                     Texture2D.Destroy(heatmap);
                     RenderTexture.Destroy(heatmap3D);
 
-                    await mfp.Generate512BitFP(smiletexture, smiletexture.height);
+                    await mfp.Generate512BitFP(smilesBatch.SmilesBuffer, smilesBatch.BatchSize, smilesBatch.SmilesTexture);
 
                     if (!Application.isPlaying)
                         return;
@@ -143,13 +143,13 @@ namespace AIDrugDiscovery
                     List<Mesh> meshes = null;
                     if (generateMesh)
                     {
-                        meshes = await mg.GenerateBallStickMeshes(filters, smiletexture);
+                        meshes = await mg.GenerateBallStickMeshes(filters, smilesBatch.SmilesBuffer, smilesBatch.BatchSize, smilesBatch.SmilesTexture);
                     }
 
                     if (!Application.isPlaying)
                         return;
 
-                    RenderTexture.Destroy(smiletexture);
+                    smilesBatch.Dispose();
 
                     await UniTask.NextFrame();
 

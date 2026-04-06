@@ -8,87 +8,145 @@ namespace AIDrugDiscovery
 {
 
     /// <summary>
-    /// ´ÓDiffusionÉú³ÉµÄSMILES BufferÉú³É512Î»MorganÖ¸ÎÆ
+    /// ï¿½ï¿½Diffusionï¿½ï¿½ï¿½Éµï¿½SMILES Bufferï¿½ï¿½ï¿½ï¿½512Î»MorganÖ¸ï¿½ï¿½
     /// </summary>
     public class MorganFPGenerator : MonoBehaviour
     {
-        [Header("ºËÐÄÅäÖÃ")]
-        public ComputeShader morganFPComputeShader; // °ó¶¨ÉÏÊöCompute Shader
-        public int smilesMaxLength = 256;           // µ¥¸öSMILES×î´ó³¤¶È£¨ÐèÓëDiffusionÒ»ÖÂ£©
-        public int morganRadius = 2;                // MorganÖ¸ÎÆ°ë¾¶£¨ÐÐÒµ±ê×¼Îª2£©
-        private const int FP_SIZE = 512;            // ¹Ì¶¨512Î»Ö¸ÎÆ
+        [Header("ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½")]
+        public ComputeShader morganFPComputeShader; // ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Compute Shader
+        public int smilesMaxLength = 256;           // ï¿½ï¿½ï¿½ï¿½SMILESï¿½ï¿½ó³¤¶È£ï¿½ï¿½ï¿½ï¿½ï¿½DiffusionÒ»ï¿½Â£ï¿½
+        public int morganRadius = 2;                // MorganÖ¸ï¿½Æ°ë¾¶ï¿½ï¿½ï¿½ï¿½Òµï¿½ï¿½×¼Îª2ï¿½ï¿½
+        public bool usePackedFpReadback = false;
+        public bool useLegacySmilesTextureInput = true;
+        public bool useGraphTopologyMorgan = true;
+        private const int FP_SIZE = 512;            // ï¿½Ì¶ï¿½512Î»Ö¸ï¿½ï¿½
+        private const int FP_PACKED_WORDS = FP_SIZE / 32;
 
-        private int[] allFP = null;
+        private uint[] allPackedFP = null;
+        private uint[] allLegacyFP = null;
+
+        private Texture2D CreateDummyTexture()
+        {
+            Texture2D texture = new Texture2D(1, 1, TextureFormat.RGBA32, false);
+            texture.SetPixel(0, 0, Color.clear);
+            texture.Apply();
+            return texture;
+        }
 
         /// <summary>
-        /// Éú³É512Î»Ö¸ÎÆ£¨È«³ÌGPU¶Ë´¦Àí£¬ÎÞSMILES»Ø¶Á£©
+        /// ï¿½ï¿½ï¿½ï¿½512Î»Ö¸ï¿½Æ£ï¿½È«ï¿½ï¿½GPUï¿½Ë´ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½SMILESï¿½Ø¶ï¿½ï¿½ï¿½
         /// </summary>
-        /// <param name="smilesBuffer">DiffusionÊä³öµÄSMILES Buffer</param>
-        /// <param name="batchSize">·Ö×ÓÅú´ÎÊýÁ¿</param>
-        /// <returns>512Î»Ö¸ÎÆBuffer£¨¿ÉÖ±½ÓÓÃÓÚFilterByFP£©</returns>
-        public async UniTask Generate512BitFP(Texture smilesTexture, int batchSize)
+        /// <param name="smilesBuffer">Diffusionï¿½ï¿½ï¿½ï¿½ï¿½SMILES Buffer</param>
+        /// <param name="batchSize">ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½</param>
+        /// <returns>512Î»Ö¸ï¿½ï¿½Bufferï¿½ï¿½ï¿½ï¿½Ö±ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½FilterByFPï¿½ï¿½</returns>
+        public async UniTask Generate512BitFP(ComputeBuffer smilesBuffer, int batchSize, Texture legacySmilesTexture = null)
         {
-            // 1. ²ÎÊýÐ£Ñé
-            if (smilesTexture == null || batchSize <= 0)
+            // 1. ï¿½ï¿½ï¿½ï¿½Ð£ï¿½ï¿½
+            if ((smilesBuffer == null && !(useLegacySmilesTextureInput && legacySmilesTexture != null)) || batchSize <= 0)
             {
-                Debug.LogError("SMILES BufferÎÞÐ§»òÅú´Î´óÐ¡²»Æ¥Åä");
+                Debug.LogError("SMILES Bufferï¿½ï¿½Ð§ï¿½ï¿½ï¿½ï¿½ï¿½Î´ï¿½Ð¡ï¿½ï¿½Æ¥ï¿½ï¿½");
                 return;
             }
 
-            // 2. ´´½¨Ö¸ÎÆÊä³öBuffer£¨Ã¿¸ö·Ö×Ó512¸öbool£¬batchSize * 512³¤¶È£©
-            int fpBufferCount = batchSize * FP_SIZE;
-            ComputeBuffer fpBuffer = new ComputeBuffer(fpBufferCount, sizeof(int));
+            // 2. ï¿½ï¿½ï¿½ï¿½Ö¸ï¿½ï¿½ï¿½ï¿½ï¿½Bufferï¿½ï¿½Ã¿ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½512ï¿½ï¿½boolï¿½ï¿½batchSize * 512ï¿½ï¿½ï¿½È£ï¿½
+            int fpElementCount = usePackedFpReadback ? FP_PACKED_WORDS : FP_SIZE;
+            int fpBufferCount = batchSize * fpElementCount;
+            ComputeBuffer fpBuffer = new ComputeBuffer(fpBufferCount, sizeof(uint));
 
-            // 3. ³õÊ¼»¯Ö¸ÎÆBufferÎªÈ«false
-            allFP = new int[fpBufferCount];
-            Array.Fill(allFP, 0);
-            fpBuffer.SetData(allFP);
+            // 3. ï¿½ï¿½Ê¼ï¿½ï¿½Ö¸ï¿½ï¿½BufferÎªÈ«false
+            uint[] initFP = new uint[fpBufferCount];
+            Array.Fill(initFP, 0u);
+            fpBuffer.SetData(initFP);
 
-            // 4. ÅäÖÃCompute Shader²ÎÊý
-            int kernelId = morganFPComputeShader.FindKernel("CSGenerateMorganFP");
+            // 4. ï¿½ï¿½ï¿½ï¿½Compute Shaderï¿½ï¿½ï¿½ï¿½
+            bool useLegacyKernel = !useGraphTopologyMorgan || (useLegacySmilesTextureInput && legacySmilesTexture != null);
+            int kernelId = morganFPComputeShader.FindKernel(useLegacyKernel ? "CSGenerateMorganFPLegacy" : "CSGenerateMorganFP");
             morganFPComputeShader.SetInt("batchSize", batchSize);
             morganFPComputeShader.SetInt("smilesMaxLength", smilesMaxLength);
             morganFPComputeShader.SetInt("morganRadius", morganRadius);
+            morganFPComputeShader.SetInt("packOutput", usePackedFpReadback ? 1 : 0);
+            morganFPComputeShader.SetInt("useSmilesTextureInput", useLegacySmilesTextureInput && legacySmilesTexture != null ? 1 : 0);
 
-            // 5. °ó¶¨ÊäÈëÊä³öBuffer
-            morganFPComputeShader.SetTexture(kernelId, "smilesInputTexture", smilesTexture);
-            //morganFPComputeShader.SetBuffer(kernelId, "smilesInputBuffer", smilesBuffer);
+            Texture boundTexture = legacySmilesTexture ?? CreateDummyTexture();
+            bool disposeDummyTexture = legacySmilesTexture == null;
+            ComputeBuffer boundBuffer = smilesBuffer ?? new ComputeBuffer(1, sizeof(int));
+            bool disposeDummyBuffer = smilesBuffer == null;
+
+            // 5. ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Buffer
+            morganFPComputeShader.SetBuffer(kernelId, "smilesInputBuffer", boundBuffer);
+            morganFPComputeShader.SetTexture(kernelId, "smilesInputTexture", boundTexture);
             morganFPComputeShader.SetBuffer(kernelId, "fpOutputBuffer", fpBuffer);
 
-            // 6. µ÷¶ÈGPU¼ÆËã£¨Ïß³Ì×éÊÊÅäÒÆ¶¯¶Ë£©
-            int threadGroupX = Mathf.CeilToInt(batchSize / 32f); // 32Ïß³Ì/×é
+            // 6. ï¿½ï¿½ï¿½ï¿½GPUï¿½ï¿½ï¿½ã£¨ï¿½ß³ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Æ¶ï¿½ï¿½Ë£ï¿½
+            int threadGroupX = Mathf.CeilToInt(batchSize / 32f); // 32ï¿½ß³ï¿½/ï¿½ï¿½
             morganFPComputeShader.Dispatch(kernelId, threadGroupX, 1, 1);
 
-            // 7. µÈ´ýGPU¼ÆËãÍê³É£¨ÒÆ¶¯¶Ë±ØÐë£¬±ÜÃâÊý¾ÝÎ´Ð´Èë¾Í¶ÁÈ¡£©
+            // 7. ï¿½È´ï¿½GPUï¿½ï¿½ï¿½ï¿½ï¿½ï¿½É£ï¿½ï¿½Æ¶ï¿½ï¿½Ë±ï¿½ï¿½ë£¬ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Î´Ð´ï¿½ï¿½Í¶ï¿½È¡ï¿½ï¿½
             //ComputeShader.SyncThread();
 
             //fpBuffer.GetData(allFP);
             var req = await AsyncGPUReadback.RequestAsync(fpBuffer);
-            allFP = req.GetData<int>().ToArray();
+            if (usePackedFpReadback)
+            {
+                allPackedFP = req.GetData<uint>().ToArray();
+                allLegacyFP = null;
+            }
+            else
+            {
+                allLegacyFP = req.GetData<uint>().ToArray();
+                allPackedFP = null;
+            }
             fpBuffer.Dispose();
+            if (disposeDummyBuffer)
+                boundBuffer.Dispose();
+            if (disposeDummyTexture)
+                Destroy(boundTexture);
 
-            Debug.Log($"512Î»Ö¸ÎÆÉú³ÉÍê³É£ºÅú´Î´óÐ¡={batchSize}£¬Ö¸ÎÆBuffer³¤¶È={fpBufferCount}");
+            Debug.Log($"512Î»Ö¸ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½É£ï¿½ï¿½ï¿½ï¿½Î´ï¿½Ð¡={batchSize}ï¿½ï¿½elements={fpBufferCount}");
             //return fpBuffer;
         }
 
         /// <summary>
-        /// £¨¿ÉÑ¡£©¶ÁÈ¡Ö¸ÎÆBufferµ½CPU£¨½öÓÃÓÚµ÷ÊÔ/ÑéÖ¤£©
+        /// ï¿½ï¿½ï¿½ï¿½Ñ¡ï¿½ï¿½ï¿½ï¿½È¡Ö¸ï¿½ï¿½Bufferï¿½ï¿½CPUï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Úµï¿½ï¿½ï¿½/ï¿½ï¿½Ö¤ï¿½ï¿½
         /// </summary>
-        /// <param name="fpBuffer">Ö¸ÎÆBuffer</param>
-        /// <param name="molIdx">·Ö×ÓË÷Òý</param>
-        /// <returns>¸Ã·Ö×ÓµÄ512Î»Ö¸ÎÆÊý×é</returns>
+        /// <param name="fpBuffer">Ö¸ï¿½ï¿½Buffer</param>
+        /// <param name="molIdx">ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½</param>
+        /// <returns>ï¿½Ã·ï¿½ï¿½Óµï¿½512Î»Ö¸ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½</returns>
         public BitArray GetFPFromBuffer(int molIdx)
         {
-            if (allFP == null || molIdx >= allFP.Length / FP_SIZE)
+            if (usePackedFpReadback)
             {
-                Debug.LogError("Ö¸ÎÆBufferÎÞÐ§»ò·Ö×ÓË÷ÒýÔ½½ç");
+                if (allPackedFP == null || molIdx >= allPackedFP.Length / FP_PACKED_WORDS)
+                {
+                    Debug.LogError("Ö¸ï¿½ï¿½Bufferï¿½ï¿½Ð§ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ô½ï¿½ï¿½");
+                    return null;
+                }
+            }
+            else if (allLegacyFP == null || molIdx >= allLegacyFP.Length / FP_SIZE)
+            {
+                Debug.LogError("Ö¸ï¿½ï¿½Bufferï¿½ï¿½Ð§ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ô½ï¿½ï¿½");
                 return null;
             }
 
             BitArray bits = new BitArray(FP_SIZE);
-            for (int i = 0; i < FP_SIZE; i++)
+            if (usePackedFpReadback)
             {
-                bits.Set(i, allFP[molIdx * FP_SIZE + i] > 0);
+                int wordBase = molIdx * FP_PACKED_WORDS;
+                for (int wordIdx = 0; wordIdx < FP_PACKED_WORDS; wordIdx++)
+                {
+                    uint word = allPackedFP[wordBase + wordIdx];
+                    int bitBase = wordIdx * 32;
+                    for (int bit = 0; bit < 32; bit++)
+                    {
+                        bits.Set(bitBase + bit, (word & (1u << bit)) != 0u);
+                    }
+                }
+            }
+            else
+            {
+                int bitBase = molIdx * FP_SIZE;
+                for (int i = 0; i < FP_SIZE; i++)
+                    bits.Set(i, allLegacyFP[bitBase + i] != 0u);
             }
 
             return bits;
@@ -97,7 +155,7 @@ namespace AIDrugDiscovery
 
         private void OnDestroy()
         {
-            // ¶µµ×ÊÍ·Å£¨·ÀÖ¹ÒÅÂ©£©
+            // ï¿½ï¿½ï¿½ï¿½ï¿½Í·Å£ï¿½ï¿½ï¿½Ö¹ï¿½ï¿½Â©ï¿½ï¿½
             morganFPComputeShader = null;
         }
     }
