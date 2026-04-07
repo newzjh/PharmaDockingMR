@@ -6,14 +6,15 @@ using UnityEngine.Rendering;
 
 namespace AIDrugDiscovery
 {
+    // Controls voxelization and marching-cubes settings for Surface mode.
     [System.Serializable]
     public class SurfaceConfig
     {
         public float gridSpacing = 0.3f;
         public float isoLevel = 0.5f;
-        public int gridResolution = 64; // e.g. 64x64x64
-        public float padding = 3.0f; // Padding around atoms
-        public float bondLength = 1.5f; // Used for layout
+        public int gridResolution = 64; // For example, a 64x64x64 voxel grid.
+        public float padding = 3.0f; // Extra space around the ligand before voxelization.
+        public float bondLength = 1.5f; // Used to build the CPU-side atom layout from the SMILES graph.
     }
 
     public struct SurfaceVertexData
@@ -23,14 +24,17 @@ namespace AIDrugDiscovery
         public Vector4 color;
     }
 
+    // Generates an isosurface mesh for a single ligand by voxelizing CPU-preprocessed atom positions.
     public class SMILESToSurfaceMesh : MonoBehaviour
     {
-        [Header("渲染参数 (Surface Mode)")]
+        [Header("Settings")]
         public ComputeShader surfaceCS;
         public SurfaceConfig config;
         public int smilesMaxLength = 256;
         public int maxVertexLimit = 65000;
         public bool useLegacySmilesTextureInput = false;
+        private ComputeBuffer dummySmilesInputBuffer;
+        private Texture2D dummySmilesInputTexture;
 
         private ComputeBuffer edgeTableBuffer;
         private ComputeBuffer triTableBuffer;
@@ -51,7 +55,7 @@ namespace AIDrugDiscovery
 
         private void InitializeBuffers()
         {
-            int maxAtoms = 100; // Match MAX_ATOM_COUNT in shader
+            int maxAtoms = 100; // Must match MAX_ATOM_COUNT in the compute shader.
 
             edgeTableBuffer = new ComputeBuffer(256, sizeof(int));
             edgeTableBuffer.SetData(MarchingCubesTables.cubeEdgeFlags);
@@ -69,6 +73,9 @@ namespace AIDrugDiscovery
 
             vertexBuffer = new ComputeBuffer(maxVertexLimit, Marshal.SizeOf(typeof(SurfaceVertexData)));
             vertexCountBuffer = new ComputeBuffer(1, sizeof(int));
+            dummySmilesInputBuffer = new ComputeBuffer(1, sizeof(int));
+            dummySmilesInputBuffer.SetData(new[] { 0 });
+            dummySmilesInputTexture = CreateDummyTexture();
         }
 
         private Texture2D CreateDummyTexture()
@@ -79,98 +86,66 @@ namespace AIDrugDiscovery
             return tex;
         }
 
+        private int[] BuildSmilesData(string smiles)
+        {
+            int[] smilesData = new int[smilesMaxLength];
+            if (string.IsNullOrEmpty(smiles))
+                return smilesData;
+
+            int copyLength = Mathf.Min(smiles.Length, smilesMaxLength - 1);
+            for (int i = 0; i < copyLength; i++)
+                smilesData[i] = smiles[i];
+            return smilesData;
+        }
+
         public async UniTask<Mesh> GenerateSingleSurfaceMesh(string smiles)
         {
             if (string.IsNullOrEmpty(smiles)) return null;
             if (surfaceCS == null) return null;
 
-            int[] smilesData = new int[smilesMaxLength];
-            int copyLength = Mathf.Min(smiles.Length, smilesMaxLength - 1);
-            for (int i = 0; i < copyLength; i++)
-                smilesData[i] = smiles[i];
+            return await GenerateSingleSurfaceMesh(BuildSmilesData(smiles));
+        }
 
-            ComputeBuffer singleSmilesBuffer = new ComputeBuffer(1, smilesMaxLength * sizeof(int));
-            singleSmilesBuffer.SetData(smilesData);
+        public async UniTask<Mesh> GenerateSingleSurfaceMesh(int[] smilesData)
+        {
+            if (smilesData == null || smilesData.Length == 0 || surfaceCS == null)
+                return null;
 
-            Texture2D singleSmilesTexture = null;
-            if (useLegacySmilesTextureInput)
-            {
-                singleSmilesTexture = new Texture2D(smilesMaxLength, 1, TextureFormat.RGBAHalf, false);
-                Color[] pixels = new Color[smilesMaxLength];
-                for (int i = 0; i < copyLength; i++)
-                    pixels[i] = new Color(smilesData[i] / 255f, 0f, 0f, 1f);
-                for (int i = copyLength; i < smilesMaxLength; i++)
-                    pixels[i] = new Color(0f, 0f, 0f, 1f);
-                singleSmilesTexture.SetPixels(pixels);
-                singleSmilesTexture.Apply();
-            }
+            string smiles = SmilesMeshPreprocessor.DecodeAsciiSmiles(smilesData);
+            SmilesMeshDescription description = SmilesMeshPreprocessor.Build(smiles, config.bondLength);
+            if (description.AtomTypes.Count == 0)
+                return null;
 
-            Texture boundTexture = singleSmilesTexture ?? CreateDummyTexture();
-            bool disposeDummyTexture = singleSmilesTexture == null;
+            // Upload the CPU-preprocessed atom layout so the compute shader only handles density and marching cubes.
+            parsedAtomTypesBuffer.SetData(description.AtomTypes.ToArray());
+            parsedAtomPositionsBuffer.SetData(description.AtomPositions.ToArray());
+            parsedAtomCountBuffer.SetData(new[] { description.AtomTypes.Count });
 
-            // Reset vertex count
             vertexCountBuffer.SetData(new int[] { 0 });
 
-            // 1. CSParseSMILES
-            int kernelParse = surfaceCS.FindKernel("CSParseSMILES");
-            surfaceCS.SetBuffer(kernelParse, "smilesInputBuffer", singleSmilesBuffer);
-            surfaceCS.SetTexture(kernelParse, "smilesInputTexture", boundTexture);
-            surfaceCS.SetInt("useSmilesTextureInput", useLegacySmilesTextureInput && singleSmilesTexture != null ? 1 : 0);
-            surfaceCS.SetInt("smilesMaxLength", smilesMaxLength);
-            surfaceCS.SetFloat("bondLength", config.bondLength);
-            surfaceCS.SetBuffer(kernelParse, "parsedAtomTypes", parsedAtomTypesBuffer);
-            surfaceCS.SetBuffer(kernelParse, "parsedAtomPositions", parsedAtomPositionsBuffer);
-            surfaceCS.SetBuffer(kernelParse, "parsedAtomCount", parsedAtomCountBuffer);
-            
-            surfaceCS.Dispatch(kernelParse, 1, 1, 1);
-
-            // Wait a frame if needed, but since we are doing async, we can just let GPU execute sequentially.
-            // All subsequent dispatches will be queued after this one automatically by the driver.
-
-            // Setup Grid
             int res = config.gridResolution;
             float spacing = config.gridSpacing;
-            // Approximate grid min: Since we layout along X, min X is roughly 0 - padding. Max X is roughly maxAtoms * bondLength + padding.
-            // To make it simple and centered, we can just use a fixed bounding box for small molecules.
-            // Max atoms = 100, length = 150. If we use a fixed 64x64x64 grid with 0.3 spacing, total size is ~19.2 Angstroms.
-            // Wait, 19.2 Angstroms is too small for a 100 atom molecule laid out linearly!
-            // If the molecule is laid out linearly, it can be up to 100 * 1.5 = 150 A long!
-            // We should really read back the atom count, or just compute a dynamic grid.
-            // Let's do a simple readback to get the bounds, or just make the grid very large.
-            // Reading back the count is safer.
-            
-            int[] parsedCount = new int[1];
-            var reqCount = await AsyncGPUReadback.RequestAsync(parsedAtomCountBuffer);
-            parsedCount = reqCount.GetData<int>().ToArray();
-            int aCount = parsedCount[0];
-
-            if (aCount == 0)
-            {
-                singleSmilesBuffer.Dispose();
-                if (!disposeDummyTexture && singleSmilesTexture != null) Destroy(singleSmilesTexture);
-                if (disposeDummyTexture) Destroy(boundTexture);
-                return null;
-            }
-
-            float maxX = aCount * config.bondLength;
             float padding = config.padding;
-            
-            // Adjust grid bounds based on actual size
-            Vector3 minBounds = new Vector3(-padding, -padding, -padding);
-            Vector3 maxBounds = new Vector3(maxX + padding, padding, padding);
+
+            Vector3 minBounds = description.AtomPositions[0];
+            Vector3 maxBounds = description.AtomPositions[0];
+            for (int i = 1; i < description.AtomPositions.Count; i++)
+            {
+                minBounds = Vector3.Min(minBounds, description.AtomPositions[i]);
+                maxBounds = Vector3.Max(maxBounds, description.AtomPositions[i]);
+            }
+            minBounds -= Vector3.one * padding;
+            maxBounds += Vector3.one * padding;
             Vector3 size = maxBounds - minBounds;
-            
-            // Set dynamic grid resolution based on size and spacing
+
             int resX = Mathf.CeilToInt(size.x / spacing);
             int resY = Mathf.CeilToInt(size.y / spacing);
             int resZ = Mathf.CeilToInt(size.z / spacing);
-            
-            // Ensure multiples of 8 for thread groups
+
             resX = Mathf.CeilToInt(resX / 8.0f) * 8;
             resY = Mathf.CeilToInt(resY / 8.0f) * 8;
             resZ = Mathf.CeilToInt(resZ / 8.0f) * 8;
-            
-            // Reallocate density grids if needed
+
             int totalCells = resX * resY * resZ;
             if (densityGridBuffer == null || densityGridBuffer.count < totalCells)
             {
@@ -190,13 +165,11 @@ namespace AIDrugDiscovery
             int groupY = resY / 8;
             int groupZ = resZ / 8;
 
-            // 2. CSClearGrid
             int kernelClear = surfaceCS.FindKernel("CSClearGrid");
             surfaceCS.SetBuffer(kernelClear, "densityGrid", densityGridBuffer);
             surfaceCS.SetBuffer(kernelClear, "colorGrid", colorGridBuffer);
             surfaceCS.Dispatch(kernelClear, groupX, groupY, groupZ);
 
-            // 3. CSComputeDensity
             int kernelDensity = surfaceCS.FindKernel("CSComputeDensity");
             surfaceCS.SetBuffer(kernelDensity, "parsedAtomTypes", parsedAtomTypesBuffer);
             surfaceCS.SetBuffer(kernelDensity, "parsedAtomPositions", parsedAtomPositionsBuffer);
@@ -205,7 +178,6 @@ namespace AIDrugDiscovery
             surfaceCS.SetBuffer(kernelDensity, "colorGrid", colorGridBuffer);
             surfaceCS.Dispatch(kernelDensity, groupX, groupY, groupZ);
 
-            // 4. CSMarchingCubes
             int kernelMC = surfaceCS.FindKernel("CSMarchingCubes");
             surfaceCS.SetBuffer(kernelMC, "densityGrid", densityGridBuffer);
             surfaceCS.SetBuffer(kernelMC, "colorGrid", colorGridBuffer);
@@ -215,7 +187,6 @@ namespace AIDrugDiscovery
             surfaceCS.SetBuffer(kernelMC, "vertexCountBuffer", vertexCountBuffer);
             surfaceCS.Dispatch(kernelMC, groupX, groupY, groupZ);
 
-            // 5. Readback results
             var reqVC = await AsyncGPUReadback.RequestAsync(vertexCountBuffer);
             int[] vCountArray = reqVC.GetData<int>().ToArray();
             int vCount = vCountArray[0];
@@ -249,11 +220,6 @@ namespace AIDrugDiscovery
                 finalMesh.triangles = indices;
             }
 
-            // Cleanup local resources
-            singleSmilesBuffer.Dispose();
-            if (!disposeDummyTexture && singleSmilesTexture != null) Destroy(singleSmilesTexture);
-            if (disposeDummyTexture) Destroy(boundTexture);
-
             return finalMesh;
         }
 
@@ -268,6 +234,9 @@ namespace AIDrugDiscovery
             colorGridBuffer?.Release();
             vertexBuffer?.Release();
             vertexCountBuffer?.Release();
+            dummySmilesInputBuffer?.Release();
+            if (dummySmilesInputTexture != null)
+                Destroy(dummySmilesInputTexture);
         }
     }
 }

@@ -5,16 +5,16 @@
 #include "AtomCommon.hlsl"
 
 
-int batchSize; // 分子批次数量
-int currentBatchSize; // 当前 dispatch 实际处理数量
-int moleculeOffset; // 当前 dispatch 的分子起始偏移
-int morganRadius; // Morgan指纹半径（推荐2）
+int batchSize; 
+int currentBatchSize; 
+int moleculeOffset; 
+int morganRadius; 
 int packOutput;
 int useSmilesTextureInput;
 int graphMaxNeighbors;
 
 
-// 输入：Diffusion生成的SMILES Buffer（char数组，每个分子占SMILES_MAX_LENGTH长度）
+
 StructuredBuffer<int> smilesInputBuffer;
 Texture2D<float4> smilesInputTexture;
 StructuredBuffer<int> graphAtomCountBuffer;
@@ -22,7 +22,7 @@ StructuredBuffer<int> graphAtomTypeBuffer;
 StructuredBuffer<int> graphDegreeBuffer;
 StructuredBuffer<int> graphNeighborIndexBuffer;
 StructuredBuffer<int> graphNeighborBondTypeBuffer;
-// 输出：512位指纹的 packed uint buffer（每分子16个uint）
+
 RWStructuredBuffer<uint> fpOutputBuffer;
 
 void ComputeMorganFPLegacy(
@@ -191,7 +191,7 @@ void WriteMorganOutput(int molIdx, in int fp[FP_SIZE])
 }
 
 
-// 旧版轻量路径：不构建 bondMatrix，避免大型局部数组导致的卡顿/溢出。
+
 [numthreads(32, 1, 1)]
 void CSGenerateMorganFPLegacy(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
@@ -220,8 +220,8 @@ void CSGenerateMorganFPLegacy(uint3 dispatchThreadID : SV_DispatchThreadID)
     WriteMorganOutput(molIdx, fp);
 }
 
-// 优化路径：基于显式拓扑图构建近似 Morgan 环境。
-// 通过分块 dispatch 限制单次 GPU 工作量，而不是把整批任务压进一次长 dispatch。
+
+
 [numthreads(32, 1, 1)]
 void CSGenerateMorganFP(uint3 dispatchThreadID : SV_DispatchThreadID)
 {

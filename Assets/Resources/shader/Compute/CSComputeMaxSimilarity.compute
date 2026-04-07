@@ -1,26 +1,22 @@
 #pragma kernel CSComputeMaxSimilarity
 #pragma enable_d3d11_debug_symbols
 
-#define MAX_ATOM_COUNT 60 // 分子最大原子数
+#define MAX_ATOM_COUNT 60 
 #define SMILES_MAX_LENGTH 256
 #define FP_SIZE 512
 
-int genCount; // 生成分子数量
-int refCount; // 参考分子数量
-//int FP_SIZE;   // 指纹长度
-float minSimilarity; // 最低相似性阈值
+int genCount; 
+int refCount; 
+
+float minSimilarity; 
 
 
-// 输入：生成分子指纹Buffer（genCount * FP_SIZE）
+
 StructuredBuffer<bool> generatedFP;
-// 输入：参考分子库指纹Buffer（refCount * FP_SIZE）
-StructuredBuffer<bool> referenceFP;
-// 输出：每个生成分子的最大相似性
-RWStructuredBuffer<float> maxSimilarityOutput;
 
-/// <summary>
-/// 计算两个指纹的Tanimoto相似性
-/// </summary>
+StructuredBuffer<bool> referenceFP;
+
+RWStructuredBuffer<float> maxSimilarityOutput;
 float CalculateTanimoto(bool fpA[FP_SIZE], bool fpB[FP_SIZE], int size)
 {
     int intersection = 0;
@@ -40,32 +36,32 @@ void CSComputeMaxSimilarity(uint3 dispatchThreadID : SV_DispatchThreadID)
     int genIdx = dispatchThreadID.x;
     if (genIdx >= genCount) return;
 
-    // 1. 提取当前生成分子的指纹
+    
     bool genFP [FP_SIZE];
     for (int i = 0; i < FP_SIZE; i++)
     {
         genFP[i] = generatedFP[genIdx * FP_SIZE + i];
     }
 
-    // 2. 遍历参考库，计算最大相似性
+    
     float maxSim = 0.0f;
     for (int refIdx = 0; refIdx < refCount; refIdx++)
     {
-        // 提取参考分子指纹
+        
         bool refFP [FP_SIZE];
         for (int i = 0; i < FP_SIZE; i++)
         {
             refFP[i] = referenceFP[refIdx * FP_SIZE + i];
         }
 
-        // 计算相似性
+        
         float sim = CalculateTanimoto(genFP, refFP, FP_SIZE);
         if (sim > maxSim) maxSim = sim;
 
-        // 提前退出：已超过阈值且无更大可能
+        
         if (maxSim >= 1.0f) break;
     }
 
-    // 3. 输出最大相似性（低于阈值则置0）
+    
     maxSimilarityOutput[genIdx] = maxSim >= minSimilarity ? maxSim : 0.0f;
 }

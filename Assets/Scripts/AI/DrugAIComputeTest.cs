@@ -14,12 +14,12 @@ namespace AIDrugDiscovery
     public class DrugAIComputeTest : MonoBehaviour
     {
 
-        // 测试参数
-        private const int HEATMAP_SIZE = 32;       // 32×32热力图
-        private const int FP_LENGTH = 512;        // Morgan指纹长度
-        private const int TOTAL_TIMESTEPS = 1000;  // Diffusion总时间步
         
-        // 播放器変量
+        private const int HEATMAP_SIZE = 32;       
+        private const int FP_LENGTH = 512;        
+        private const int TOTAL_TIMESTEPS = 1000;  
+        
+        
         public bool isPaused = false;
         public bool isTerminated = false;
         public int currentBatch = 0;
@@ -31,12 +31,12 @@ namespace AIDrugDiscovery
         public bool detectPocket = true;
 
         [Header("Render Modes")]
-        //public bool generateMesh = false;
-        public bool useCartoonMode = false;
-        public bool useSurfaceMode = false;
+        public bool generateMesh = false;
+        public MoleculeRenderMode renderMode = MoleculeRenderMode.BallStick;
+        private SMILESToBallMesh ballGen;
         private SMILESToCartoonMesh cartoonGen;
         private SMILESToSurfaceMesh surfaceGen;
-        private SMILESToBallStickMesh mg;
+        private SMILESToBallStickMesh ballStickGen;
 
         public SMILESFlipPageView FlipPageView;
         private Transform currentLigandParent;
@@ -47,7 +47,8 @@ namespace AIDrugDiscovery
             var pocketdetector = GameObject.FindFirstObjectByType<PocketDetector>(FindObjectsInactive.Include);
             var hg = GameObject.FindFirstObjectByType<HeatmapGenerator>(FindObjectsInactive.Include);
             var dg = GameObject.FindFirstObjectByType<DiffusionGenerator>(FindObjectsInactive.Include);
-            mg = GameObject.FindFirstObjectByType<SMILESToBallStickMesh>(FindObjectsInactive.Include);
+            ballGen = GameObject.FindFirstObjectByType<SMILESToBallMesh>(FindObjectsInactive.Include);
+            ballStickGen = GameObject.FindFirstObjectByType<SMILESToBallStickMesh>(FindObjectsInactive.Include);
             cartoonGen = GameObject.FindFirstObjectByType<SMILESToCartoonMesh>(FindObjectsInactive.Include);
             surfaceGen = GameObject.FindFirstObjectByType<SMILESToSurfaceMesh>(FindObjectsInactive.Include);
             var rfp = GameObject.FindFirstObjectByType<ReferenceFPGenerator>(FindObjectsInactive.Include);
@@ -80,7 +81,7 @@ namespace AIDrugDiscovery
                 await UniTask.NextFrame();
             }
 
-            // 2. 1AQ1活性配体SMILES列表（实验数据）
+            
             List<string> aq1ActiveSmiles = new List<string>()
             {
                 "C1=CC=C(C(=C1)C(=O)N)O",
@@ -88,16 +89,16 @@ namespace AIDrugDiscovery
                 "CN1C=NC2=C1C(=O)N(C(=O)N2C)C"
             };
 
-            // 3. 生成ECFP4参考指纹库
+            
             var aq1FPLibrary = rfp.GenerateReferenceFPLibrary(
                 targetName: "1AQ1",
                 activeSmilesList: aq1ActiveSmiles,
                 fpType: ReferenceFPGenerator.FingerprintType.ECFP4,
                 fpLength: 512);
 
-            // 4. 输出核心信息
-            Debug.Log($"1AQ1共识指纹长度：{aq1FPLibrary.ConsensusFP.Count}");
-            Debug.Log($"校准相似度阈值：{aq1FPLibrary.CalibratedThreshold:F2}");
+            
+            Debug.Log($"Built the 1AQ1 reference fingerprint library from {aq1FPLibrary.IndividualFPs.Count} active ligands.");
+            Debug.Log($"The calibrated similarity threshold for 1AQ1 is {aq1FPLibrary.CalibratedThreshold:F3}.");
 
             foreach (var config in hg.proteinConfigs)
             {
@@ -241,7 +242,7 @@ namespace AIDrugDiscovery
 
         private async void HandleSmilesSelected(int smilesIndex, string smiles)
         {
-            if (string.IsNullOrEmpty(smiles))
+            if (!generateMesh || string.IsNullOrEmpty(smiles))
                 return;
 
             if (activePreviewMesh != null)
@@ -251,12 +252,25 @@ namespace AIDrugDiscovery
             }
 
             Mesh mesh = null;
-            if (useSurfaceMode && surfaceGen != null)
-                mesh = await surfaceGen.GenerateSingleSurfaceMesh(smiles);
-            else if (useCartoonMode && cartoonGen != null)
-                mesh = await cartoonGen.GenerateSingleCartoonMesh(smiles);
-            else if (mg != null)
-                mesh = await mg.GenerateSingleBallStickMesh(smiles);
+            switch (renderMode)
+            {
+                case MoleculeRenderMode.Ball:
+                    if (ballGen != null)
+                        mesh = await ballGen.GenerateSingleBallMesh(smiles);
+                    break;
+                case MoleculeRenderMode.Cartoon:
+                    if (cartoonGen != null)
+                        mesh = await cartoonGen.GenerateSingleCartoonMesh(smiles);
+                    break;
+                case MoleculeRenderMode.Surface:
+                    if (surfaceGen != null)
+                        mesh = await surfaceGen.GenerateSingleSurfaceMesh(smiles);
+                    break;
+                default:
+                    if (ballStickGen != null)
+                        mesh = await ballStickGen.GenerateSingleBallStickMesh(smiles);
+                    break;
+            }
 
             if (mesh == null || !Application.isPlaying)
                 return;

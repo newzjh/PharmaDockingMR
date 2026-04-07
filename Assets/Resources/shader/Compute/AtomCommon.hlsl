@@ -1,59 +1,56 @@
-﻿// ==================== 通用常量定义（整合AtomCommon.txt）====================
-// 原子类型常量（使用原子序数作为标识，兼容药物分子常见原子）
+// Shared atom and bond constants used by the compute pipelines.
+// Aromatic atom types use distinct IDs so rendering and hashing can preserve them.
 #define ATOM_TYPE_H 1
 #define ATOM_TYPE_C 6
-#define ATOM_TYPE_c 66 // 小写c（芳香碳），用非原子序数标识避免冲突
+#define ATOM_TYPE_c 66 
 #define ATOM_TYPE_N 7
-#define ATOM_TYPE_n 77 // 小写n（芳香氮）
+#define ATOM_TYPE_n 77 
 #define ATOM_TYPE_O 8
-#define ATOM_TYPE_o 88 // 小写o（芳香氧）
+#define ATOM_TYPE_o 88 
 #define ATOM_TYPE_S 16
-#define ATOM_TYPE_s 166 // 小写s（芳香硫）
+#define ATOM_TYPE_s 166 
 #define ATOM_TYPE_F 9
 #define ATOM_TYPE_Cl 17
 #define ATOM_TYPE_Br 35
 #define ATOM_TYPE_I 53
 #define ATOM_TYPE_P 15
-#define ATOM_TYPE_p 155 // 芳香磷
+#define ATOM_TYPE_p 155 
 #define ATOM_TYPE_B 5
 #define ATOM_TYPE_Si 14
 #define ATOM_TYPE_As 33
 #define ATOM_TYPE_Se 34
 #define ATOM_TYPE_UNKNOWN 0
 
-// 键类型常量
+
 #define BOND_SINGLE 0
 #define BOND_DOUBLE 1
 #define BOND_TRIPLE 2
 #define BOND_AROMATIC 3
 #define BOND_UNKNOWN 4
 
-// 通用尺寸常量
-#define MAX_ATOM_COUNT 60 // 分子最大原子数（沿用AtomCommon.txt定义）
-#define SMILES_MAX_LENGTH 256 // 单个SMILES最大长度（沿用AtomCommon.txt）
-#define FP_SIZE 512 // 指纹长度（沿用AtomCommon.txt）
-#define MAX_RING_COUNT 10 // 最大环数量
-#define MAX_BRANCH_DEPTH 3 // 最大支链深度
 
+#define MAX_ATOM_COUNT 60 
+#define SMILES_MAX_LENGTH 256 
+#define FP_SIZE 512 
+#define MAX_RING_COUNT 10 
+#define MAX_BRANCH_DEPTH 3 // Maximum nested SMILES branch depth handled on GPU.
+#define MAX_GRAPH_NEIGHBORS 6 // Compact adjacency list capacity per atom.
 
-// ==================== AtomCommon.txt核心函数（保留并扩展）====================
-// CPK配色与半径映射（原封保留）
+// Legacy radius approximation kept for compatibility with existing visuals.
 float GetAtomRadiusOld(int atomicNumber)
 {
     float radius =
-        0.35f + // 常数项
-        0.18f * log(atomicNumber) - // 对数项（原子序数越大，半径增长放缓）
-        0.005f * atomicNumber + // 线性修正项
-        0.02f * sin(atomicNumber); // 周期性修正（适配元素周期表）
+        0.35f +
+        0.18f * log(atomicNumber) -
+        0.005f * atomicNumber +
+        0.02f * sin(atomicNumber);
     
-    return clamp(radius, 0.5f, 2.5f); // H=0.53Å, Cl=1.75Å
+    return clamp(radius, 0.5f, 2.5f);
 }
 
-// ==================== AtomCommon.txt核心函数（保留并扩展）====================
-// CPK配色与半径映射（原封保留）
+// Atom radii are slightly reduced for aromatic variants to avoid inflated rings.
 float GetAtomRadius(int atomicNumber)
 {
-    // 为芳香原子（小写）添加半径适配
     switch (atomicNumber)
     {
         case ATOM_TYPE_c:
@@ -71,36 +68,33 @@ float GetAtomRadius(int atomicNumber)
     }
     
     float radius =
-        0.35f + // 常数项
-        0.18f * log(atomicNumber) - // 对数项（原子序数越大，半径增长放缓）
-        0.005f * atomicNumber + // 线性修正项
-        0.02f * sin(atomicNumber); // 周期性修正（适配元素周期表）
+        0.35f +
+        0.18f * log(atomicNumber) -
+        0.005f * atomicNumber +
+        0.02f * sin(atomicNumber);
     
-    // 修正非金属原子的半径偏差（1AQ1核心原子均为非金属）
     if (atomicNumber >= 6 && atomicNumber <= 17)
     {
-        radius += 0.4f; // 非金属原子基准修正
+        radius += 0.4f;
     }
     
-    return clamp(radius, 0.5f, 2.5f); // H=0.53Å, Cl=1.75Å
+    return clamp(radius, 0.5f, 2.5f);
 }
 
 #define PI 3.1415926f
 float4 GetAtomColor(int atomicNumber)
 {
-    // 为芳香原子（小写）定制颜色
     switch(atomicNumber)
     {
-        case ATOM_TYPE_c: return float4(0.2f, 0.8f, 0.2f, 1.0f); // 芳香碳：深绿色
-        case ATOM_TYPE_n: return float4(0.2f, 0.2f, 0.8f, 1.0f); // 芳香氮：深蓝色
-        case ATOM_TYPE_o: return float4(0.8f, 0.2f, 0.2f, 1.0f); // 芳香氧：深红色
-        case ATOM_TYPE_s: return float4(0.8f, 0.8f, 0.2f, 1.0f); // 芳香硫：深黄色
-        case ATOM_TYPE_p: return float4(0.8f, 0.2f, 0.8f, 1.0f); // 芳香磷：深紫色
+        case ATOM_TYPE_c: return float4(0.2f, 0.8f, 0.2f, 1.0f);
+        case ATOM_TYPE_n: return float4(0.2f, 0.2f, 0.8f, 1.0f);
+        case ATOM_TYPE_o: return float4(0.8f, 0.2f, 0.2f, 1.0f);
+        case ATOM_TYPE_s: return float4(0.8f, 0.8f, 0.2f, 1.0f);
+        case ATOM_TYPE_p: return float4(0.8f, 0.2f, 0.8f, 1.0f);
         default:
             break;
     }
     
-    // 原有颜色计算逻辑（原封保留）
     float normZ = saturate((atomicNumber - 1) / 16.0f);
     float r = 0.5f + 0.4f * sin(normZ * PI * 2 - PI / 2);
     float g = 0.5f + 0.4f * cos(normZ * PI * 3 - PI / 3);
@@ -108,7 +102,7 @@ float4 GetAtomColor(int atomicNumber)
     return float4(saturate(r), saturate(g), saturate(b), 1.0f);
 }
 
-// 核心哈希函数（原封保留）
+// Stable hash used by the Morgan fingerprint kernels.
 uint Hash(uint3 feature)
 {
     feature = feature * 1664525u + 1013904223u;
@@ -134,33 +128,193 @@ bool IsAromaticAtomType(int atomType)
            atomType == ATOM_TYPE_s || atomType == ATOM_TYPE_p;
 }
 
-int GetBondMatrixIndex(int a, int b)
+int GetGraphArrayIndex(int atomIdx, int slot)
 {
-    return a * MAX_ATOM_COUNT + b;
+    return atomIdx * MAX_GRAPH_NEIGHBORS + slot;
 }
 
-void SetBondValue(inout int bondMatrix[MAX_ATOM_COUNT * MAX_ATOM_COUNT], int a, int b, int bondType)
+bool HasGraphBond(
+    int a,
+    int b,
+    in int atomDegrees[MAX_ATOM_COUNT],
+    in int neighborIndices[MAX_ATOM_COUNT * MAX_GRAPH_NEIGHBORS])
 {
-    int idxAB = GetBondMatrixIndex(a, b);
-    int idxBA = GetBondMatrixIndex(b, a);
-    bondMatrix[idxAB] = bondType;
-    bondMatrix[idxBA] = bondType;
-}
-
-int GetBondValue(in int bondMatrix[MAX_ATOM_COUNT * MAX_ATOM_COUNT], int a, int b)
-{
-    return bondMatrix[GetBondMatrixIndex(a, b)];
-}
-
-int CountAtomDegree(int atomIdx, int atomCount, in int bondMatrix[MAX_ATOM_COUNT * MAX_ATOM_COUNT])
-{
-    int degree = 0;
-    for (int i = 0; i < atomCount; i++)
+    int degree = min(atomDegrees[a], MAX_GRAPH_NEIGHBORS);
+    for (int slot = 0; slot < degree; slot++)
     {
-        if (i != atomIdx && GetBondValue(bondMatrix, atomIdx, i) != BOND_UNKNOWN)
-            degree++;
+        if (neighborIndices[GetGraphArrayIndex(a, slot)] == b)
+            return true;
     }
-    return degree;
+    return false;
+}
+
+int GetGraphBondType(
+    int a,
+    int b,
+    in int atomDegrees[MAX_ATOM_COUNT],
+    in int neighborIndices[MAX_ATOM_COUNT * MAX_GRAPH_NEIGHBORS],
+    in int neighborBondTypes[MAX_ATOM_COUNT * MAX_GRAPH_NEIGHBORS])
+{
+    int degree = min(atomDegrees[a], MAX_GRAPH_NEIGHBORS);
+    for (int slot = 0; slot < degree; slot++)
+    {
+        int idx = GetGraphArrayIndex(a, slot);
+        if (neighborIndices[idx] == b)
+            return neighborBondTypes[idx];
+    }
+    return BOND_UNKNOWN;
+}
+
+bool TryAddGraphNeighbor(
+    int atomIdx,
+    int neighborIdx,
+    int bondType,
+    inout int atomDegrees[MAX_ATOM_COUNT],
+    inout int neighborIndices[MAX_ATOM_COUNT * MAX_GRAPH_NEIGHBORS],
+    inout int neighborBondTypes[MAX_ATOM_COUNT * MAX_GRAPH_NEIGHBORS])
+{
+    int degree = atomDegrees[atomIdx];
+    if (degree >= MAX_GRAPH_NEIGHBORS)
+        return false;
+
+    int writeIdx = GetGraphArrayIndex(atomIdx, degree);
+    neighborIndices[writeIdx] = neighborIdx;
+    neighborBondTypes[writeIdx] = bondType;
+    atomDegrees[atomIdx] = degree + 1;
+    return true;
+}
+
+bool TryAddGraphBond(
+    int atomA,
+    int atomB,
+    int bondType,
+    inout int atomDegrees[MAX_ATOM_COUNT],
+    inout int neighborIndices[MAX_ATOM_COUNT * MAX_GRAPH_NEIGHBORS],
+    inout int neighborBondTypes[MAX_ATOM_COUNT * MAX_GRAPH_NEIGHBORS])
+{
+    if (atomA < 0 || atomB < 0 || atomA == atomB)
+        return false;
+
+    if (HasGraphBond(atomA, atomB, atomDegrees, neighborIndices))
+        return false;
+
+    bool addedAB = TryAddGraphNeighbor(atomA, atomB, bondType, atomDegrees, neighborIndices, neighborBondTypes);
+    bool addedBA = TryAddGraphNeighbor(atomB, atomA, bondType, atomDegrees, neighborIndices, neighborBondTypes);
+    return addedAB && addedBA;
+}
+
+void BuildAtomLayoutGraph(
+    int atomCount,
+    in int atomDegrees[MAX_ATOM_COUNT],
+    in int neighborIndices[MAX_ATOM_COUNT * MAX_GRAPH_NEIGHBORS],
+    in int neighborBondTypes[MAX_ATOM_COUNT * MAX_GRAPH_NEIGHBORS],
+    float bondLength,
+    out float3 atomPositions[MAX_ATOM_COUNT])
+{
+    int parent[MAX_ATOM_COUNT];
+    int depth[MAX_ATOM_COUNT];
+    int placed[MAX_ATOM_COUNT];
+    int queue[MAX_ATOM_COUNT];
+    int queueHead = 0;
+    int queueTail = 0;
+
+    for (int i = 0; i < MAX_ATOM_COUNT; i++)
+    {
+        atomPositions[i] = float3(0, 0, 0);
+        parent[i] = -1;
+        depth[i] = 0;
+        placed[i] = 0;
+    }
+
+    if (atomCount <= 0)
+        return;
+
+    atomPositions[0] = float3(0, 0, 0);
+    placed[0] = 1;
+    queue[queueTail++] = 0;
+
+    while (queueHead < queueTail)
+    {
+        int current = queue[queueHead++];
+        int children[MAX_GRAPH_NEIGHBORS];
+        int childCount = 0;
+
+        int currentDegree = min(atomDegrees[current], MAX_GRAPH_NEIGHBORS);
+        for (int slot = 0; slot < currentDegree; slot++)
+        {
+            int neighbor = neighborIndices[GetGraphArrayIndex(current, slot)];
+            if (neighbor < 0 || neighbor >= atomCount || placed[neighbor] != 0)
+                continue;
+
+            children[childCount++] = neighbor;
+        }
+
+        float3 parentDir = float3(1, 0, 0);
+        if (parent[current] >= 0)
+        {
+            parentDir = atomPositions[current] - atomPositions[parent[current]];
+            if (length(parentDir) < 1e-4f)
+                parentDir = float3(1, 0, 0);
+            else
+                parentDir = normalize(parentDir);
+        }
+
+        float baseAngle = atan2(parentDir.y, parentDir.x);
+        float spread = childCount > 1 ? 1.8f : 0.0f;
+        for (int childIdx = 0; childIdx < childCount; childIdx++)
+        {
+            int child = children[childIdx];
+            float angleOffset = childCount == 1 ? 0.0f : lerp(-spread, spread, (float)childIdx / (float)(childCount - 1));
+            float angle = baseAngle + angleOffset;
+            float3 offset = float3(cos(angle), sin(angle), 0.15f * (depth[current] % 2 == 0 ? 1 : -1));
+            atomPositions[child] = atomPositions[current] + normalize(offset) * bondLength;
+            parent[child] = current;
+            depth[child] = depth[current] + 1;
+            placed[child] = 1;
+            queue[queueTail++] = child;
+        }
+    }
+
+    [loop]
+    for (int iter = 0; iter < 4; iter++)
+    {
+        for (int a = 0; a < atomCount; a++)
+        {
+            int degree = min(atomDegrees[a], MAX_GRAPH_NEIGHBORS);
+            for (int slot = 0; slot < degree; slot++)
+            {
+                int b = neighborIndices[GetGraphArrayIndex(a, slot)];
+                if (b <= a || b >= atomCount)
+                    continue;
+
+                float3 delta = atomPositions[b] - atomPositions[a];
+                float dist = max(length(delta), 1e-4f);
+                float3 correction = delta * ((dist - bondLength) / dist) * 0.18f;
+                if (a != 0)
+                    atomPositions[a] += correction * 0.5f;
+                atomPositions[b] -= correction * 0.5f;
+            }
+        }
+
+        for (int a = 0; a < atomCount; a++)
+        {
+            for (int b = a + 1; b < atomCount; b++)
+            {
+                if (HasGraphBond(a, b, atomDegrees, neighborIndices))
+                    continue;
+
+                float3 delta = atomPositions[b] - atomPositions[a];
+                float dist = max(length(delta), 1e-4f);
+                if (dist >= bondLength * 0.75f)
+                    continue;
+
+                float3 repulse = delta * ((bondLength * 0.75f - dist) / dist) * 0.06f;
+                if (a != 0)
+                    atomPositions[a] -= repulse;
+                atomPositions[b] += repulse;
+            }
+        }
+    }
 }
 
 bool TryParseAtomToken(in int smilesChars[SMILES_MAX_LENGTH], int idx, out int atomType, out int consumedChars)
@@ -242,7 +396,9 @@ void ParseSMILESGraph(
     in int smilesChars[SMILES_MAX_LENGTH],
     out int atomTypes[MAX_ATOM_COUNT],
     out int atomCount,
-    out int bondMatrix[MAX_ATOM_COUNT * MAX_ATOM_COUNT],
+    out int atomDegrees[MAX_ATOM_COUNT],
+    out int neighborIndices[MAX_ATOM_COUNT * MAX_GRAPH_NEIGHBORS],
+    out int neighborBondTypes[MAX_ATOM_COUNT * MAX_GRAPH_NEIGHBORS],
     out int bondCount)
 {
     atomCount = 0;
@@ -251,11 +407,13 @@ void ParseSMILESGraph(
     for (int i = 0; i < MAX_ATOM_COUNT; i++)
     {
         atomTypes[i] = ATOM_TYPE_UNKNOWN;
+        atomDegrees[i] = 0;
     }
 
-    for (int i = 0; i < MAX_ATOM_COUNT * MAX_ATOM_COUNT; i++)
+    for (int i = 0; i < MAX_ATOM_COUNT * MAX_GRAPH_NEIGHBORS; i++)
     {
-        bondMatrix[i] = BOND_UNKNOWN;
+        neighborIndices[i] = -1;
+        neighborBondTypes[i] = BOND_UNKNOWN;
     }
 
     int branchStack[MAX_BRANCH_DEPTH];
@@ -324,9 +482,8 @@ void ParseSMILESGraph(
                         bondType = aromaticPair ? BOND_AROMATIC : BOND_SINGLE;
                     }
 
-                    if (GetBondValue(bondMatrix, currentAtom, ringAtomIndex[ringNumber]) == BOND_UNKNOWN)
+                    if (TryAddGraphBond(currentAtom, ringAtomIndex[ringNumber], bondType, atomDegrees, neighborIndices, neighborBondTypes))
                     {
-                        SetBondValue(bondMatrix, currentAtom, ringAtomIndex[ringNumber], bondType);
                         bondCount++;
                     }
 
@@ -338,7 +495,6 @@ void ParseSMILESGraph(
             continue;
         }
 
-        // HLSL 对反斜杠字符字面量兼容性较差，直接用 ASCII 码 92 避免解析成非法八进制常量。
         if (c == '[' || c == ']' || c == '/' || c == 92 || c == '+' || c == '%' || c == '@')
             continue;
 
@@ -359,9 +515,8 @@ void ParseSMILESGraph(
                 bondType = aromaticPair ? BOND_AROMATIC : BOND_SINGLE;
             }
 
-            if (GetBondValue(bondMatrix, currentAtom, newAtom) == BOND_UNKNOWN)
+            if (TryAddGraphBond(currentAtom, newAtom, bondType, atomDegrees, neighborIndices, neighborBondTypes))
             {
-                SetBondValue(bondMatrix, currentAtom, newAtom, bondType);
                 bondCount++;
             }
         }
@@ -372,7 +527,7 @@ void ParseSMILESGraph(
     }
 }
 
-// 旧版轻量解析：只提取原子序列，不构建拓扑图，适合 legacy 调试路径。
+// The legacy parser keeps the old atom-only behavior for lightweight kernels.
 void ParseSMILESLegacy(in int smilesChars[SMILES_MAX_LENGTH], out int atomTypes[MAX_ATOM_COUNT], out int atomCount)
 {
     atomCount = 0;
@@ -406,7 +561,7 @@ void ParseSMILESLegacy(in int smilesChars[SMILES_MAX_LENGTH], out int atomTypes[
     }
 }
 
-// 向后兼容旧调用点：默认保持轻量解析行为。
+// Convenience wrapper retained for kernels that only need atom identities.
 void ParseSMILES(in int smilesChars[SMILES_MAX_LENGTH], out int atomTypes[MAX_ATOM_COUNT], out int atomCount)
 {
     ParseSMILESLegacy(smilesChars, atomTypes, atomCount);
@@ -414,10 +569,10 @@ void ParseSMILES(in int smilesChars[SMILES_MAX_LENGTH], out int atomTypes[MAX_AT
 
 
 
-// 原子类型转SMILES字符（支持所有常见原子）
+
 void AtomTypeToSMILES(int atomType, out int chars[3])
 {
-    // 初始化为空字符（0）
+    
     chars[0] = 0;
     chars[1] = 0;
     chars[2] = 0;
@@ -447,7 +602,7 @@ void AtomTypeToSMILES(int atomType, out int chars[3])
     }
 }
 
-// 键类型转SMILES字符
+
 int BondTypeToSMILES(int bondType)
 {
     switch(bondType)
@@ -460,7 +615,7 @@ int BondTypeToSMILES(int bondType)
     }
 }
 
-// 生成电荷标记（支持正负电荷）
+
 void GenerateCharge(int charge, out int chars[3])
 {
     chars[0] = 0;

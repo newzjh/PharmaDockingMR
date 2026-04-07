@@ -7,36 +7,36 @@ using Cysharp.Threading.Tasks;
 
 namespace AIDrugDiscovery
 {
-    // 原子类型枚举（扩展至通用大分子）
+    
     public enum AtomType
     {
         C, N, O, S, H, P, F, Cl, Br, I, Other
     }
 
-    // 通用大分子热力图配置（可序列化，支持Inspector配置）
+    
     [Serializable]
     public class ProteinHeatmapConfig
     {
-        [Header("基础配置")]
-        public string proteinName = "1AQ1"; // 受体名称（如3CLpro、EGFR）
+        [Header("Settings")]
+        public string proteinName = "1AQ1"; 
 
-        [Header("热力图参数")]
-        public int heatmapSize = 32; // 热力图尺寸（便携终端可设16）
-        public float gridSpacing = 1.0f; // 网格间距（Å）
-        public Vector3 activeSiteCenter = new Vector3(10.5f, 8.2f, 12.7f); // 活性位点中心
+        [Header("Settings")]
+        public int heatmapSize = 32; 
+        public float gridSpacing = 1.0f; 
+        public Vector3 activeSiteCenter = new Vector3(10.5f, 8.2f, 12.7f); 
 
-        [Header("卷积参数")]
-        public int kernelSize = 3; // 卷积核大小
-        public int inChannels = 4; // 输入通道数（原子类型/电荷/疏水性/氢键）
-        public int outChannels = 4; // 输出通道数
+        [Header("Settings")]
+        public int kernelSize = 3; 
+        public int inChannels = 4; 
+        public int outChannels = 4; 
 
-        [Header("便携终端适配")]
-        public bool lowPowerMode = false; // 低功耗模式（自动降分辨率）
+        [Header("Settings")]
+        public bool lowPowerMode = false; 
     }
 
     public class HeatmapGenerator : MonoBehaviour
     {
-        // 复用原有数据结构（确保与CS对齐）
+        
         public struct AtomData
         {
             public Vector3 position;
@@ -52,34 +52,29 @@ namespace AIDrugDiscovery
             public Vector4 features;
         }
 
-        [Header("核心配置")]
+        [Header("Settings")]
         public ComputeShader heatmapConvCS;
         public ComputeShader sparseConv3DCS;
-        public List<ProteinHeatmapConfig> proteinConfigs; // 支持多受体配置
+        public List<ProteinHeatmapConfig> proteinConfigs; 
 
-        [Header("调试开关")]
+        [Header("Settings")]
         public bool useGpuHeatmapBuild2D = true;
         public bool useGpuHeatmapBuild3D = true;
 
-        [Header("可视化配置")]
-        public bool autoVisualize = true; // 自动可视化热力图
-        public float heatmapPlaneScale = 0.1f; // 热力图平面缩放系数
+        [Header("Settings")]
+        public bool autoVisualize = true; 
+        public float heatmapPlaneScale = 0.1f; 
 
         public async void Begin()
         {
-            // 批量生成所有配置的大分子热力图
+            
             foreach (var config in proteinConfigs)
             {
                 GenerateProteinHeatmap(config);
             }
         }
 
-        #region 核心函数1：加载通用大分子原子数据（替代LoadAQ1AtomData）
-        /// <summary>
-        /// 加载任意大分子的PDBQT文件，解析为原子数据
-        /// </summary>
-        /// <param name="config">热力图配置</param>
-        /// <returns>原子数据数组</returns>
+        #region Core Function 1: Load protein atom data
         public AtomData[] LoadProteinAtomData(ProteinHeatmapConfig config)
         {
             List<AtomData> atomList = new List<AtomData>();
@@ -92,40 +87,40 @@ namespace AIDrugDiscovery
             string pdbqtFullPath = tempfolder + "/" + config.proteinName + ".pdb";
 
 
-            // 1. 文件存在性校验（跨平台适配）
+            
             if (!File.Exists(pdbqtFullPath))
             {
-                Debug.LogError($"[{config.proteinName}] PDBQT文件不存在：{pdbqtFullPath}\n请检查路径是否正确");
+                Debug.LogError($"Heatmap generation status");
                 return atomList.ToArray();
             }
 
-            // 2. 低功耗模式适配（简化解析，仅保留核心原子）
+            
             bool skipHydrogen = config.lowPowerMode;
 
-            // 3. 逐行解析PDBQT
+            
             string[] lines = File.ReadAllLines(pdbqtFullPath);
             int parsedAtomCount = 0;
             int skippedAtomCount = 0;
 
             foreach (string line in lines)
             {
-                // 仅处理原子行
+                
                 if (!line.StartsWith("ATOM") && !line.StartsWith("HETATM")) continue;
 
                 try
                 {
-                    // 提取原子名称（兼容不同PDBQT格式）
+                    
                     string atomName = line.Length >= 17 ? line.Substring(12, 4).Trim() : "";
                     if (string.IsNullOrEmpty(atomName)) continue;
 
-                    // 低功耗模式跳过氢原子（减少计算量）
+                    
                     if (skipHydrogen && atomName.StartsWith("H"))
                     {
                         skippedAtomCount++;
                         continue;
                     }
 
-                    // 解析原子类型（扩展至卤素等）
+                    
                     char atomSymbol = atomName[0];
                     AtomType atomType = AtomType.Other;
                     switch (atomSymbol)
@@ -143,21 +138,21 @@ namespace AIDrugDiscovery
                         default: atomType = AtomType.Other; break;
                     }
 
-                    // 解析原子坐标（兼容不同字段长度）
+                    
                     float x = ParseFloatSafe(line, 30, 8);
                     float y = ParseFloatSafe(line, 38, 8);
                     float z = ParseFloatSafe(line, 46, 8);
                     Vector3 position = new Vector3(x, y, z);
 
-                    // 解析原子电荷（PDBQT扩展字段，兼容±符号）
+                    
                     float charge = ParseFloatSafe(line, 70, 6);
-                    int chargeInt = Mathf.RoundToInt(charge * 100); // 放大为整数，避免浮点精度
+                    int chargeInt = Mathf.RoundToInt(charge * 100); 
 
-                    // 解析成键数/杂化态（简化版，可扩展）
+                    
                     int hybridization = GetHybridizationByAtomType(atomType);
                     int degree = GetBondDegreeByAtomType(atomType);
 
-                    // 封装原子数据（molId固定为0，单一大分子）
+                    
                     AtomData atom = new AtomData
                     {
                         position = position,
@@ -172,35 +167,30 @@ namespace AIDrugDiscovery
                 }
                 catch (Exception ex)
                 {
-                    Debug.LogWarning($"[{config.proteinName}] 解析原子行失败：{line.Substring(0, 50)}... \n错误：{ex.Message}");
+                    Debug.LogWarning($"Heatmap generation status");
                     continue;
                 }
             }
 
-            // 日志输出（便于调试）
-            string skipLog = skipHydrogen ? $"（低功耗模式跳过{skippedAtomCount}个氢原子）" : "";
-            Debug.Log($"[{config.proteinName}] 成功解析原子数据：共{parsedAtomCount}个原子 {skipLog}");
+            
+            string skipLog = skipHydrogen ? $"(low power mode skipped {skippedAtomCount} hydrogen atoms)" : "";
+            Debug.Log($"Heatmap generation status");
             return atomList.ToArray();
         }
         #endregion
 
-        #region 核心函数2：生成通用大分子热力图（替代GenerateAQ1Heatmap）
-        /// <summary>
-        /// 生成任意大分子的4通道热力图
-        /// </summary>
-        /// <param name="config">热力图配置</param>
-        /// <returns>热力图纹理（Texture2D<float4>）</returns>
+        #region Core Function 2: Generate protein heatmap
         public async UniTask<Texture2D> GenerateProteinHeatmap(ProteinHeatmapConfig config)
         {
-            // 1. 低功耗模式自动降分辨率
+            
             int finalHeatmapSize = config.lowPowerMode ? Mathf.Max(16, config.heatmapSize / 2) : config.heatmapSize;
-            Debug.Log($"[{config.proteinName}] 开始生成热力图（尺寸：{finalHeatmapSize}×{finalHeatmapSize}）");
+            Debug.Log($"Heatmap generation status");
 
-            // 2. 加载原子数据
+            
             AtomData[] proteinAtoms = LoadProteinAtomData(config);
             if (proteinAtoms == null || proteinAtoms.Length == 0)
             {
-                Debug.LogError($"[{config.proteinName}] 原子数据为空，终止热力图生成");
+                Debug.LogError($"Heatmap generation status");
                 return null;
             }
 
@@ -208,7 +198,7 @@ namespace AIDrugDiscovery
                 ? await RunSparseConvCS(proteinAtoms, config, finalHeatmapSize)
                 : await RunSparseConvCS(BuildRawHeatmap2DCPU(proteinAtoms, config, finalHeatmapSize), proteinAtoms, config, finalHeatmapSize);
 
-            // 6. 自动可视化
+            
             if (autoVisualize && heatmapTex != null)
             {
                 VisualizeHeatmap(heatmapTex, config);
@@ -220,15 +210,15 @@ namespace AIDrugDiscovery
 
         public async UniTask<RenderTexture> GenerateProteinHeatmap3D(ProteinHeatmapConfig config)
         {
-            // 1. 低功耗模式自动降分辨率
+            
             int finalHeatmapSize = config.lowPowerMode ? Mathf.Max(16, config.heatmapSize / 2) : config.heatmapSize;
-            Debug.Log($"[{config.proteinName}] 开始生成热力图（尺寸：{finalHeatmapSize}×{finalHeatmapSize}）");
+            Debug.Log($"Heatmap generation status");
 
-            // 2. 加载原子数据
+            
             AtomData[] proteinAtoms = LoadProteinAtomData(config);
             if (proteinAtoms == null || proteinAtoms.Length == 0)
             {
-                Debug.LogError($"[{config.proteinName}] 原子数据为空，终止热力图生成");
+                Debug.LogError($"Heatmap generation status");
                 return null;
             }
 
@@ -241,7 +231,7 @@ namespace AIDrugDiscovery
 
         #endregion
 
-        #region 辅助函数：CS稀疏卷积执行
+        #region Helper: Execute sparse convolution compute shader
         private HeatmapPixel[] BuildRawHeatmap2DCPU(AtomData[] proteinAtoms, ProteinHeatmapConfig config, int heatmapSize)
         {
             int pixelCount = heatmapSize * heatmapSize;
@@ -330,7 +320,7 @@ namespace AIDrugDiscovery
         {
             int pixelCount = heatmapSize * heatmapSize;
 
-            // 1. 创建Compute Buffer
+            
             int atomStride = System.Runtime.InteropServices.Marshal.SizeOf(typeof(AtomData));
             ComputeBuffer atomBuffer = new ComputeBuffer(proteinAtoms.Length, atomStride);
             atomBuffer.SetData(proteinAtoms);
@@ -340,7 +330,7 @@ namespace AIDrugDiscovery
             ComputeBuffer outputBuffer = new ComputeBuffer(pixelCount, heatmapStride);
             outputBuffer.SetData(new HeatmapPixel[pixelCount]);
 
-            // 2. 初始化卷积核权重（平均卷积）
+            
             float[] kernelWeights = new float[config.kernelSize * config.kernelSize * config.inChannels * config.outChannels];
             float weightVal = 1f / (config.kernelSize * config.kernelSize);
             for (int i = 0; i < kernelWeights.Length; i++) kernelWeights[i] = weightVal;
@@ -348,7 +338,7 @@ namespace AIDrugDiscovery
             ComputeBuffer kernelBuffer = new ComputeBuffer(kernelWeights.Length, sizeof(float));
             kernelBuffer.SetData(kernelWeights);
 
-            // 3. 配置CS参数
+            
             int buildKernelId = heatmapConvCS.FindKernel("CSBuildHeatmap2D");
             int kernelId = heatmapConvCS.FindKernel("CSSparseConv");
             heatmapConvCS.SetInt("heatmapSize", heatmapSize);
@@ -362,7 +352,7 @@ namespace AIDrugDiscovery
             heatmapConvCS.SetFloat("gridSpacing", config.gridSpacing);
             heatmapConvCS.SetFloat("gridRadius", config.lowPowerMode ? 1.5f : 1.0f);
 
-            // Unity 的 Compute 资源绑定是按 kernel 维度记录的，这里把两个 kernel 可能触达的资源都分别绑定。
+            
             heatmapConvCS.SetBuffer(buildKernelId, "atomBuffer", atomBuffer);
             heatmapConvCS.SetBuffer(buildKernelId, "heatmapInput", rawBuffer);
             heatmapConvCS.SetBuffer(buildKernelId, "kernelWeights", kernelBuffer);
@@ -375,13 +365,13 @@ namespace AIDrugDiscovery
             heatmapConvCS.SetBuffer(kernelId, "atomBuffer", atomBuffer);
             heatmapConvCS.SetBuffer(kernelId, "rawHeatmapOutput", rawBuffer);
 
-            // 4. 调度CS（适配线程组）
+            
             int threadGroupX = Mathf.CeilToInt(heatmapSize / 32f);
             int threadGroupY = Mathf.CeilToInt(heatmapSize / 32f);
             heatmapConvCS.Dispatch(buildKernelId, threadGroupX, threadGroupY, 1);
             heatmapConvCS.Dispatch(kernelId, threadGroupX, threadGroupY, 1);
 
-            // 5. 读取输出并转换为Texture2D
+            
             HeatmapPixel[] convHeatmap = new HeatmapPixel[pixelCount];
             outputBuffer.GetData(convHeatmap);
 
@@ -402,7 +392,7 @@ namespace AIDrugDiscovery
             heatmapTex.SetPixels(pixels);
             heatmapTex.Apply();
 
-            // 6. 释放Buffer
+            
             atomBuffer.Release();
             rawBuffer.Release();
             outputBuffer.Release();
@@ -476,7 +466,7 @@ namespace AIDrugDiscovery
         public async UniTask<RenderTexture> RunSparseConvCS3D(AtomData[] proteinAtoms, ProteinHeatmapConfig config, int heatmapSize)
         {
 
-            // 1. 创建Compute Buffer
+            
             int atomStride = System.Runtime.InteropServices.Marshal.SizeOf(typeof(AtomData));
             ComputeBuffer atomBuffer = new ComputeBuffer(proteinAtoms.Length, atomStride);
             atomBuffer.SetData(proteinAtoms);
@@ -503,7 +493,7 @@ namespace AIDrugDiscovery
             Vector3Int stride = new Vector3Int(1, 1, 1);
             Vector3Int padding = new Vector3Int(1, 1, 1);
             Vector3 voxelResolution = new Vector3(0.5f, 0.5f, 0.5f);
-            float sparseThreshold = 0.01f; // 基于活性值的稀疏阈值
+            float sparseThreshold = 0.01f; 
 
             int buildKernelId = sparseConv3DCS.FindKernel("CSBuildHeatmap3D");
             int kernelId = sparseConv3DCS.FindKernel("CSSparseConv3D");
@@ -518,19 +508,19 @@ namespace AIDrugDiscovery
             sparseConv3DCS.SetFloat("gridRadius", config.lowPowerMode ? 1.5f : 1.0f);
             sparseConv3DCS.SetInt("atomCount", proteinAtoms.Length);
 
-            // 同一 shader 的不同 kernel 需要分别绑定各自会引用到的资源。
+            
             sparseConv3DCS.SetBuffer(buildKernelId, "atomBuffer", atomBuffer);
             sparseConv3DCS.SetTexture(buildKernelId, "InputHeatmap3D", rawHeatmap);
             sparseConv3DCS.SetTexture(buildKernelId, "OutputHeatmap3D", outHeatmap);
             sparseConv3DCS.SetTexture(buildKernelId, "RawHeatmap3D", rawHeatmap);
 
-            // 4. 绑定输入输出Texture3D（float4特征）
+            
             sparseConv3DCS.SetBuffer(kernelId, "atomBuffer", atomBuffer);
             sparseConv3DCS.SetTexture(kernelId, "InputHeatmap3D", rawHeatmap);
             sparseConv3DCS.SetTexture(kernelId, "OutputHeatmap3D", outHeatmap);
             sparseConv3DCS.SetTexture(kernelId, "RawHeatmap3D", rawHeatmap);
 
-            // 4. 调度CS（适配线程组）
+            
             int threadGroupX = Mathf.CeilToInt(heatmapSize / 8f);
             int threadGroupY = Mathf.CeilToInt(heatmapSize / 8f);
             int threadGroupZ = Mathf.CeilToInt(heatmapSize / 8f);
@@ -542,10 +532,6 @@ namespace AIDrugDiscovery
             //    sparseConv3DCS.Dispatch(kernelId, threadGroupX, threadGroupY, threadGroupZ);
             //    await UniTask.NextFrame();
             //}
-
-
-
-            //// 5. 读取输出并转换为Texture2D
             //HeatmapPixel[] convHeatmap = new HeatmapPixel[pixelCount];
             //outputBuffer.GetData(convHeatmap);
 
@@ -564,7 +550,7 @@ namespace AIDrugDiscovery
             //heatmapTex.SetPixels(pixels);
             //heatmapTex.Apply();
 
-            // 6. 释放Buffer
+            
             atomBuffer.Release();
             RenderTexture.Destroy(rawHeatmap);
 
@@ -614,10 +600,10 @@ namespace AIDrugDiscovery
         }
         #endregion
 
-        #region 辅助函数：可视化（通用适配）
+        #region Helper: Visualization
         private void VisualizeHeatmap(Texture2D heatmapTex, ProteinHeatmapConfig config)
         {
-            // 创建唯一名称的热力图平面
+            
             GameObject heatmapPlane = new GameObject($"{config.proteinName}_Heatmap");
             heatmapPlane.transform.position = new Vector3(0, 1, 0);
             heatmapPlane.transform.localScale = new Vector3(
@@ -626,35 +612,26 @@ namespace AIDrugDiscovery
                 config.heatmapSize * heatmapPlaneScale
             );
 
-            // 添加渲染组件
+            
             MeshRenderer renderer = heatmapPlane.AddComponent<MeshRenderer>();
             Material mat = new Material(Shader.Find("Unlit/Texture"));
             mat.SetTexture("_MainTex", heatmapTex);
             renderer.material = mat;
-
-            //// 添加触控缩放（便携终端适配）
             //HeatmapTouchScaler scaler = heatmapPlane.AddComponent<HeatmapTouchScaler>();
             //scaler.minScale = config.lowPowerMode ? 0.3f : 0.5f;
             //scaler.maxScale = config.lowPowerMode ? 1.5f : 2.0f;
 
-            Debug.Log($"[{config.proteinName}] 热力图已可视化，尺寸：{heatmapTex.width}×{heatmapTex.height}");
+            Debug.Log($"Heatmap generation status");
         }
         #endregion
 
-        #region 工具函数：安全解析浮点值、原子特征判断
-        /// <summary>
-        /// 安全解析字符串中的浮点值（避免索引越界）
-        /// </summary>
+        #region Utility: Safe float parsing and atom feature checks
         private float ParseFloatSafe(string line, int startIdx, int length)
         {
             if (startIdx + length > line.Length) return 0f;
             string valStr = line.Substring(startIdx, length).Trim();
             return float.TryParse(valStr, out float val) ? val : 0f;
         }
-
-        /// <summary>
-        /// 根据原子类型判断杂化态（简化版）
-        /// </summary>
         private int GetHybridizationByAtomType(AtomType type)
         {
             return type switch
@@ -665,10 +642,6 @@ namespace AIDrugDiscovery
                 _ => 2
             };
         }
-
-        /// <summary>
-        /// 根据原子类型判断成键数（简化版）
-        /// </summary>
         private int GetBondDegreeByAtomType(AtomType type)
         {
             return type switch
@@ -681,20 +654,12 @@ namespace AIDrugDiscovery
                 _ => 1
             };
         }
-
-        /// <summary>
-        /// 判断原子是否疏水
-        /// </summary>
         private bool IsHydrophobic(int atomicNum)
         {
             AtomType type = (AtomType)atomicNum;
             return type == AtomType.C || type == AtomType.S || type == AtomType.F ||
                    type == AtomType.Cl || type == AtomType.Br || type == AtomType.I;
         }
-
-        /// <summary>
-        /// 判断原子是否参与氢键
-        /// </summary>
         private bool IsHydrogenBond(int atomicNum)
         {
             AtomType type = (AtomType)atomicNum;
@@ -703,7 +668,7 @@ namespace AIDrugDiscovery
         #endregion
     }
 
-    // 通用触控缩放组件（适配便携终端）
+    
     public class HeatmapTouchScaler : MonoBehaviour
     {
         public float minScale = 0.5f;
@@ -712,7 +677,7 @@ namespace AIDrugDiscovery
 
         void Update()
         {
-            // 桌面端：鼠标滚轮
+            
             if (Input.mouseScrollDelta.y != 0)
             {
                 float scale = Mathf.Clamp(
@@ -722,7 +687,7 @@ namespace AIDrugDiscovery
                 transform.localScale = new Vector3(scale, 1, scale);
             }
 
-            // 移动端：双指缩放
+            
             if (Input.touchCount == 2)
             {
                 Touch t0 = Input.GetTouch(0);

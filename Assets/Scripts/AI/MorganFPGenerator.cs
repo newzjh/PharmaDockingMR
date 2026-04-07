@@ -7,21 +7,17 @@ using System.Collections.Generic;
 
 namespace AIDrugDiscovery
 {
-
-    /// <summary>
-    /// ��Diffusion���ɵ�SMILES Buffer����512λMorganָ��
-    /// </summary>
     public class MorganFPGenerator : MonoBehaviour
     {
-        [Header("��������")]
-        public ComputeShader morganFPComputeShader; // ������Compute Shader
-        public int smilesMaxLength = 256;           // ����SMILES��󳤶ȣ�����Diffusionһ�£�
-        public int morganRadius = 2;                // Morganָ�ư뾶����ҵ��׼Ϊ2��
+        [Header("Settings")]
+        public ComputeShader morganFPComputeShader; 
+        public int smilesMaxLength = 256;           
+        public int morganRadius = 2;                
         public bool usePackedFpReadback = false;
         public bool useLegacySmilesTextureInput = true;
         public bool useGraphTopologyMorgan = true;
         public int graphKernelChunkSize = 8;
-        private const int FP_SIZE = 512;            // �̶�512λָ��
+        private const int FP_SIZE = 512;            
         private const int FP_PACKED_WORDS = FP_SIZE / 32;
         private const int MAX_ATOM_COUNT = 60;
         private const int MAX_GRAPH_NEIGHBORS = 6;
@@ -209,33 +205,26 @@ namespace AIDrugDiscovery
             graph.Adjacency[a].Add((b, bondType));
             graph.Adjacency[b].Add((a, bondType));
         }
-
-        /// <summary>
-        /// ����512λָ�ƣ�ȫ��GPU�˴�������SMILES�ض���
-        /// </summary>
-        /// <param name="smilesBuffer">Diffusion�����SMILES Buffer</param>
-        /// <param name="batchSize">������������</param>
-        /// <returns>512λָ��Buffer����ֱ������FilterByFP��</returns>
         public async UniTask Generate512BitFP(ComputeBuffer smilesBuffer, int batchSize, Texture legacySmilesTexture = null, IReadOnlyList<string> generatedSmiles = null)
         {
-            // 1. ����У��
+            
             if ((smilesBuffer == null && !(useLegacySmilesTextureInput && legacySmilesTexture != null)) || batchSize <= 0)
             {
-                Debug.LogError("SMILES Buffer��Ч�����δ�С��ƥ��");
+                Debug.LogError("Morgan fingerprint generation status");
                 return;
             }
 
-            // 2. ����ָ�����Buffer��ÿ������512��bool��batchSize * 512���ȣ�
+            
             int fpElementCount = usePackedFpReadback ? FP_PACKED_WORDS : FP_SIZE;
             int fpBufferCount = batchSize * fpElementCount;
             ComputeBuffer fpBuffer = new ComputeBuffer(fpBufferCount, sizeof(uint));
 
-            // 3. ��ʼ��ָ��BufferΪȫfalse
+            
             uint[] initFP = new uint[fpBufferCount];
             Array.Fill(initFP, 0u);
             fpBuffer.SetData(initFP);
 
-            // 4. ����Compute Shader����
+            
             bool useLegacyKernel = !useGraphTopologyMorgan || (useLegacySmilesTextureInput && legacySmilesTexture != null);
             int kernelId = morganFPComputeShader.FindKernel(useLegacyKernel ? "CSGenerateMorganFPLegacy" : "CSGenerateMorganFP");
             morganFPComputeShader.SetInt("batchSize", batchSize);
@@ -254,7 +243,7 @@ namespace AIDrugDiscovery
             ComputeBuffer graphNeighborIndexBuffer = null;
             ComputeBuffer graphNeighborBondTypeBuffer = null;
 
-            // 5. ���������Buffer
+            
             morganFPComputeShader.SetBuffer(kernelId, "smilesInputBuffer", boundBuffer);
             morganFPComputeShader.SetTexture(kernelId, "smilesInputTexture", boundTexture);
             morganFPComputeShader.SetBuffer(kernelId, "fpOutputBuffer", fpBuffer);
@@ -286,7 +275,7 @@ namespace AIDrugDiscovery
                 graphNeighborBondTypeBuffer = dummyIntBuffer;
             }
 
-            // 6. ����GPU���㣨�߳��������ƶ��ˣ�
+            
             if (useLegacyKernel)
             {
                 morganFPComputeShader.SetInt("moleculeOffset", 0);
@@ -307,7 +296,7 @@ namespace AIDrugDiscovery
                 }
             }
 
-            // 7. �ȴ�GPU������ɣ��ƶ��˱��룬��������δд��Ͷ�ȡ��
+            
             //ComputeShader.SyncThread();
 
             //fpBuffer.GetData(allFP);
@@ -334,29 +323,22 @@ namespace AIDrugDiscovery
                 Destroy(boundTexture);
             dummyIntBuffer.Dispose();
 
-            Debug.Log($"512λָ��������ɣ����δ�С={batchSize}��elements={fpBufferCount}");
+            Debug.Log($"Morgan fingerprint generation status");
             //return fpBuffer;
         }
-
-        /// <summary>
-        /// ����ѡ����ȡָ��Buffer��CPU�������ڵ���/��֤��
-        /// </summary>
-        /// <param name="fpBuffer">ָ��Buffer</param>
-        /// <param name="molIdx">��������</param>
-        /// <returns>�÷��ӵ�512λָ������</returns>
         public BitArray GetFPFromBuffer(int molIdx)
         {
             if (usePackedFpReadback)
             {
                 if (allPackedFP == null || molIdx >= allPackedFP.Length / FP_PACKED_WORDS)
                 {
-                    Debug.LogError("ָ��Buffer��Ч���������Խ��");
+                    Debug.LogError("Morgan fingerprint generation status");
                     return null;
                 }
             }
             else if (allLegacyFP == null || molIdx >= allLegacyFP.Length / FP_SIZE)
             {
-                Debug.LogError("ָ��Buffer��Ч���������Խ��");
+                Debug.LogError("Morgan fingerprint generation status");
                 return null;
             }
 
@@ -394,7 +376,7 @@ namespace AIDrugDiscovery
             out ComputeBuffer neighborBondTypeBuffer)
         {
             if (generatedSmiles == null)
-                throw new ArgumentNullException(nameof(generatedSmiles), "Graph topology Morgan 需要传入当前批次的 SMILES 字符串列表。");
+                throw new ArgumentNullException(nameof(generatedSmiles), "Graph topology Morgan requires the SMILES string list for the current batch.");
 
             int[] atomCounts = new int[batchSize];
             int[] atomTypes = new int[batchSize * MAX_ATOM_COUNT];
@@ -443,7 +425,7 @@ namespace AIDrugDiscovery
 
         private void OnDestroy()
         {
-            // �����ͷţ���ֹ��©��
+            
             morganFPComputeShader = null;
         }
     }

@@ -3,26 +3,26 @@
 #pragma kernel CSDBSCANCluster
 #pragma kernel CSCalculatePocketScores
 
-// FPocket核心常量（与C#端严格对齐）
+
 cbuffer FPocketConstants : register(b0)
 {
-    float PROBE_RADIUS; // 探针半径 1.4Å
-    float MIN_ALPHA_SPHERE_RADIUS; // 最小Alpha球半径 0.8Å
-    float MAX_ALPHA_SPHERE_RADIUS; // 最大Alpha球半径 6.0Å
-    float SPHERE_ATOM_EPS; // 空球判断阈值 0.1Å
-    int DBSCAN_MIN_POINTS; // DBSCAN最小点数 5
-    float DBSCAN_EPS; // DBSCAN邻域半径 3.5Å
-    float MIN_POCKET_VOLUME; // 最小口袋体积 10.0Å³
+    float PROBE_RADIUS; 
+    float MIN_ALPHA_SPHERE_RADIUS; 
+    float MAX_ALPHA_SPHERE_RADIUS; 
+    float SPHERE_ATOM_EPS; 
+    int DBSCAN_MIN_POINTS; 
+    float DBSCAN_EPS; 
+    float MIN_POCKET_VOLUME; 
     
-    int atomCount; // 原子总数（用于k循环边界）
-    int generatedSphereCount; // 当前批次真实生成的Alpha球数量
-    int maxAlphaSpheres; // 最大Alpha球数 100000
-    int maxPockets; // 最大口袋数 100
-    int THREAD_GROUP_SIZE_X; // i维度线程组大小
-    int THREAD_GROUP_SIZE_Y; // j维度线程组大小
+    int atomCount; 
+    int generatedSphereCount; 
+    int maxAlphaSpheres; 
+    int maxPockets; 
+    int THREAD_GROUP_SIZE_X; 
+    int THREAD_GROUP_SIZE_Y; 
 };
 
-// 原子结构体（GPU版）
+
 struct FPocketAtomCS
 {
     int id;
@@ -31,7 +31,7 @@ struct FPocketAtomCS
     float hydrophobicity;
 };
 
-// Alpha球结构体（GPU版）
+
 struct FPocketAlphaSphereCS
 {
     float3 center;
@@ -45,7 +45,7 @@ struct FPocketAlphaSphereCS
     int parent_atom3;
 };
 
-// 口袋结果结构体（GPU版）
+
 struct FPocketResultCS
 {
     int id;
@@ -58,21 +58,21 @@ struct FPocketResultCS
     int nb_alpha_spheres;
     int nb_atoms;
     float density;
-    int lockFlag; // 自旋锁标记
+    int lockFlag; 
 };
 
-// 缓冲区定义
-StructuredBuffer<FPocketAtomCS> atomBuffer; // 原子缓冲区
-RWStructuredBuffer<FPocketAlphaSphereCS> alphaSphereBuffer; // Alpha球缓冲区
-RWStructuredBuffer<FPocketResultCS> pocketResultBuffer; // 口袋结果缓冲区
-RWBuffer<int> sphereCountBuffer; // Alpha球计数缓冲区（尺寸1）
-RWBuffer<int> clusterCountBuffer; // 聚类计数缓冲区（尺寸1）
 
-// 自旋锁实现（HLSL原子函数规范用法）
+StructuredBuffer<FPocketAtomCS> atomBuffer; 
+RWStructuredBuffer<FPocketAlphaSphereCS> alphaSphereBuffer; 
+RWStructuredBuffer<FPocketResultCS> pocketResultBuffer; 
+RWBuffer<int> sphereCountBuffer; 
+RWBuffer<int> clusterCountBuffer; 
+
+
 void LockPocket(int pocketIndex)
 {
     int oldLockValue;
-    // 自旋等待直到获取锁（lockFlag从0变为1）
+    
     do
     {
         InterlockedExchange(pocketResultBuffer[pocketIndex].lockFlag, 1, oldLockValue);
@@ -82,27 +82,27 @@ void LockPocket(int pocketIndex)
 void UnlockPocket(int pocketIndex)
 {
     int unused;
-    // 释放锁（lockFlag重置为0）
+    
     InterlockedExchange(pocketResultBuffer[pocketIndex].lockFlag, 0, unused);
 }
 
-// 复刻FPocket：计算3个原子的外接球
+
 void ComputeCircumsphere(float3 p1, float3 p2, float3 p3, out float3 center, out float radius)
 {
-    // 初始化默认值（无效球）
+    
     center = float3(0, 0, 0);
     radius = 0.0f;
 
-    // 计算向量
+    
     float3 v1 = p2 - p1;
     float3 v2 = p3 - p1;
     
-    // 计算法向量（垂直于三点平面）
+    
     float3 n = cross(v1, v2);
-    if (length(n) < 1e-6) // 三点共线，无法生成外接球
+    if (length(n) < 1e-6) 
         return;
 
-    // 构建线性方程组 Ax = b
+    
     float a11 = 2 * (p2.x - p1.x);
     float a12 = 2 * (p2.y - p1.y);
     float a13 = 2 * (p2.z - p1.z);
@@ -118,38 +118,38 @@ void ComputeCircumsphere(float3 p1, float3 p2, float3 p3, out float3 center, out
     float a33 = n.z;
     float b3 = dot(n, p1);
 
-    // 克莱姆法则求解
+    
     float det = a11 * (a22 * a33 - a23 * a32) - a12 * (a21 * a33 - a23 * a31) + a13 * (a21 * a32 - a22 * a31);
-    if (abs(det) < 1e-6) // 行列式为0，无解
+    if (abs(det) < 1e-6) 
         return;
 
     float detX = b1 * (a22 * a33 - a23 * a32) - a12 * (b2 * a33 - a23 * b3) + a13 * (b2 * a32 - a22 * b3);
     float detY = a11 * (b2 * a33 - a23 * b3) - b1 * (a21 * a33 - a23 * a31) + a13 * (a21 * b3 - b2 * a31);
     float detZ = a11 * (a22 * b3 - b2 * a32) - a12 * (a21 * b3 - b2 * a31) + b1 * (a21 * a32 - a22 * a31);
 
-    // 计算球心和半径
+    
     center = float3(detX / det, detY / det, detZ / det);
     radius = distance(center, p1);
 }
 
-// 复刻FPocket：空球判断
+
 bool IsEmptySphere(float3 center, float radius, int skipI, int skipJ, int skipK)
 {
     float radiusSq = (radius - SPHERE_ATOM_EPS) * (radius - SPHERE_ATOM_EPS);
 
-    // 遍历所有原子（必要循环，无法避免）
+    
     //[unroll]
     for (int a = 0; a < atomCount; a++)
     {
-        // 跳过生成该球的3个原子
+        
         if (a == skipI || a == skipJ || a == skipK)
             continue;
 
-        // 计算距离平方（避免开方，提升性能）
+        
         float3 delta = atomBuffer[a].pos - center;
         float distSq = dot(delta, delta);
 
-        // 空球判断：原子中心不在球内
+        
         if (distSq < radiusSq)
             return false;
     }
@@ -157,21 +157,21 @@ bool IsEmptySphere(float3 center, float radius, int skipI, int skipJ, int skipK)
     return true;
 }
 
-// 复刻FPocket：判断球心是否在分子范德华表面外
+
 bool IsOutsideMolecule(float3 center)
 {
     //[unroll]
     for (int a = 0; a < atomCount; a++)
     {
         float dist = distance(center, atomBuffer[a].pos);
-        // 球心需在原子范德华表面外 + 探针半径
+        
         if (dist < atomBuffer[a].vdw_radius + PROBE_RADIUS)
             return false;
     }
     return true;
 }
 
-// 复刻FPocket：统计包裹的原子数和总疏水权重
+
 void CountEnclosedAtoms(float3 center, float radius, out int nbAtoms, out float totalHydro)
 {
     nbAtoms = 0;
@@ -181,7 +181,7 @@ void CountEnclosedAtoms(float3 center, float radius, out int nbAtoms, out float 
     for (int a = 0; a < atomCount; a++)
     {
         float dist = distance(center, atomBuffer[a].pos);
-        // FPocket判断条件：距离 < 球半径 + 原子范德华半径
+        
         if (dist < radius + atomBuffer[a].vdw_radius)
         {
             nbAtoms++;
@@ -190,78 +190,78 @@ void CountEnclosedAtoms(float3 center, float radius, out int nbAtoms, out float 
     }
 }
 
-// Kernel 1：生成Alpha球（二维线程组拆分i/j，k内循环，核心防溢出方案）
-[numthreads(32, 32, 1)] // 与C#端THREAD_GROUP_SIZE_X/Y一致
+
+[numthreads(32, 32, 1)] 
 void CSGenerateAlphaSpheres(uint3 id : SV_DispatchThreadID)
 {
-    // 1. 计算全局i/j索引（二维线程组拆分，避免溢出）
+    
     int i = id.x;
     int j = id.y;
 
-    // 2. 边界检查：i < j < atomCount-1（保证k有有效值）
+    
     if (i >= atomCount - 2 || j <= i || j >= atomCount - 1)
         return;
 
-    // 3. 固定i/j，内循环遍历k（k > j），避免一维ID溢出
+    
     for (int k = j + 1; k < atomCount; k++)
     {
-        // 4. 获取当前三元组的3个原子数据
+        
         FPocketAtomCS a1 = atomBuffer[i];
         FPocketAtomCS a2 = atomBuffer[j];
         FPocketAtomCS a3 = atomBuffer[k];
 
-        // 5. 计算外接球
+        
         float3 sphereCenter;
         float sphereRadius;
         ComputeCircumsphere(a1.pos, a2.pos, a3.pos, sphereCenter, sphereRadius);
 
-        // 6. 半径有效性过滤
+        
         if (sphereRadius < MIN_ALPHA_SPHERE_RADIUS || sphereRadius > MAX_ALPHA_SPHERE_RADIUS)
             continue;
 
-        // 7. 空球判断（核心过滤条件）
+        
         if (!IsEmptySphere(sphereCenter, sphereRadius, i, j, k))
             continue;
 
-        // 8. 球心位置验证（必须在分子外）
+        
         if (!IsOutsideMolecule(sphereCenter))
             continue;
 
-        // 9. 统计包裹的原子数和疏水权重
+        
         int nbAtoms;
         float totalHydro;
         CountEnclosedAtoms(sphereCenter, sphereRadius, nbAtoms, totalHydro);
 
-        // 10. 包裹原子数过滤（至少1个）
+        
         if (nbAtoms < 1)
             continue;
 
-        // 11. 原子化操作获取Alpha球索引（线程安全，避免竞争）
+        
         int sphereIdx;
         InterlockedAdd(sphereCountBuffer[0], 1, sphereIdx);
 
-        // 12. 缓冲区边界检查
+        
         if (sphereIdx >= maxAlphaSpheres)
             continue;
 
-        // 13. 构建Alpha球数据（完全复刻FPocket源码）
+        
         FPocketAlphaSphereCS alphaSphere;
         alphaSphere.center = sphereCenter;
         alphaSphere.radius = sphereRadius;
         alphaSphere.nb_atoms = nbAtoms;
         alphaSphere.hydrophobicity = totalHydro / (float) nbAtoms;
         alphaSphere.polarity = 1.0f - alphaSphere.hydrophobicity;
-        alphaSphere.visited = 0; // 初始未访问
+        alphaSphere.visited = 0; 
         alphaSphere.parent_atom1 = i;
         alphaSphere.parent_atom2 = j;
         alphaSphere.parent_atom3 = k;
 
-        // 14. 写入Alpha球缓冲区
+        
         alphaSphereBuffer[sphereIdx] = alphaSphere;
     }
 }
 
-// Kernel 2：过滤Alpha球
+
 [numthreads(256, 1, 1)]
 void CSFilterAlphaSpheres(uint3 id : SV_DispatchThreadID)
 {
@@ -271,14 +271,14 @@ void CSFilterAlphaSpheres(uint3 id : SV_DispatchThreadID)
 
     FPocketAlphaSphereCS sphere = alphaSphereBuffer[sphereIdx];
 
-    // FPocket官方过滤规则
+    
     bool isValid =
         sphere.radius >= MIN_ALPHA_SPHERE_RADIUS &&
         sphere.radius <= MAX_ALPHA_SPHERE_RADIUS &&
         sphere.nb_atoms >= 1 &&
         sphere.hydrophobicity >= 0.1f;
 
-    // 无效球标记为半径-1
+    
     if (!isValid)
     {
         sphere.radius = -1.0f;
@@ -286,7 +286,7 @@ void CSFilterAlphaSpheres(uint3 id : SV_DispatchThreadID)
     }
 }
 
-// Kernel 3：DBSCAN聚类
+
 [numthreads(256, 1, 1)]
 void CSDBSCANCluster(uint3 id : SV_DispatchThreadID)
 {
@@ -296,11 +296,11 @@ void CSDBSCANCluster(uint3 id : SV_DispatchThreadID)
 
     FPocketAlphaSphereCS sphere = alphaSphereBuffer[sphereIdx];
 
-    // 无效球/已访问球直接返回
+    
     if (sphere.radius < 0 || sphere.visited != 0)
         return;
 
-    // 统计邻域点数（DBSCAN核心逻辑）
+    
     int neighborCount = 0;
     //[unroll]
     for (int a = 0; a < maxAlphaSpheres; a++)
@@ -308,66 +308,66 @@ void CSDBSCANCluster(uint3 id : SV_DispatchThreadID)
         if (a == sphereIdx || alphaSphereBuffer[a].radius < 0)
             continue;
 
-        // 邻域判断：距离 < DBSCAN_EPS
+        
         float3 delta = sphere.center - alphaSphereBuffer[a].center;
         float distSq = dot(delta, delta);
         if (distSq < DBSCAN_EPS * DBSCAN_EPS)
             neighborCount++;
     }
 
-    // 标记噪声点
+    
     if (neighborCount < DBSCAN_MIN_POINTS)
     {
-        sphere.visited = 2; // 2=噪声
+        sphere.visited = 2; 
         alphaSphereBuffer[sphereIdx] = sphere;
         return;
     }
 
-    // 原子化操作获取聚类ID
+    
     int clusterId;
     InterlockedAdd(clusterCountBuffer[0], 1, clusterId);
 
-    // 聚类ID越界检查
+    
     if (clusterId >= maxPockets)
     {
-        sphere.visited = 1; // 1=已访问但无聚类
+        sphere.visited = 1; 
         alphaSphereBuffer[sphereIdx] = sphere;
         return;
     }
 
-    // 自旋锁保护口袋数据更新
+    
     LockPocket(clusterId);
 
-    // 获取当前口袋数据
+    
     FPocketResultCS pocket = pocketResultBuffer[clusterId];
     
-    // 更新口袋基础信息
+    
     pocket.id = clusterId;
     pocket.nb_alpha_spheres++;
     pocket.nb_atoms += sphere.nb_atoms;
 
-    // 加权中心点计算（权重=Alpha球半径）
+    
     pocket.center = (pocket.center * (pocket.nb_alpha_spheres - 1) + sphere.center * sphere.radius) / (float) pocket.nb_alpha_spheres;
 
-    // 体积累加（4/3πr³）
+    
     pocket.volume += (4.0f / 3.0f) * 3.1415926f * pow(sphere.radius, 3);
 
-    // 疏水性/极性累加（后续归一化）
+    
     pocket.hydrophobic_score += sphere.hydrophobicity;
     pocket.polar_score += sphere.polarity;
 
-    // 写回口袋缓冲区
+    
     pocketResultBuffer[clusterId] = pocket;
 
-    // 释放自旋锁
+    
     UnlockPocket(clusterId);
 
-    // 标记为已访问
+    
     sphere.visited = 1;
     alphaSphereBuffer[sphereIdx] = sphere;
 }
 
-// Kernel 4：计算口袋最终评分
+
 [numthreads(256, 1, 1)]
 void CSCalculatePocketScores(uint3 id : SV_DispatchThreadID)
 {
@@ -377,11 +377,11 @@ void CSCalculatePocketScores(uint3 id : SV_DispatchThreadID)
 
     FPocketResultCS pocket = pocketResultBuffer[pocketIdx];
 
-    // 无效口袋直接返回
+    
     if (pocket.id == -1 || pocket.volume < MIN_POCKET_VOLUME)
         return;
 
-    // 1. 归一化疏水性/极性评分
+    
     if (pocket.nb_alpha_spheres > 0)
     {
         pocket.hydrophobic_score /= (float) pocket.nb_alpha_spheres;
@@ -393,7 +393,7 @@ void CSCalculatePocketScores(uint3 id : SV_DispatchThreadID)
         pocket.polar_score = 0.0f;
     }
 
-    // 2. 计算口袋深度
+    
     float minDist = 1000.0f;
     //[unroll]
     for (int a = 0; a < atomCount; a++)
@@ -402,18 +402,18 @@ void CSCalculatePocketScores(uint3 id : SV_DispatchThreadID)
         if (dist < minDist)
             minDist = dist;
     }
-    pocket.depth_score = saturate(minDist / 10.0f); // 归一化到0~1
+    pocket.depth_score = saturate(minDist / 10.0f); 
 
-    // 3. 计算综合评分（FPocket官方权重）
+    
     pocket.score =
-        (pocket.volume / 100.0f) * 0.4f + // 体积权重40%
-        pocket.hydrophobic_score * 0.3f + // 疏水性权重30%
-        (1.0f - pocket.polar_score) * 0.1f + // 极性权重10%
-        pocket.depth_score * 0.2f; // 深度权重20%
+        (pocket.volume / 100.0f) * 0.4f + 
+        pocket.hydrophobic_score * 0.3f + 
+        (1.0f - pocket.polar_score) * 0.1f + 
+        pocket.depth_score * 0.2f; 
 
-    // 4. 计算密度
+    
     pocket.density = pocket.volume > 0 ? (float) pocket.nb_alpha_spheres / pocket.volume : 0.0f;
 
-    // 5. 写回口袋缓冲区
+    
     pocketResultBuffer[pocketIdx] = pocket;
 }

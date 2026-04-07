@@ -1,64 +1,147 @@
+#pragma kernel CSBuildBallGraphBatch
+#pragma kernel CSBuildBallLayoutBatch
 #pragma kernel CSGenerateBallMesh
 #pragma enable_d3d11_debug_symbols
 
 #include "AtomCommon.hlsl"
 
-// C#传递的参数
 int batchSize;
+int selectedCount;
+int useSmilesTextureInput;
+int smilesMaxLength;
 int sphereSegments;
 float bondLength;
-float baseRadius;
-int topK;
+float atomRadius;
 
-
-
-// 输入：SMILES Buffer
-Texture2D<float4> smilesInputTexture;
 StructuredBuffer<int> smilesInputBuffer;
-// 输出：Mesh数据（顶点、法线、颜色）
-RWStructuredBuffer<float3> meshDataOutput_vertex;
-RWStructuredBuffer<float3> meshDataOutput_normal;
-RWStructuredBuffer<float4> meshDataOutput_color;
-// 输出：每个分子的原子数
-RWStructuredBuffer<int> atomCountOutput;
+Texture2D<float4> smilesInputTexture;
+StructuredBuffer<int> selectedMolIndexBuffer;
+StructuredBuffer<int> meshAtomStartBuffer;
+RWStructuredBuffer<int> meshAtomCountInputBuffer;
+RWStructuredBuffer<int> atomTypeInputBuffer;
+RWStructuredBuffer<float3> atomPositionInputBuffer;
+RWStructuredBuffer<float3> vertexOutputBuffer_position;
+RWStructuredBuffer<float3> vertexOutputBuffer_normal;
+RWStructuredBuffer<float4> vertexOutputBuffer_color;
+RWStructuredBuffer<int> indexOutputBuffer;
+RWStructuredBuffer<int> atomCountOutputBuffer;
 
-
-
-
-// 生成球冠顶点与法线
-void GenerateSphereCap(float3 center, float radius, float4 color, int atomIndex, int segments, inout int meshDataOffset)
+void ReadSmilesCharsForMesh(int meshIdx, out int smilesChars[SMILES_MAX_LENGTH])
 {
-    float thetaStep = 3.1415926f / segments; // 纬度步长（0~π/2，半球）
-    float phiStep = 2 * 3.1415926f / segments; // 经度步长
-
-    for(int y = 0; y <= segments; y++)
+    int molIdx = selectedMolIndexBuffer[meshIdx];
+    if (molIdx < 0 || molIdx >= batchSize)
     {
-        float theta = y * thetaStep;
-        float sinTheta = sin(theta);
-        float cosTheta = cos(theta);
+        for (int i = 0; i < SMILES_MAX_LENGTH; i++)
+            smilesChars[i] = 0;
+        return;
+    }
 
-        for(int x = 0; x <= segments; x++)
+    for (int i = 0; i < SMILES_MAX_LENGTH; i++)
+    {
+        if (useSmilesTextureInput != 0)
+            smilesChars[i] = (int)round(smilesInputTexture[int2(i, molIdx)].r * 255.0f);
+        else
+            smilesChars[i] = smilesInputBuffer[molIdx * smilesMaxLength + i];
+    }
+}
+
+[numthreads(32, 1, 1)]
+void CSBuildBallGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    int meshIdx = dispatchThreadID.x;
+    if (meshIdx >= selectedCount)
+        return;
+
+    int smilesChars[SMILES_MAX_LENGTH];
+    int atomTypes[MAX_ATOM_COUNT];
+    int atomDegrees[MAX_ATOM_COUNT];
+    int neighborIndices[MAX_ATOM_COUNT * MAX_GRAPH_NEIGHBORS];
+    int neighborBondTypes[MAX_ATOM_COUNT * MAX_GRAPH_NEIGHBORS];
+    int atomCount = 0;
+    int bondCount = 0;
+    int atomStart = meshAtomStartBuffer[meshIdx];
+
+    ReadSmilesCharsForMesh(meshIdx, smilesChars);
+    ParseSMILESGraph(smilesChars, atomTypes, atomCount, atomDegrees, neighborIndices, neighborBondTypes, bondCount);
+
+    meshAtomCountInputBuffer[meshIdx] = atomCount;
+    atomCountOutputBuffer[meshIdx] = atomCount;
+    for (int atomIdx = 0; atomIdx < MAX_ATOM_COUNT; atomIdx++)
+    {
+        atomTypeInputBuffer[atomStart + atomIdx] = atomIdx < atomCount ? atomTypes[atomIdx] : 0;
+        atomPositionInputBuffer[atomStart + atomIdx] = float3(0, 0, 0);
+    }
+}
+
+[numthreads(32, 1, 1)]
+void CSBuildBallLayoutBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    int meshIdx = dispatchThreadID.x;
+    if (meshIdx >= selectedCount)
+        return;
+
+    int atomStart = meshAtomStartBuffer[meshIdx];
+    int smilesChars[SMILES_MAX_LENGTH];
+    int atomTypes[MAX_ATOM_COUNT];
+    int atomCount = 0;
+    int atomDegrees[MAX_ATOM_COUNT];
+    int neighborIndices[MAX_ATOM_COUNT * MAX_GRAPH_NEIGHBORS];
+    int neighborBondTypes[MAX_ATOM_COUNT * MAX_GRAPH_NEIGHBORS];
+    float3 atomPositions[MAX_ATOM_COUNT];
+
+    int bondCount = 0;
+    ReadSmilesCharsForMesh(meshIdx, smilesChars);
+    ParseSMILESGraph(smilesChars, atomTypes, atomCount, atomDegrees, neighborIndices, neighborBondTypes, bondCount);
+    if (atomCount <= 0)
+        return;
+
+    BuildAtomLayoutGraph(atomCount, atomDegrees, neighborIndices, neighborBondTypes, bondLength, atomPositions);
+    for (int atomIdx = 0; atomIdx < atomCount; atomIdx++)
+        atomPositionInputBuffer[atomStart + atomIdx] = atomPositions[atomIdx];
+}
+
+float GetDisplayRadius(int type)
+{
+    return atomRadius > 0 ? atomRadius : GetAtomRadius(type);
+}
+
+void GenerateAtomSphere(float3 center, int type, int vertexOffset, int indexOffset, inout int vCount, inout int iCount)
+{
+    float radius = GetDisplayRadius(type);
+    float4 color = GetAtomColor(type);
+    float thetaStep = 2.0f * 3.1415926f / sphereSegments;
+    float phiStep = 3.1415926f / sphereSegments;
+
+    for (int i = 0; i <= sphereSegments; i++)
+    {
+        for (int j = 0; j <= sphereSegments; j++)
         {
-            float phi = x * phiStep;
-            float sinPhi = sin(phi);
-            float cosPhi = cos(phi);
+            float theta = j * thetaStep;
+            float phi = i * phiStep;
+            float3 normal = float3(
+                sin(phi) * cos(theta),
+                cos(phi),
+                sin(phi) * sin(theta)
+            );
+            vertexOutputBuffer_position[vertexOffset + vCount] = center + normal * radius;
+            vertexOutputBuffer_normal[vertexOffset + vCount] = normal;
+            vertexOutputBuffer_color[vertexOffset + vCount] = color;
+            vCount++;
+        }
+    }
 
-            // 球冠顶点坐标
-            float3 vertex = float3(
-                radius * sinTheta * cosPhi,
-                radius * cosTheta,
-                radius * sinTheta * sinPhi
-            ) + center;
-
-            // 法线（归一化）
-            float3 normal = normalize(vertex - center);
-
-            // 写入Buffer
-            meshDataOutput_vertex[meshDataOffset] = vertex;
-            meshDataOutput_normal[meshDataOffset] = normal;
-            meshDataOutput_color[meshDataOffset] = color;
-
-            meshDataOffset++;
+    for (int i = 0; i < sphereSegments; i++)
+    {
+        for (int j = 0; j < sphereSegments; j++)
+        {
+            int current = i * (sphereSegments + 1) + j;
+            int next = current + sphereSegments + 1;
+            indexOutputBuffer[indexOffset + iCount++] = vertexOffset + current;
+            indexOutputBuffer[indexOffset + iCount++] = vertexOffset + next;
+            indexOutputBuffer[indexOffset + iCount++] = vertexOffset + current + 1;
+            indexOutputBuffer[indexOffset + iCount++] = vertexOffset + current + 1;
+            indexOutputBuffer[indexOffset + iCount++] = vertexOffset + next;
+            indexOutputBuffer[indexOffset + iCount++] = vertexOffset + next + 1;
         }
     }
 }
@@ -66,44 +149,28 @@ void GenerateSphereCap(float3 center, float radius, float4 color, int atomIndex,
 [numthreads(32, 1, 1)]
 void CSGenerateBallMesh(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
-    int molIdx = dispatchThreadID.x;
-    if(molIdx >= batchSize) return;
+    int meshIdx = dispatchThreadID.x;
+    if (meshIdx >= selectedCount)
+        return;
 
-    // 1. 读取当前分子的SMILES
-    int smilesChars[SMILES_MAX_LENGTH];
-    for (int i = 0; i < SMILES_MAX_LENGTH; i++)
-    {
-        //smilesChars[i] = smilesInputBuffer[molIdx * SMILES_MAX_LENGTH + i];
-        float r = smilesInputTexture[int2(i, molIdx)].r;
-        smilesChars[i] = (int) (r * 255.0f);
-    }
+    int atomStart = meshAtomStartBuffer[meshIdx];
+    int atomCount = meshAtomCountInputBuffer[meshIdx];
+    atomCountOutputBuffer[meshIdx] = atomCount;
+    if (atomCount <= 0)
+        return;
 
-    // 2. 解析SMILES
-    int atomTypes[MAX_ATOM_COUNT];
-    int atomCount;
-    ParseSMILES(smilesChars, atomTypes, atomCount);
-    atomCountOutput[molIdx] = atomCount;
-
-    // 仅处理Top-K分子（简化版：假设前topK个为筛选后的分子）
-    //if(molIdx >= topK) return;
-    if(atomCount <= 1) return;
-
-    // 3. 计算原子位置（简单链式排列）
-    float3 atomPositions [MAX_ATOM_COUNT];
-    for(int a = 0; a < atomCount; a++)
-    {
-        atomPositions[a] = float3(a * bondLength, 0, 0);
-    }
-
-    // 4. 生成每个原子的球冠Mesh
     int verticesPerAtom = (sphereSegments + 1) * (sphereSegments + 1);
-    int meshDataOffset = molIdx * MAX_ATOM_COUNT * verticesPerAtom;
+    int indicesPerAtom = sphereSegments * sphereSegments * 6;
+    int totalVertices = MAX_ATOM_COUNT * verticesPerAtom;
+    int totalIndices = MAX_ATOM_COUNT * indicesPerAtom;
+    int vertexOffset = meshIdx * totalVertices;
+    int indexOffset = meshIdx * totalIndices;
 
-    for(int a = 0; a < atomCount; a++)
+    int vCount = 0;
+    int iCount = 0;
+    for (int a = 0; a < atomCount; a++)
     {
-        int type = atomTypes[a];
-        float radius = GetAtomRadius(type);
-        float4 color = GetAtomColor(type);
-        GenerateSphereCap(atomPositions[a], radius, color, a, sphereSegments, meshDataOffset);
+        int atomIndex = atomStart + a;
+        GenerateAtomSphere(atomPositionInputBuffer[atomIndex], atomTypeInputBuffer[atomIndex], vertexOffset, indexOffset, vCount, iCount);
     }
 }

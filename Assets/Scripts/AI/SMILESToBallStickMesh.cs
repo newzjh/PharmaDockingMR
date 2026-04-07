@@ -9,27 +9,26 @@ using UnityEngine.Rendering;
 namespace AIDrugDiscovery
 {
 
-    // ���ģ������
+    
+    // Configures the BallStick renderer used for atom-and-bond previews.
     [System.Serializable]
     public class BallStickConfig
     {
-        public float bondLength = 1.5f;    // ԭ�Ӽ��׼����
-        public float atomRadius = 0.3f;    // ԭ����뾶
-        public float bondRadius = 0.1f;    // ��ѧ��Բ���뾶
-        public int sphereSegments = 12;    // ԭ����ֶ���
-        public int cylinderSegments = 8;   // ��ѧ��Բ���ֶ���
-        public int topK = 10;              // ����Top-Kɸѡ����ӵ�Mesh
+        public float bondLength = 1.5f;    
+        public float atomRadius = 0.3f;    
+        public float bondRadius = 0.1f;    
+        public int sphereSegments = 12;    
+        public int cylinderSegments = 8;   
+        public int topK = 10;              
     }
-
-
-
+    // Expands a precomputed atom/bond graph into BallStick mesh buffers.
     public class SMILESToBallStickMesh : MonoBehaviour
     {
         public ComputeShader ballStickCS;
         public BallStickConfig config;
-        //public ComputeBuffer smilesBuffer; // �����SMILES Buffer
-        public int batchSize = 128;              // �������δ�С
-        public int smilesMaxLength = 256;  // ����SMILES��󳤶�
+        
+        public int batchSize = 128;              
+        public int smilesMaxLength = 256;  
         public int maxAtomLimit = 60;
         public int maxExtraBondCount = 12;
         public bool useSelectedSubsetDispatch = true;
@@ -39,25 +38,43 @@ namespace AIDrugDiscovery
         private ComputeBuffer vertexBufferNormal;
         private ComputeBuffer vertexBufferColor;
         private ComputeBuffer indexBuffer;
-        private ComputeBuffer atomCountBuffer; // ÿ�����ӵ�ԭ����
+        private ComputeBuffer atomCountBuffer; 
         private ComputeBuffer bondCountBuffer;
         private ComputeBuffer selectedIndexBuffer;
+        private ComputeBuffer meshAtomStartBuffer;
+        private ComputeBuffer meshAtomCountInputBuffer;
+        private ComputeBuffer meshBondStartBuffer;
+        private ComputeBuffer meshBondCountInputBuffer;
+        private ComputeBuffer atomTypeInputBuffer;
+        private ComputeBuffer atomPositionInputBuffer;
+        private ComputeBuffer bondInputBuffer;
+        private ComputeBuffer dummySmilesInputBuffer;
+        private Texture2D dummySmilesInputTexture;
         private int maxVertexCount;
         private int maxIndexCount;
         private int allocatedBatchSize;
         private int maxBondLimit;
 
-        private Texture2D CreateDummyTexture()
+        private int[] BuildSmilesData(string smiles)
         {
-            Texture2D texture = new Texture2D(1, 1, TextureFormat.RGBA32, false);
-            texture.SetPixel(0, 0, Color.clear);
-            texture.Apply();
-            return texture;
+            int[] smilesData = new int[smilesMaxLength];
+            if (string.IsNullOrEmpty(smiles))
+                return smilesData;
+
+            int copyLength = Mathf.Min(smiles.Length, smilesMaxLength - 1);
+            for (int i = 0; i < copyLength; i++)
+                smilesData[i] = smiles[i];
+            return smilesData;
         }
 
         public void Awake()
         {
             EnsureBuffers(batchSize);
+            dummySmilesInputBuffer = new ComputeBuffer(1, sizeof(int));
+            dummySmilesInputBuffer.SetData(new[] { 0 });
+            dummySmilesInputTexture = new Texture2D(1, 1, TextureFormat.RGBA32, false);
+            dummySmilesInputTexture.SetPixel(0, 0, Color.clear);
+            dummySmilesInputTexture.Apply();
         }
 
         private void EnsureBuffers(int requiredBatchSize)
@@ -74,7 +91,7 @@ namespace AIDrugDiscovery
             indexBuffer?.Release();
             atomCountBuffer?.Release();
             bondCountBuffer?.Release();
-            selectedIndexBuffer?.Release();
+            ReleaseInputBuffers();
 
             int verticesPerAtom = (config.sphereSegments + 1) * (config.sphereSegments + 1);
             int verticesPerBond = 2 * (config.cylinderSegments + 1);
@@ -86,7 +103,7 @@ namespace AIDrugDiscovery
             maxVertexCount = allocatedBatchSize * (maxAtomLimit * verticesPerAtom + maxBondLimit * verticesPerBond);
             maxIndexCount = allocatedBatchSize * (maxAtomLimit * indicesPerAtom + maxBondLimit * indicesPerBond);
 
-            // ��ʼ��Buffer
+            
             vertexBufferPosition = new ComputeBuffer(maxVertexCount, System.Runtime.InteropServices.Marshal.SizeOf(typeof(Vector3)));
             vertexBufferNormal = new ComputeBuffer(maxVertexCount, System.Runtime.InteropServices.Marshal.SizeOf(typeof(Vector3)));
             vertexBufferColor = new ComputeBuffer(maxVertexCount, System.Runtime.InteropServices.Marshal.SizeOf(typeof(Vector4)));
@@ -95,12 +112,48 @@ namespace AIDrugDiscovery
             bondCountBuffer = new ComputeBuffer(allocatedBatchSize, sizeof(int));
         }
 
-        public bool test = true;
+        private void ReleaseInputBuffers()
+        {
+            selectedIndexBuffer?.Release();
+            meshAtomStartBuffer?.Release();
+            meshAtomCountInputBuffer?.Release();
+            meshBondStartBuffer?.Release();
+            meshBondCountInputBuffer?.Release();
+            atomTypeInputBuffer?.Release();
+            atomPositionInputBuffer?.Release();
+            bondInputBuffer?.Release();
+        }
 
-        /// <summary>
-        /// �������ģ��Mesh
-        /// </summary>
-        /// <param name="filteredIndices">ɸѡ��ķ��������б�</param>
+        private void AllocateBatchGraphBuffers(int meshCount)
+        {
+            ReleaseInputBuffers();
+
+            int[] atomStarts = new int[meshCount];
+            int[] bondStarts = new int[meshCount];
+            for (int meshIdx = 0; meshIdx < meshCount; meshIdx++)
+            {
+                atomStarts[meshIdx] = meshIdx * maxAtomLimit;
+                bondStarts[meshIdx] = meshIdx * maxBondLimit;
+            }
+
+            meshAtomStartBuffer = new ComputeBuffer(meshCount, sizeof(int));
+            meshAtomCountInputBuffer = new ComputeBuffer(meshCount, sizeof(int));
+            meshBondStartBuffer = new ComputeBuffer(meshCount, sizeof(int));
+            meshBondCountInputBuffer = new ComputeBuffer(meshCount, sizeof(int));
+            atomTypeInputBuffer = new ComputeBuffer(Mathf.Max(1, meshCount * maxAtomLimit), sizeof(int));
+            atomPositionInputBuffer = new ComputeBuffer(Mathf.Max(1, meshCount * maxAtomLimit), Marshal.SizeOf(typeof(Vector3)));
+            bondInputBuffer = new ComputeBuffer(Mathf.Max(1, meshCount * maxBondLimit), sizeof(int) * 2);
+
+            meshAtomStartBuffer.SetData(atomStarts);
+            meshAtomCountInputBuffer.SetData(new int[meshCount]);
+            meshBondStartBuffer.SetData(bondStarts);
+            meshBondCountInputBuffer.SetData(new int[meshCount]);
+            atomTypeInputBuffer.SetData(new int[Mathf.Max(1, meshCount * maxAtomLimit)]);
+            atomPositionInputBuffer.SetData(new Vector3[Mathf.Max(1, meshCount * maxAtomLimit)]);
+            bondInputBuffer.SetData(new SmilesMeshBondIndex[Mathf.Max(1, meshCount * maxBondLimit)]);
+        }
+
+        public bool test = true;
         public async UniTask<List<Mesh>> GenerateBallStickMeshes(List<int> filteredIndices, ComputeBuffer smilesBuffer, int runtimeBatchSize, Texture legacySmilesTexture = null)
         {
             List<Mesh> molMeshes = new List<Mesh>();
@@ -108,16 +161,21 @@ namespace AIDrugDiscovery
                 return molMeshes;
 
             int generatedMeshCount = useSelectedSubsetDispatch ? filteredIndices.Count : runtimeBatchSize;
+            if (generatedMeshCount == 0)
+                return molMeshes;
+
             EnsureBuffers(generatedMeshCount);
+            AllocateBatchGraphBuffers(generatedMeshCount);
             int verticesPerAtom = (config.sphereSegments + 1) * (config.sphereSegments + 1);
             int verticesPerBond = 2 * (config.cylinderSegments + 1);
             int indicesPerAtom = config.sphereSegments * config.sphereSegments * 6;
             int indicesPerBond = config.cylinderSegments * 6;
-            selectedIndexBuffer?.Release();
+
+            selectedIndexBuffer = new ComputeBuffer(generatedMeshCount, sizeof(int));
             int[] selectedIndices = new int[generatedMeshCount];
             if (useSelectedSubsetDispatch)
             {
-                for (int i = 0; i < filteredIndices.Count; i++)
+                for (int i = 0; i < generatedMeshCount; i++)
                     selectedIndices[i] = filteredIndices[i];
             }
             else
@@ -125,49 +183,48 @@ namespace AIDrugDiscovery
                 for (int i = 0; i < generatedMeshCount; i++)
                     selectedIndices[i] = i;
             }
-            selectedIndexBuffer = new ComputeBuffer(generatedMeshCount, sizeof(int));
             selectedIndexBuffer.SetData(selectedIndices);
 
-            // 1. ����Compute Shader
-            int kernelId = ballStickCS.FindKernel("CSGenerateBallStickMesh");
-            ballStickCS.SetInt("batchSize", runtimeBatchSize);
-            ballStickCS.SetInt("selectedCount", generatedMeshCount);
-            ballStickCS.SetInt("useSmilesTextureInput", useLegacySmilesTextureInput && legacySmilesTexture != null ? 1 : 0);
-            ballStickCS.SetInt("smilesMaxLength", smilesMaxLength);
-            ballStickCS.SetInt("sphereSegments", config.sphereSegments);
-            ballStickCS.SetInt("cylinderSegments", config.cylinderSegments);
-            ballStickCS.SetFloat("bondLength", config.bondLength);
-            ballStickCS.SetFloat("atomRadius", config.atomRadius);
-            ballStickCS.SetFloat("bondRadius", config.bondRadius);
-            ballStickCS.SetInt("topK", config.topK);
-            ballStickCS.SetInt("maxBondCount", maxBondLimit);
-
-            Texture boundTexture = legacySmilesTexture ?? CreateDummyTexture();
-            bool disposeDummyTexture = legacySmilesTexture == null;
-            ComputeBuffer boundBuffer = smilesBuffer ?? new ComputeBuffer(1, sizeof(int));
-            bool disposeDummyBuffer = smilesBuffer == null;
-
-            // 2. ��Buffer
-            ballStickCS.SetBuffer(kernelId, "smilesInputBuffer", boundBuffer);
-            ballStickCS.SetTexture(kernelId, "smilesInputTexture", boundTexture);
-            ballStickCS.SetBuffer(kernelId, "selectedMolIndexBuffer", selectedIndexBuffer);
-            ballStickCS.SetBuffer(kernelId, "vertexOutputBuffer_position", vertexBufferPosition);
-            ballStickCS.SetBuffer(kernelId, "vertexOutputBuffer_normal", vertexBufferNormal);
-            ballStickCS.SetBuffer(kernelId, "vertexOutputBuffer_color", vertexBufferColor);
-            ballStickCS.SetBuffer(kernelId, "indexOutputBuffer", indexBuffer);
-            ballStickCS.SetBuffer(kernelId, "atomCountOutputBuffer", atomCountBuffer);
-            ballStickCS.SetBuffer(kernelId, "bondCountOutputBuffer", bondCountBuffer);
-
-            // 3. ����GPU���㣨�����ƶ���32�߳��飩
             int threadGroupX = Mathf.CeilToInt(generatedMeshCount / 32f);
-            ballStickCS.Dispatch(kernelId, threadGroupX, 1, 1);
-            //while (test && Application.isPlaying)
-            //{
-            //    ballStickCS.Dispatch(kernelId, threadGroupX, 1, 1);
-            //    await UniTask.NextFrame();
-            //}
+            int kernelGraph = ballStickCS.FindKernel("CSBuildBallStickGraphBatch");
+            int kernelLayout = ballStickCS.FindKernel("CSBuildBallStickLayoutBatch");
+            int kernelMesh = ballStickCS.FindKernel("CSGenerateBallStickMesh");
 
-            // 4. ��ȡԭ����
+            foreach (int kernelId in new[] { kernelGraph, kernelLayout, kernelMesh })
+            {
+                ballStickCS.SetInt("batchSize", runtimeBatchSize);
+                ballStickCS.SetInt("selectedCount", generatedMeshCount);
+                ballStickCS.SetInt("useSmilesTextureInput", useLegacySmilesTextureInput && legacySmilesTexture != null ? 1 : 0);
+                ballStickCS.SetInt("smilesMaxLength", smilesMaxLength);
+                ballStickCS.SetInt("sphereSegments", config.sphereSegments);
+                ballStickCS.SetInt("cylinderSegments", config.cylinderSegments);
+                ballStickCS.SetFloat("bondLength", config.bondLength);
+                ballStickCS.SetFloat("bondRadius", config.bondRadius);
+                ballStickCS.SetInt("maxBondCount", maxBondLimit);
+                ballStickCS.SetBuffer(kernelId, "smilesInputBuffer", smilesBuffer ?? dummySmilesInputBuffer);
+                ballStickCS.SetTexture(kernelId, "smilesInputTexture", legacySmilesTexture ?? dummySmilesInputTexture);
+                ballStickCS.SetBuffer(kernelId, "selectedMolIndexBuffer", selectedIndexBuffer);
+                ballStickCS.SetBuffer(kernelId, "meshAtomStartBuffer", meshAtomStartBuffer);
+                ballStickCS.SetBuffer(kernelId, "meshAtomCountInputBuffer", meshAtomCountInputBuffer);
+                ballStickCS.SetBuffer(kernelId, "meshBondStartBuffer", meshBondStartBuffer);
+                ballStickCS.SetBuffer(kernelId, "meshBondCountInputBuffer", meshBondCountInputBuffer);
+                ballStickCS.SetBuffer(kernelId, "atomTypeInputBuffer", atomTypeInputBuffer);
+                ballStickCS.SetBuffer(kernelId, "atomPositionInputBuffer", atomPositionInputBuffer);
+                ballStickCS.SetBuffer(kernelId, "bondInputBuffer", bondInputBuffer);
+                ballStickCS.SetBuffer(kernelId, "atomCountOutputBuffer", atomCountBuffer);
+                ballStickCS.SetBuffer(kernelId, "bondCountOutputBuffer", bondCountBuffer);
+            }
+
+            ballStickCS.SetBuffer(kernelMesh, "vertexOutputBuffer_position", vertexBufferPosition);
+            ballStickCS.SetBuffer(kernelMesh, "vertexOutputBuffer_normal", vertexBufferNormal);
+            ballStickCS.SetBuffer(kernelMesh, "vertexOutputBuffer_color", vertexBufferColor);
+            ballStickCS.SetBuffer(kernelMesh, "indexOutputBuffer", indexBuffer);
+
+            ballStickCS.Dispatch(kernelGraph, threadGroupX, 1, 1);
+            ballStickCS.Dispatch(kernelLayout, threadGroupX, 1, 1);
+            ballStickCS.Dispatch(kernelMesh, threadGroupX, 1, 1);
+
+            
             int[] atomCounts = new int[generatedMeshCount];
             int[] bondCounts = new int[generatedMeshCount];
             {
@@ -180,7 +237,7 @@ namespace AIDrugDiscovery
             }
             //atomCountBuffer.GetData(atomCounts);
 
-            // 5. ��ȡ�������������
+            
             Vector3[] allPositions = new Vector3[maxVertexCount];
             Vector3[] allNormals = new Vector3[maxVertexCount];
             Vector4[] allColors = new Vector4[maxVertexCount];
@@ -206,15 +263,11 @@ namespace AIDrugDiscovery
                 allIndices = req.GetData<int>().ToArray();
             }
 
-            // 6. Ϊÿ��ɸѡ��������Mesh
+            
             int vertexOffset = 0;
             int indexOffset = 0;
-            for (int outputIdx = 0; outputIdx < filteredIndices.Count; outputIdx++)
+            for (int meshIdx = 0; meshIdx < generatedMeshCount; meshIdx++)
             {
-                int meshIdx = useSelectedSubsetDispatch ? outputIdx : filteredIndices[outputIdx];
-                if (meshIdx < 0 || meshIdx >= generatedMeshCount)
-                    continue;
-
                 int atomCount = atomCounts[meshIdx];
                 int bondCount = bondCounts[meshIdx];
                 if (atomCount <= 1) 
@@ -223,13 +276,13 @@ namespace AIDrugDiscovery
                 vertexOffset = meshIdx * (maxAtomLimit * verticesPerAtom + maxBondLimit * verticesPerBond);
                 indexOffset = meshIdx * (maxAtomLimit * indicesPerAtom + maxBondLimit * indicesPerBond);
 
-                // ���㵱ǰ���ӵĶ���/��������
+                
                 int totalVertices = atomCount * verticesPerAtom + bondCount * verticesPerBond;
                 int totalIndices = atomCount * indicesPerAtom + bondCount * indicesPerBond;
                 if (vertexOffset + totalVertices > maxVertexCount || indexOffset + totalIndices > maxIndexCount) 
                     break;
 
-                // ���Mesh����
+                
                 Mesh mesh = new Mesh();
                 mesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
                 Vector3[] positions = new Vector3[totalVertices];
@@ -253,16 +306,7 @@ namespace AIDrugDiscovery
                 mesh.triangles = triangles;
                 mesh.RecalculateBounds();
                 molMeshes.Add(mesh);
-
-                //// ����ƫ����
-                //vertexOffset += totalVertices;
-                //indexOffset += totalIndices;
             }
-
-            if (disposeDummyBuffer)
-                boundBuffer.Dispose();
-            if (disposeDummyTexture)
-                Destroy(boundTexture);
 
             return molMeshes;
         }
@@ -272,32 +316,91 @@ namespace AIDrugDiscovery
             if (string.IsNullOrEmpty(smiles))
                 return null;
 
-            int[] smilesData = new int[smilesMaxLength];
-            int copyLength = Mathf.Min(smiles.Length, smilesMaxLength - 1);
-            for (int i = 0; i < copyLength; i++)
-                smilesData[i] = smiles[i];
+            return await GenerateSingleBallStickMesh(BuildSmilesData(smiles));
+        }
 
-            ComputeBuffer singleSmilesBuffer = new ComputeBuffer(1, smilesMaxLength * sizeof(int));
-            singleSmilesBuffer.SetData(smilesData);
+        public async UniTask<Mesh> GenerateSingleBallStickMesh(int[] smilesData)
+        {
+            if (smilesData == null || smilesData.Length == 0)
+                return null;
 
-            Texture2D singleSmilesTexture = null;
-            if (useLegacySmilesTextureInput)
+            string smiles = SmilesMeshPreprocessor.DecodeAsciiSmiles(smilesData);
+            SmilesMeshDescription description = SmilesMeshPreprocessor.Build(smiles, config.bondLength);
+            if (description.AtomTypes.Count <= 1)
+                return null;
+
+            EnsureBuffers(1);
+            AllocateBatchGraphBuffers(1);
+            meshAtomCountInputBuffer.SetData(new[] { description.AtomTypes.Count });
+            meshBondCountInputBuffer.SetData(new[] { description.Bonds.Count });
+            atomTypeInputBuffer.SetData(description.AtomTypes.ToArray());
+            atomPositionInputBuffer.SetData(description.AtomPositions.ToArray());
+            SmilesMeshBondIndex[] bonds = new SmilesMeshBondIndex[Mathf.Max(1, description.Bonds.Count)];
+            for (int i = 0; i < description.Bonds.Count; i++)
+                bonds[i] = new SmilesMeshBondIndex { AtomA = description.Bonds[i].AtomA, AtomB = description.Bonds[i].AtomB };
+            bondInputBuffer.SetData(bonds);
+
+            int verticesPerAtom = (config.sphereSegments + 1) * (config.sphereSegments + 1);
+            int verticesPerBond = 2 * (config.cylinderSegments + 1);
+            int indicesPerAtom = config.sphereSegments * config.sphereSegments * 6;
+            int indicesPerBond = config.cylinderSegments * 6;
+
+            int kernelId = ballStickCS.FindKernel("CSGenerateBallStickMesh");
+            ballStickCS.SetInt("selectedCount", 1);
+            ballStickCS.SetInt("sphereSegments", config.sphereSegments);
+            ballStickCS.SetInt("cylinderSegments", config.cylinderSegments);
+            ballStickCS.SetFloat("bondRadius", config.bondRadius);
+            ballStickCS.SetInt("maxBondCount", maxBondLimit);
+            ballStickCS.SetBuffer(kernelId, "meshAtomStartBuffer", meshAtomStartBuffer);
+            ballStickCS.SetBuffer(kernelId, "meshAtomCountInputBuffer", meshAtomCountInputBuffer);
+            ballStickCS.SetBuffer(kernelId, "meshBondStartBuffer", meshBondStartBuffer);
+            ballStickCS.SetBuffer(kernelId, "meshBondCountInputBuffer", meshBondCountInputBuffer);
+            ballStickCS.SetBuffer(kernelId, "atomTypeInputBuffer", atomTypeInputBuffer);
+            ballStickCS.SetBuffer(kernelId, "atomPositionInputBuffer", atomPositionInputBuffer);
+            ballStickCS.SetBuffer(kernelId, "bondInputBuffer", bondInputBuffer);
+            ballStickCS.SetBuffer(kernelId, "vertexOutputBuffer_position", vertexBufferPosition);
+            ballStickCS.SetBuffer(kernelId, "vertexOutputBuffer_normal", vertexBufferNormal);
+            ballStickCS.SetBuffer(kernelId, "vertexOutputBuffer_color", vertexBufferColor);
+            ballStickCS.SetBuffer(kernelId, "indexOutputBuffer", indexBuffer);
+            ballStickCS.SetBuffer(kernelId, "atomCountOutputBuffer", atomCountBuffer);
+            ballStickCS.SetBuffer(kernelId, "bondCountOutputBuffer", bondCountBuffer);
+            ballStickCS.Dispatch(kernelId, 1, 1, 1);
+
+            int[] atomCounts = (await AsyncGPUReadback.RequestAsync(atomCountBuffer)).GetData<int>().ToArray();
+            int[] bondCounts = (await AsyncGPUReadback.RequestAsync(bondCountBuffer)).GetData<int>().ToArray();
+            if (atomCounts.Length == 0 || atomCounts[0] <= 1)
+                return null;
+
+            Vector3[] allPositions = (await AsyncGPUReadback.RequestAsync(vertexBufferPosition)).GetData<Vector3>().ToArray();
+            Vector3[] allNormals = (await AsyncGPUReadback.RequestAsync(vertexBufferNormal)).GetData<Vector3>().ToArray();
+            Vector4[] allColors = (await AsyncGPUReadback.RequestAsync(vertexBufferColor)).GetData<Vector4>().ToArray();
+            int[] allIndices = (await AsyncGPUReadback.RequestAsync(indexBuffer)).GetData<int>().ToArray();
+
+            int atomCount = atomCounts[0];
+            int bondCount = bondCounts[0];
+            int totalVertices = atomCount * verticesPerAtom + bondCount * verticesPerBond;
+            int totalIndices = atomCount * indicesPerAtom + bondCount * indicesPerBond;
+            Mesh mesh = new Mesh { indexFormat = IndexFormat.UInt32 };
+            Vector3[] positions = new Vector3[totalVertices];
+            Vector3[] normals = new Vector3[totalVertices];
+            Color[] colors = new Color[totalVertices];
+            int[] triangles = new int[totalIndices];
+
+            unsafe
             {
-                singleSmilesTexture = new Texture2D(smilesMaxLength, 1, TextureFormat.RGBAHalf, false);
-                Color[] pixels = new Color[smilesMaxLength];
-                for (int i = 0; i < copyLength; i++)
-                    pixels[i] = new Color(smilesData[i] / 255f, 0f, 0f, 1f);
-                for (int i = copyLength; i < smilesMaxLength; i++)
-                    pixels[i] = new Color(0f, 0f, 0f, 1f);
-                singleSmilesTexture.SetPixels(pixels);
-                singleSmilesTexture.Apply();
+                Vector4* src = (Vector4*)UnsafeUtility.AddressOf<Vector4>(ref allColors[0]);
+                Color* dest = (Color*)UnsafeUtility.AddressOf<Color>(ref colors[0]);
+                UnsafeUtility.MemCpy(dest, src, totalVertices * UnsafeUtility.SizeOf<Vector4>());
             }
-
-            List<Mesh> meshes = await GenerateBallStickMeshes(new List<int> { 0 }, singleSmilesBuffer, 1, singleSmilesTexture);
-            singleSmilesBuffer.Dispose();
-            if (singleSmilesTexture != null)
-                Destroy(singleSmilesTexture);
-            return meshes.Count > 0 ? meshes[0] : null;
+            Array.Copy(allPositions, 0, positions, 0, totalVertices);
+            Array.Copy(allNormals, 0, normals, 0, totalVertices);
+            Array.Copy(allIndices, 0, triangles, 0, totalIndices);
+            mesh.vertices = positions;
+            mesh.normals = normals;
+            mesh.colors = colors;
+            mesh.triangles = triangles;
+            mesh.RecalculateBounds();
+            return mesh;
         }
 
         void OnDestroy()
@@ -308,7 +411,10 @@ namespace AIDrugDiscovery
             indexBuffer?.Release();
             atomCountBuffer?.Release();
             bondCountBuffer?.Release();
-            selectedIndexBuffer?.Release();
+            ReleaseInputBuffers();
+            dummySmilesInputBuffer?.Release();
+            if (dummySmilesInputTexture != null)
+                Destroy(dummySmilesInputTexture);
         }
     }
 

@@ -911,8 +911,8 @@ MonoBehaviour:
   currentBatch: 0
   templateMat: {fileID: 2100000, guid: 26695abc36ac7b141ad14c66a9c0a5eb, type: 2}
   detectPocket: 0
-  useCartoonMode: 0
-  useSurfaceMode: 0
+  generateMesh: 0
+  renderMode: 1
   FlipPageView: {fileID: 2117598675}
 --- !u!4 &1149687865
 Transform:

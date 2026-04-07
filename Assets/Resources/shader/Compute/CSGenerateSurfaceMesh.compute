@@ -5,28 +5,30 @@
 
 #include "AtomCommon.hlsl"
 
-// --- Parameters ---
+// Surface extraction parameters.
 float gridSpacing = 0.3f;
 float isoLevel = 0.5f;
 int3 gridSize; // x, y, z
 float3 gridMin; // bounding box min
 float bondLength = 1.5f;
+int useDirectSmilesInput;
+int singleSmilesChars[SMILES_MAX_LENGTH];
 
-// Input
+// Input SMILES transport.
 StructuredBuffer<int> smilesInputBuffer;
 Texture2D<float4> smilesInputTexture;
 int useSmilesTextureInput;
 
-// Parsed Molecule Data
+// Parsed molecule graph and layout output.
 RWStructuredBuffer<int> parsedAtomTypes;
 RWStructuredBuffer<float3> parsedAtomPositions;
 RWStructuredBuffer<int> parsedAtomCount;
 
-// Marching Cubes Tables
+// Marching cubes lookup tables.
 StructuredBuffer<int> edgeTable;
 StructuredBuffer<int> triTable;
 
-// Scalar Field & Colors
+// Scalar field and per-voxel color accumulators.
 RWStructuredBuffer<float> densityGrid;
 RWStructuredBuffer<float4> colorGrid;
 
@@ -49,30 +51,8 @@ int GetGridIndex(int3 id)
 [numthreads(1, 1, 1)]
 void CSParseSMILES(uint3 id : SV_DispatchThreadID)
 {
-    int smilesChars[SMILES_MAX_LENGTH];
-    for (int i = 0; i < SMILES_MAX_LENGTH; i++)
-    {
-        if (useSmilesTextureInput != 0)
-            smilesChars[i] = (int)(smilesInputTexture[int2(i, 0)].r * 255.0f);
-        else
-            smilesChars[i] = smilesInputBuffer[i];
-    }
-
-    int atomTypes[MAX_ATOM_COUNT];
-    int atomCount;
-    int bondMatrix[MAX_ATOM_COUNT * MAX_ATOM_COUNT];
-    int bondCount = 0;
-    ParseSMILESGraph(smilesChars, atomTypes, atomCount, bondMatrix, bondCount);
-    
-    parsedAtomCount[0] = atomCount;
-    
-    // Layout atoms (same as BallStick)
-    // Here we use a simple layout for demonstration.
-    for (int i = 0; i < atomCount; i++)
-    {
-        parsedAtomTypes[i] = atomTypes[i];
-        parsedAtomPositions[i] = float3(i * bondLength, 0, 0);
-    }
+    // CPU preprocessing fills parsedAtomTypes, parsedAtomPositions, and parsedAtomCount.
+    // This kernel remains as a lightweight synchronization point for legacy call sites.
 }
 
 [numthreads(8, 8, 8)]

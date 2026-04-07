@@ -6,24 +6,25 @@ using System;
 
 namespace AIDrugDiscovery.UI
 {
+    // Presents generated SMILES in pages and tabs so the user can request one ligand preview at a time.
     public class SMILESFlipPageView : MonoBehaviour, IDragHandler, IEndDragHandler
     {
-        [Header("翻页设置")]
-        public int itemsPerPage = 1024; // 每页显示的SMILES数量
-        public float swipeThreshold = 50f; // 划动阈值（像素）
-        public float edgeThreshold = 50f; // 边缘检测阈值（像素）
-        public float animationDuration = 0.3f; // 翻页动画持续时间
+        [Header("Settings")]
+        public int itemsPerPage = 1024;
+        public float swipeThreshold = 50f;
+        public float edgeThreshold = 50f;
+        public float animationDuration = 0.3f;
 
-        [Header("UI组件")]
-        public RectTransform contentPanel; // 内容面板
-        public RectTransform tabPanel; // 页签容器
-        public Text pageIndicator; // 页码指示器
-        public Text smilesCountText; // SMILES总数显示
+        [Header("UI References")]
+        public RectTransform contentPanel;
+        public RectTransform tabPanel;
+        public Text pageIndicator;
+        public Text smilesCountText;
 
-        [Header("SMILES数据")]
-        public List<string> allSMILES = new List<string>(); // 所有SMILES数据
-        public GameObject smilesItemPrefab; // SMILES项目预制体
-        public GameObject tabButtonPrefab; // 页签按钮预制体
+        [Header("Data And Prefabs")]
+        public List<string> allSMILES = new List<string>();
+        public GameObject smilesItemPrefab;
+        public GameObject tabButtonPrefab;
 
         private int currentPage = 0;
         private int totalPages = 0;
@@ -80,7 +81,7 @@ namespace AIDrugDiscovery.UI
             float endDragX = eventData.position.x;
             float dragDistance = endDragX - startDragX;
 
-            // 检测是否在屏幕边缘进行划动
+            // Only start page turns when the gesture begins near the screen edge.
             bool isLeftEdge = startDragX < edgeThreshold;
             bool isRightEdge = startDragX > Screen.width - edgeThreshold;
 
@@ -90,12 +91,12 @@ namespace AIDrugDiscovery.UI
                 {
                     if (dragDistance > 0)
                     {
-                        // 向右划动，上一页
+                        
                         GoToPreviousPage();
                     }
                     else
                     {
-                        // 向左划动，下一页
+                        
                         GoToNextPage();
                     }
                 }
@@ -189,7 +190,7 @@ namespace AIDrugDiscovery.UI
                 GameObject item = Instantiate(smilesItemPrefab, contentPanel);
                 item.name = smiles;
                 item.SetActive(true);
-                // 设置SMILES文本
+                
                 Text textComponent = item.GetComponentInChildren<Text>(true);
                 if (textComponent != null)
                 {
@@ -222,7 +223,7 @@ namespace AIDrugDiscovery.UI
             }
         }
 
-        // 公开方法，供外部调用
+        
         public void NextPage()
         {
             GoToNextPage();
@@ -243,7 +244,7 @@ namespace AIDrugDiscovery.UI
             GoToPage(totalPages - 1);
         }
 
-        // 获取当前状态
+        
         public string GetCurrentStatus()
         {
             return $"Page {currentPage + 1}/{totalPages}, Items: {allSMILES.Count}";
