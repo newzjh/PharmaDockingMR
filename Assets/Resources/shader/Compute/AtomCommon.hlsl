@@ -86,6 +86,20 @@ float4 GetAtomColor(int atomicNumber)
 {
     switch(atomicNumber)
     {
+        case ATOM_TYPE_H: return float4(0.92f, 0.92f, 0.92f, 1.0f);
+        case ATOM_TYPE_C: return float4(0.25f, 0.25f, 0.25f, 1.0f);
+        case ATOM_TYPE_N: return float4(0.15f, 0.30f, 0.85f, 1.0f);
+        case ATOM_TYPE_O: return float4(0.90f, 0.20f, 0.20f, 1.0f);
+        case ATOM_TYPE_S: return float4(0.90f, 0.80f, 0.15f, 1.0f);
+        case ATOM_TYPE_P: return float4(0.95f, 0.50f, 0.10f, 1.0f);
+        case ATOM_TYPE_F: return float4(0.35f, 0.90f, 0.35f, 1.0f);
+        case ATOM_TYPE_Cl: return float4(0.10f, 0.75f, 0.20f, 1.0f);
+        case ATOM_TYPE_Br: return float4(0.60f, 0.20f, 0.10f, 1.0f);
+        case ATOM_TYPE_I: return float4(0.55f, 0.10f, 0.60f, 1.0f);
+        case ATOM_TYPE_B: return float4(1.00f, 0.70f, 0.70f, 1.0f);
+        case ATOM_TYPE_Si: return float4(0.95f, 0.75f, 0.55f, 1.0f);
+        case ATOM_TYPE_As: return float4(0.75f, 0.55f, 0.45f, 1.0f);
+        case ATOM_TYPE_Se: return float4(1.00f, 0.60f, 0.25f, 1.0f);
         case ATOM_TYPE_c: return float4(0.2f, 0.8f, 0.2f, 1.0f);
         case ATOM_TYPE_n: return float4(0.2f, 0.2f, 0.8f, 1.0f);
         case ATOM_TYPE_o: return float4(0.8f, 0.2f, 0.2f, 1.0f);

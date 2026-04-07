@@ -78,6 +78,58 @@ float Hash01(uint seed)
     return frac(sin(seed * 12.9898f + 78.233f) * 43758.5453f);
 }
 
+static const int PACKED_ATOM_WORDS = (MAX_ATOM_COUNT + 3) / 4;
+static const int PACKED_PLACED_WORDS = (MAX_ATOM_COUNT + 31) / 32;
+static const int PACKED_CHILD_WORDS = (MAX_GRAPH_NEIGHBORS + 3) / 4;
+
+int PackedByteGet(int packed[PACKED_ATOM_WORDS], int idx)
+{
+    int word = packed[idx >> 2];
+    int shift = (idx & 3) * 8;
+    return (word >> shift) & 0xFF;
+}
+
+void PackedByteSet(inout int packed[PACKED_ATOM_WORDS], int idx, int value)
+{
+    int wi = idx >> 2;
+    int shift = (idx & 3) * 8;
+    int mask = 0xFF << shift;
+    packed[wi] = (packed[wi] & ~mask) | ((value & 0xFF) << shift);
+}
+
+int PackedByteGetSmall(int packed[PACKED_CHILD_WORDS], int idx)
+{
+    int word = packed[idx >> 2];
+    int shift = (idx & 3) * 8;
+    return (word >> shift) & 0xFF;
+}
+
+void PackedByteSetSmall(inout int packed[PACKED_CHILD_WORDS], int idx, int value)
+{
+    int wi = idx >> 2;
+    int shift = (idx & 3) * 8;
+    int mask = 0xFF << shift;
+    packed[wi] = (packed[wi] & ~mask) | ((value & 0xFF) << shift);
+}
+
+bool PackedBitGet(int bits[PACKED_PLACED_WORDS], int idx)
+{
+    int wi = idx >> 5;
+    int bi = idx & 31;
+    return ((bits[wi] >> bi) & 1) != 0;
+}
+
+void PackedBitSet(inout int bits[PACKED_PLACED_WORDS], int idx, bool value)
+{
+    int wi = idx >> 5;
+    int bi = idx & 31;
+    int mask = 1 << bi;
+    if (value)
+        bits[wi] |= mask;
+    else
+        bits[wi] &= ~mask;
+}
+
 [numthreads(32, 1, 1)]
 void CSBuildCartoonGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
@@ -223,6 +275,14 @@ void CSBuildCartoonGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
     for (int bondIdx = writeBondCount; bondIdx < maxBondCount; bondIdx++)
         bondInputBuffer[bondStart + bondIdx] = int2(0, 0);
 
+    if (atomCount > 1 && writeBondCount == 0)
+    {
+        int fallback = min(atomCount - 1, maxBondCount);
+        for (int i = 1; i <= fallback; i++)
+            bondInputBuffer[bondStart + (i - 1)] = int2(i - 1, i);
+        writeBondCount = fallback;
+    }
+
     meshAtomCountInputBuffer[meshIdx] = atomCount;
     meshBondCountInputBuffer[meshIdx] = writeBondCount;
 }
@@ -241,80 +301,16 @@ void CSBuildCartoonLayoutBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     int bondStart = meshBondStartBuffer[meshIdx];
     int bondCount = meshBondCountInputBuffer[meshIdx];
-    int degree[MAX_ATOM_COUNT];
-    int neighbors[MAX_ATOM_COUNT * MAX_GRAPH_NEIGHBORS];
-    bool bondedFlags[MAX_ATOM_COUNT * MAX_ATOM_COUNT];
-    for (int a = 0; a < atomCount; a++)
-    {
-        degree[a] = 0;
-        for (int s = 0; s < MAX_GRAPH_NEIGHBORS; s++)
-            neighbors[a * MAX_GRAPH_NEIGHBORS + s] = -1;
-        for (int b = 0; b < atomCount; b++)
-            bondedFlags[a * atomCount + b] = false;
-    }
-    for (int b = 0; b < bondCount; b++)
-    {
-        int2 bond = bondInputBuffer[bondStart + b];
-        int a0 = clamp(bond.x, 0, atomCount - 1);
-        int a1 = clamp(bond.y, 0, atomCount - 1);
-        if (a0 == a1) continue;
-        bondedFlags[a0 * atomCount + a1] = true;
-        bondedFlags[a1 * atomCount + a0] = true;
-        if (degree[a0] < MAX_GRAPH_NEIGHBORS)
-            neighbors[a0 * MAX_GRAPH_NEIGHBORS + degree[a0]++] = a1;
-        if (degree[a1] < MAX_GRAPH_NEIGHBORS)
-            neighbors[a1 * MAX_GRAPH_NEIGHBORS + degree[a1]++] = a0;
-    }
-
     float3 positions[MAX_ATOM_COUNT];
-    int parent[MAX_ATOM_COUNT];
-    int depth[MAX_ATOM_COUNT];
-    bool placed[MAX_ATOM_COUNT];
-    int queue[MAX_ATOM_COUNT];
+    float centerOffset = (atomCount - 1) * bondLength * 0.5f;
     for (int i = 0; i < atomCount; i++)
     {
-        positions[i] = float3(0, 0, 0);
-        parent[i] = -1;
-        depth[i] = 0;
-        placed[i] = false;
-    }
-
-    int qHead = 0, qTail = 0;
-    placed[0] = true;
-    queue[qTail++] = 0;
-    while (qHead < qTail)
-    {
-        int current = queue[qHead++];
-        int children[MAX_GRAPH_NEIGHBORS];
-        int childCount = 0;
-        for (int s = 0; s < degree[current]; s++)
-        {
-            int n = neighbors[current * MAX_GRAPH_NEIGHBORS + s];
-            if (n < 0 || placed[n]) continue;
-            children[childCount++] = n;
-        }
-
-        float3 parentDir = float3(1, 0, 0);
-        if (parent[current] >= 0)
-        {
-            parentDir = positions[current] - positions[parent[current]];
-            float d = length(parentDir);
-            parentDir = d < 1e-6f ? float3(1, 0, 0) : parentDir / d;
-        }
-        float baseAngle = atan2(parentDir.y, parentDir.x);
-        float spread = childCount > 1 ? 1.8f : 0.0f;
-        for (int c = 0; c < childCount; c++)
-        {
-            int child = children[c];
-            float t = childCount == 1 ? 0.5f : (float)c / (childCount - 1);
-            float angle = baseAngle + lerp(-spread, spread, t);
-            float3 offset = normalize(float3(cos(angle), sin(angle), (depth[current] & 1) == 0 ? 0.15f : -0.15f)) * bondLength;
-            positions[child] = positions[current] + offset;
-            parent[child] = current;
-            depth[child] = depth[current] + 1;
-            placed[child] = true;
-            queue[qTail++] = child;
-        }
+        uint s0 = (uint)(meshIdx * 131 + i * 17 + 7);
+        uint s1 = (uint)(meshIdx * 197 + i * 29 + 13);
+        float a = Hash01(s0) * 6.2831853f;
+        float r = bondLength * (0.6f + 0.2f * Hash01(s1));
+        float x = i * bondLength * 0.25f - centerOffset * 0.25f;
+        positions[i] = float3(x + cos(a) * r, sin(a) * r, sin(a * 0.5f) * r * 0.6f);
     }
 
     for (int iter = 0; iter < 4; iter++)
@@ -343,8 +339,17 @@ void CSBuildCartoonLayoutBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
         {
             for (int b = a + 1; b < atomCount; b++)
             {
-                if (bondedFlags[a * atomCount + b])
-                    continue;
+                bool bonded = false;
+                for (int bondIdx = 0; bondIdx < bondCount; bondIdx++)
+                {
+                    int2 bond = bondInputBuffer[bondStart + bondIdx];
+                    if ((bond.x == a && bond.y == b) || (bond.x == b && bond.y == a))
+                    {
+                        bonded = true;
+                        break;
+                    }
+                }
+                if (bonded) continue;
 
                 float3 pa = positions[a];
                 float3 pb = positions[b];
@@ -521,6 +526,21 @@ void CSGenerateCartoonMesh(uint3 dispatchThreadID : SV_DispatchThreadID)
         float4 color = (GetAtomColor(atomTypeInputBuffer[atomA]) + GetAtomColor(atomTypeInputBuffer[atomB])) * 0.5f;
         GenerateBondCylinder(atomPositionInputBuffer[atomA], atomPositionInputBuffer[atomB], color, vertexOffset, indexOffset, vCount, iCount);
         emittedBondCount++;
+    }
+
+    if (emittedBondCount == 0 && atomCount > 1)
+    {
+        int fallback = min(atomCount - 1, maxBondCount);
+        for (int i = 1; i <= fallback; i++)
+        {
+            int atomA = atomStart + (i - 1);
+            int atomB = atomStart + i;
+            if (distance(atomPositionInputBuffer[atomA], atomPositionInputBuffer[atomB]) < 1e-4f)
+                continue;
+            float4 color = (GetAtomColor(atomTypeInputBuffer[atomA]) + GetAtomColor(atomTypeInputBuffer[atomB])) * 0.5f;
+            GenerateBondCylinder(atomPositionInputBuffer[atomA], atomPositionInputBuffer[atomB], color, vertexOffset, indexOffset, vCount, iCount);
+            emittedBondCount++;
+        }
     }
     meshBondCountInputBuffer[meshIdx] = emittedBondCount;
 }
