@@ -107,6 +107,38 @@ void CSBuildBallGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
         if (c0 == '#') { pendingBond = 2; i++; continue; }
         if (c0 == ':') { pendingBond = 3; i++; continue; }
         if (c0 == '-') { pendingBond = 0; i++; continue; }
+        if (c0 == '.') { currentAtom = -1; pendingBond = 0; i++; continue; }
+        if (c0 == 47 || c0 == 92 || c0 == 64) { i++; continue; } // '/', '\\', '@'
+        if (c0 == '%')
+        {
+            int d1 = (i + 1 < smilesMaxLength) ? (useSmilesTextureInput != 0
+                ? (int)round(smilesInputTexture[int2(i + 1, molIdx)].r * 255.0f)
+                : smilesInputBuffer[molIdx * smilesMaxLength + i + 1]) : 0;
+            int d2 = (i + 2 < smilesMaxLength) ? (useSmilesTextureInput != 0
+                ? (int)round(smilesInputTexture[int2(i + 2, molIdx)].r * 255.0f)
+                : smilesInputBuffer[molIdx * smilesMaxLength + i + 2]) : 0;
+            if (d1 >= '0' && d1 <= '9' && d2 >= '0' && d2 <= '9')
+            {
+                int ring = ((d1 - '0') * 10 + (d2 - '0')) % 10;
+                if (currentAtom >= 0)
+                {
+                    if (ringAtom[ring] >= 0)
+                    {
+                        currentAtom = ringAtom[ring];
+                        ringAtom[ring] = -1;
+                        ringBond[ring] = 0;
+                    }
+                    else
+                    {
+                        ringAtom[ring] = currentAtom;
+                        ringBond[ring] = pendingBond;
+                    }
+                }
+                pendingBond = 0;
+                i += 3;
+                continue;
+            }
+        }
         if (c0 == '(') { if (branchTop < 16) branchStack[branchTop++] = currentAtom; i++; continue; }
         if (c0 == ')') { if (branchTop > 0) currentAtom = branchStack[--branchTop]; i++; continue; }
         if (c0 == '[')
@@ -129,6 +161,8 @@ void CSBuildBallGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
                 int ca = useSmilesTextureInput != 0
                     ? (int)round(smilesInputTexture[int2(p, molIdx)].r * 255.0f)
                     : smilesInputBuffer[molIdx * smilesMaxLength + p];
+                if (!((ca >= 'A' && ca <= 'Z') || (ca >= 'a' && ca <= 'z')))
+                    continue;
                 int cb = 0;
                 if (p + 1 < end)
                 {
