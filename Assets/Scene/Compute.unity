@@ -396,6 +396,9 @@ MonoBehaviour:
   batchSize: 1024
   smilesMaxLength: 256
   maxAtomLimit: 60
+  maxExtraBondCount: 12
+  useSelectedSubsetDispatch: 1
+  useLegacySmilesTextureInput: 0
   test: 1
 --- !u!4 &245285011
 Transform:
@@ -616,6 +619,9 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::AIDrugDiscovery.PocketDetector
   pdbqtFilePath: 
   fpocketComputeShader: {fileID: 7200000, guid: 2264de3128b2d4d4fa5bc3c84be71e48, type: 3}
+  useGeneratedSphereCountDispatch: 1
+  onlyProcessGeneratedSphereRange: 1
+  useSpatialHashDbscan: 1
 --- !u!1 &738985758
 GameObject:
   m_ObjectHideFlags: 0
@@ -661,6 +667,8 @@ MonoBehaviour:
     nWeight: 0.2
     sWeight: 0.1
     lowPowerMode: 0
+  collectDebugScores: 0
+  useLegacySmilesTextureTransport: 1
   test: 1
 --- !u!4 &738985760
 Transform:
@@ -811,6 +819,8 @@ MonoBehaviour:
     inChannels: 4
     outChannels: 4
     lowPowerMode: 0
+  useGpuHeatmapBuild2D: 1
+  useGpuHeatmapBuild3D: 1
   autoVisualize: 1
   heatmapPlaneScale: 0.1
   test: 1
@@ -861,6 +871,12 @@ MonoBehaviour:
   morganFPComputeShader: {fileID: 7200000, guid: 567ac9bc6bc6c3d4895d4178d9a791f2, type: 3}
   smilesMaxLength: 256
   morganRadius: 2
+  usePackedFpReadback: 1
+  useLegacySmilesTextureInput: 0
+  useGraphTopologyMorgan: 1
+  useSafeGraphKernel: 1
+  useCpuPrecomputedGraph: 1
+  graphKernelChunkSize: 8
 --- !u!1 &1149687863
 GameObject:
   m_ObjectHideFlags: 0
@@ -894,9 +910,9 @@ MonoBehaviour:
   isTerminated: 0
   currentBatch: 0
   templateMat: {fileID: 2100000, guid: 26695abc36ac7b141ad14c66a9c0a5eb, type: 2}
-  detectPocket: 1
-  generateMesh: 0
-  updateView: 1
+  detectPocket: 0
+  useCartoonMode: 0
+  useSurfaceMode: 0
   FlipPageView: {fileID: 2117598675}
 --- !u!4 &1149687865
 Transform:
@@ -2061,10 +2077,12 @@ MonoBehaviour:
   edgeThreshold: 50
   animationDuration: 0.3
   contentPanel: {fileID: 2010502587}
+  tabPanel: {fileID: 2002570451}
   pageIndicator: {fileID: 1630690278}
   smilesCountText: {fileID: 341746816}
   allSMILES: []
   smilesItemPrefab: {fileID: 1793214579}
+  tabButtonPrefab: {fileID: 1793214579}
 --- !u!114 &2117598676
 MonoBehaviour:
   m_ObjectHideFlags: 0

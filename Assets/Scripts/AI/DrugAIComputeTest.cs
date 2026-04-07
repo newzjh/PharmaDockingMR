@@ -29,20 +29,33 @@ namespace AIDrugDiscovery
 
 
         public bool detectPocket = true;
-        public bool generateMesh = false;
-        public bool updateView = true;
+
+        [Header("Render Modes")]
+        //public bool generateMesh = false;
+        public bool useCartoonMode = false;
+        public bool useSurfaceMode = false;
+        private SMILESToCartoonMesh cartoonGen;
+        private SMILESToSurfaceMesh surfaceGen;
+        private SMILESToBallStickMesh mg;
 
         public SMILESFlipPageView FlipPageView;
+        private Transform currentLigandParent;
+        private GameObject activePreviewMesh;
 
         public async void Start()
         {
             var pocketdetector = GameObject.FindFirstObjectByType<PocketDetector>(FindObjectsInactive.Include);
             var hg = GameObject.FindFirstObjectByType<HeatmapGenerator>(FindObjectsInactive.Include);
             var dg = GameObject.FindFirstObjectByType<DiffusionGenerator>(FindObjectsInactive.Include);
-            var mg = GameObject.FindFirstObjectByType<SMILESToBallStickMesh>(FindObjectsInactive.Include);
+            mg = GameObject.FindFirstObjectByType<SMILESToBallStickMesh>(FindObjectsInactive.Include);
+            cartoonGen = GameObject.FindFirstObjectByType<SMILESToCartoonMesh>(FindObjectsInactive.Include);
+            surfaceGen = GameObject.FindFirstObjectByType<SMILESToSurfaceMesh>(FindObjectsInactive.Include);
             var rfp = GameObject.FindFirstObjectByType<ReferenceFPGenerator>(FindObjectsInactive.Include);
             var mfp = GameObject.FindFirstObjectByType<MorganFPGenerator>(FindObjectsInactive.Include);
             var ff = GameObject.FindFirstObjectByType<FPFilter>(FindObjectsInactive.Include);
+
+            if (FlipPageView != null)
+                FlipPageView.onSmilesSelected = HandleSmilesSelected;
 
             string tempfolder = Application.persistentDataPath + "/cachepdb";
             if (Directory.Exists(tempfolder) == false)
@@ -92,6 +105,7 @@ namespace AIDrugDiscovery
                 parentgo.transform.localScale = Vector3.one;
                 parentgo.transform.localEulerAngles = Vector3.zero;
                 parentgo.transform.localPosition = Vector3.zero;
+                currentLigandParent = parentgo.transform;
 
                 int ligandCount = 0;
 
@@ -126,7 +140,7 @@ namespace AIDrugDiscovery
                     Texture2D.Destroy(heatmap);
                     RenderTexture.Destroy(heatmap3D);
 
-                    await mfp.Generate512BitFP(smilesBatch.SmilesBuffer, smilesBatch.BatchSize, smilesBatch.SmilesTexture);
+                    await mfp.Generate512BitFP(smilesBatch.SmilesBuffer, smilesBatch.BatchSize, smilesBatch.SmilesTexture, smiles);
 
                     if (!Application.isPlaying)
                         return;
@@ -141,10 +155,10 @@ namespace AIDrugDiscovery
                     }
 
                     List<Mesh> meshes = null;
-                    if (generateMesh)
-                    {
-                        meshes = await mg.GenerateBallStickMeshes(filters, smilesBatch.SmilesBuffer, smilesBatch.BatchSize, smilesBatch.SmilesTexture);
-                    }
+                    //if (generateMesh)
+                    //{
+                    //    meshes = await mg.GenerateBallStickMeshes(filters, smilesBatch.SmilesBuffer, smilesBatch.BatchSize, smilesBatch.SmilesTexture);
+                    //}
 
                     if (!Application.isPlaying)
                         return;
@@ -153,35 +167,31 @@ namespace AIDrugDiscovery
 
                     await UniTask.NextFrame();
 
-                    if (generateMesh)
-                    {
-                        for(int i=0;i<filters.Count;i++)
-                        {
-                            GameObject go = new GameObject(smiles[i]);
-                            go.transform.parent = parentgo.transform;
-                            go.transform.localScale = Vector3.one;
-                            go.transform.localEulerAngles = Vector3.zero;
-                            go.transform.localPosition = Vector3.forward * ligandCount * 2;
-                            var mf = go.AddComponent<MeshFilter>();
-                            mf.mesh = meshes[i];
-                            var mr = go.AddComponent<MeshRenderer>();
-                            mr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-                            mr.receiveShadows = false;
-                            mr.material = templateMat;
+                    //if (generateMesh)
+                    //{
+                    //    for(int i=0;i<filters.Count;i++)
+                    //    {
+                    //        GameObject go = new GameObject(smiles[i]);
+                    //        go.transform.parent = parentgo.transform;
+                    //        go.transform.localScale = Vector3.one;
+                    //        go.transform.localEulerAngles = Vector3.zero;
+                    //        go.transform.localPosition = Vector3.forward * ligandCount * 2;
+                    //        var mf = go.AddComponent<MeshFilter>();
+                    //        mf.mesh = meshes[i];
+                    //        var mr = go.AddComponent<MeshRenderer>();
+                    //        mr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+                    //        mr.receiveShadows = false;
+                    //        mr.material = templateMat;
 
-                            ligandCount++;
-                        }
-                    }
+                    //    }
+                    //}
 
-                    if (updateView)
+                    for (int i = 0; i < filters.Count; i++)
                     {
-                        for (int i = 0; i < filters.Count; i++)
-                        {
-                            FlipPageView.allSMILES.Add(smiles[i]);
-                            ligandCount++;
-                        }
-                        FlipPageView.UpdatePageDisplay();
+                        FlipPageView.allSMILES.Add(smiles[i]);
+                        ligandCount++;
                     }
+                    FlipPageView.UpdatePageDisplay();
 
                     if (!Application.isPlaying)
                         return;
@@ -227,6 +237,44 @@ namespace AIDrugDiscovery
         void OnDestroy()
         {
             Terminate();
+        }
+
+        private async void HandleSmilesSelected(int smilesIndex, string smiles)
+        {
+            if (string.IsNullOrEmpty(smiles))
+                return;
+
+            if (activePreviewMesh != null)
+            {
+                Destroy(activePreviewMesh);
+                activePreviewMesh = null;
+            }
+
+            Mesh mesh = null;
+            if (useSurfaceMode && surfaceGen != null)
+                mesh = await surfaceGen.GenerateSingleSurfaceMesh(smiles);
+            else if (useCartoonMode && cartoonGen != null)
+                mesh = await cartoonGen.GenerateSingleCartoonMesh(smiles);
+            else if (mg != null)
+                mesh = await mg.GenerateSingleBallStickMesh(smiles);
+
+            if (mesh == null || !Application.isPlaying)
+                return;
+
+            GameObject go = new GameObject(smiles);
+            if (currentLigandParent != null)
+                go.transform.SetParent(currentLigandParent, false);
+            go.transform.localScale = Vector3.one;
+            go.transform.localEulerAngles = Vector3.zero;
+            go.transform.localPosition = Vector3.zero;
+
+            var mf = go.AddComponent<MeshFilter>();
+            mf.mesh = mesh;
+            var mr = go.AddComponent<MeshRenderer>();
+            mr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            mr.receiveShadows = false;
+            mr.material = templateMat;
+            activePreviewMesh = go;
         }
     }
 

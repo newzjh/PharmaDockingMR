@@ -1,0 +1,218 @@
+#pragma kernel CSParseSMILES
+#pragma kernel CSClearGrid
+#pragma kernel CSComputeDensity
+#pragma kernel CSMarchingCubes
+
+#include "AtomCommon.hlsl"
+
+// --- Parameters ---
+float gridSpacing = 0.3f;
+float isoLevel = 0.5f;
+int3 gridSize; // x, y, z
+float3 gridMin; // bounding box min
+float bondLength = 1.5f;
+
+// Input
+StructuredBuffer<int> smilesInputBuffer;
+Texture2D<float4> smilesInputTexture;
+int useSmilesTextureInput;
+
+// Parsed Molecule Data
+RWStructuredBuffer<int> parsedAtomTypes;
+RWStructuredBuffer<float3> parsedAtomPositions;
+RWStructuredBuffer<int> parsedAtomCount;
+
+// Marching Cubes Tables
+StructuredBuffer<int> edgeTable;
+StructuredBuffer<int> triTable;
+
+// Scalar Field & Colors
+RWStructuredBuffer<float> densityGrid;
+RWStructuredBuffer<float4> colorGrid;
+
+struct VertexData
+{
+    float3 position;
+    float3 normal;
+    float4 color;
+};
+
+RWStructuredBuffer<VertexData> vertexBuffer;
+RWStructuredBuffer<int> vertexCountBuffer;
+int maxVertexCount;
+
+int GetGridIndex(int3 id)
+{
+    return id.x + id.y * gridSize.x + id.z * gridSize.x * gridSize.y;
+}
+
+[numthreads(1, 1, 1)]
+void CSParseSMILES(uint3 id : SV_DispatchThreadID)
+{
+    int smilesChars[SMILES_MAX_LENGTH];
+    for (int i = 0; i < SMILES_MAX_LENGTH; i++)
+    {
+        if (useSmilesTextureInput != 0)
+            smilesChars[i] = (int)(smilesInputTexture[int2(i, 0)].r * 255.0f);
+        else
+            smilesChars[i] = smilesInputBuffer[i];
+    }
+
+    int atomTypes[MAX_ATOM_COUNT];
+    int atomCount;
+    int bondMatrix[MAX_ATOM_COUNT * MAX_ATOM_COUNT];
+    int bondCount = 0;
+    ParseSMILESGraph(smilesChars, atomTypes, atomCount, bondMatrix, bondCount);
+    
+    parsedAtomCount[0] = atomCount;
+    
+    // Layout atoms (same as BallStick)
+    // Here we use a simple layout for demonstration.
+    for (int i = 0; i < atomCount; i++)
+    {
+        parsedAtomTypes[i] = atomTypes[i];
+        parsedAtomPositions[i] = float3(i * bondLength, 0, 0);
+    }
+}
+
+[numthreads(8, 8, 8)]
+void CSClearGrid(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= (uint)gridSize.x || id.y >= (uint)gridSize.y || id.z >= (uint)gridSize.z) return;
+    int index = GetGridIndex(id);
+    densityGrid[index] = 0.0f;
+    colorGrid[index] = float4(0, 0, 0, 0);
+}
+
+[numthreads(8, 8, 8)]
+void CSComputeDensity(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= (uint)gridSize.x || id.y >= (uint)gridSize.y || id.z >= (uint)gridSize.z) return;
+    
+    float3 pos = gridMin + float3(id) * gridSpacing;
+    float density = 0.0f;
+    float4 colorAcc = float4(0,0,0,0);
+    float weightAcc = 0.0f;
+    
+    int atomCount = parsedAtomCount[0];
+    for (int i = 0; i < atomCount; i++)
+    {
+        float3 aPos = parsedAtomPositions[i];
+        int type = parsedAtomTypes[i];
+        float radius = GetAtomRadius(type) * 1.5f; // Scale up for VdW surface
+        float4 aColor = GetAtomColor(type);
+        
+        float d2 = distance(pos, aPos);
+        if (d2 < radius * 2.0f) // influence radius
+        {
+            // Metaball function: R^2 / d^2
+            float val = (radius * radius) / (d2 * d2 + 0.0001f);
+            density += val;
+            
+            float weight = val;
+            colorAcc += aColor * weight;
+            weightAcc += weight;
+        }
+    }
+    
+    int index = GetGridIndex(id);
+    densityGrid[index] = density;
+    if (weightAcc > 0)
+        colorGrid[index] = colorAcc / weightAcc;
+    else
+        colorGrid[index] = float4(1,1,1,1);
+}
+
+// Marching Cubes lookup arrays for corners
+static const int3 vertexOffset[8] = {
+    int3(0,0,0), int3(1,0,0), int3(1,1,0), int3(0,1,0),
+    int3(0,0,1), int3(1,0,1), int3(1,1,1), int3(0,1,1)
+};
+
+static const int2 edgeConnection[12] = {
+    int2(0,1), int2(1,2), int2(2,3), int2(3,0),
+    int2(4,5), int2(5,6), int2(6,7), int2(7,4),
+    int2(0,4), int2(1,5), int2(2,6), int2(3,7)
+};
+
+float3 InterpolateVertex(float3 p1, float3 p2, float val1, float val2)
+{
+    float mu = (isoLevel - val1) / (val2 - val1 + 0.00001f);
+    return lerp(p1, p2, mu);
+}
+
+float3 ComputeNormal(int3 id)
+{
+    float nx = densityGrid[GetGridIndex(id + int3(1,0,0))] - densityGrid[GetGridIndex(id - int3(1,0,0))];
+    float ny = densityGrid[GetGridIndex(id + int3(0,1,0))] - densityGrid[GetGridIndex(id - int3(0,1,0))];
+    float nz = densityGrid[GetGridIndex(id + int3(0,0,1))] - densityGrid[GetGridIndex(id - int3(0,0,1))];
+    return normalize(-float3(nx, ny, nz));
+}
+
+[numthreads(8, 8, 8)]
+void CSMarchingCubes(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= (uint)gridSize.x - 1 || id.y >= (uint)gridSize.y - 1 || id.z >= (uint)gridSize.z - 1) return;
+    if (id.x == 0 || id.y == 0 || id.z == 0) return; // avoid boundary for normals
+    
+    float cube[8];
+    float4 colors[8];
+    int flagIndex = 0;
+    
+    for (int i = 0; i < 8; i++)
+    {
+        int3 cornerId = id + vertexOffset[i];
+        int index = GetGridIndex(cornerId);
+        cube[i] = densityGrid[index];
+        colors[i] = colorGrid[index];
+        if (cube[i] >= isoLevel) flagIndex |= (1 << i);
+    }
+    
+    int edgeFlags = edgeTable[flagIndex];
+    if (edgeFlags == 0) return;
+    
+    float3 edgeVertex[12];
+    float4 edgeColor[12];
+    float3 edgeNormal[12];
+    
+    for (int i = 0; i < 12; i++)
+    {
+        if ((edgeFlags & (1 << i)) != 0)
+        {
+            int v1 = edgeConnection[i].x;
+            int v2 = edgeConnection[i].y;
+            
+            float3 p1 = gridMin + float3(id + vertexOffset[v1]) * gridSpacing;
+            float3 p2 = gridMin + float3(id + vertexOffset[v2]) * gridSpacing;
+            
+            edgeVertex[i] = InterpolateVertex(p1, p2, cube[v1], cube[v2]);
+            
+            float mu = (isoLevel - cube[v1]) / (cube[v2] - cube[v1] + 0.00001f);
+            edgeColor[i] = lerp(colors[v1], colors[v2], mu);
+            
+            float3 n1 = ComputeNormal(id + vertexOffset[v1]);
+            float3 n2 = ComputeNormal(id + vertexOffset[v2]);
+            edgeNormal[i] = normalize(lerp(n1, n2, mu));
+        }
+    }
+    
+    for (int i = 0; i < 5; i++)
+    {
+        int triTableIndex = flagIndex * 16 + 3 * i;
+        if (triTable[triTableIndex] < 0) break;
+        
+        for (int j = 0; j < 3; j++)
+        {
+            int vert = triTable[triTableIndex + j];
+            VertexData vd;
+            vd.position = edgeVertex[vert];
+            vd.normal = edgeNormal[vert];
+            vd.color = edgeColor[vert];
+            
+            int vIndex;
+            InterlockedAdd(vertexCountBuffer[0], 1, vIndex);
+            if (vIndex < maxVertexCount)
+                vertexBuffer[vIndex] = vd;
+        }
+    }
+}

@@ -2,6 +2,7 @@ using UnityEngine;
 using System.Collections.Generic;
 using UnityEngine.UI;
 using UnityEngine.EventSystems;
+using System;
 
 namespace AIDrugDiscovery.UI
 {
@@ -15,12 +16,14 @@ namespace AIDrugDiscovery.UI
 
         [Header("UI组件")]
         public RectTransform contentPanel; // 内容面板
+        public RectTransform tabPanel; // 页签容器
         public Text pageIndicator; // 页码指示器
         public Text smilesCountText; // SMILES总数显示
 
         [Header("SMILES数据")]
         public List<string> allSMILES = new List<string>(); // 所有SMILES数据
         public GameObject smilesItemPrefab; // SMILES项目预制体
+        public GameObject tabButtonPrefab; // 页签按钮预制体
 
         private int currentPage = 0;
         private int totalPages = 0;
@@ -28,6 +31,8 @@ namespace AIDrugDiscovery.UI
         private bool isDragging = false;
 
         private List<GameObject> activeItems = new List<GameObject>();
+        private List<GameObject> activeTabs = new List<GameObject>();
+        public Action<int, string> onSmilesSelected;
 
         private void Start()
         {
@@ -47,6 +52,16 @@ namespace AIDrugDiscovery.UI
             CalculateTotalPages();
             currentPage = 0;
             UpdatePageDisplay();
+        }
+
+        public void AddSMILES(string smiles)
+        {
+            allSMILES.Add(smiles);
+            CalculateTotalPages();
+            if (currentPage == totalPages - 1 || totalPages <= 1)
+                UpdatePageDisplay();
+            else
+                BuildTabs();
         }
 
         public void OnDrag(PointerEventData eventData)
@@ -116,6 +131,7 @@ namespace AIDrugDiscovery.UI
         public void UpdatePageDisplay()
         {
             ClearCurrentItems();
+            BuildTabs();
             DisplayCurrentPageItems();
             UpdatePageIndicator();
         }
@@ -127,6 +143,39 @@ namespace AIDrugDiscovery.UI
                 Destroy(item);
             }
             activeItems.Clear();
+        }
+
+        private void BuildTabs()
+        {
+            if (tabPanel == null || tabButtonPrefab == null)
+                return;
+
+            foreach (var tab in activeTabs)
+                Destroy(tab);
+            activeTabs.Clear();
+
+            for (int pageIndex = 0; pageIndex < totalPages; pageIndex++)
+            {
+                int capturedPage = pageIndex;
+                GameObject tabObject = Instantiate(tabButtonPrefab, tabPanel);
+                tabObject.name = $"Tab_{capturedPage + 1}";
+                Text tabText = tabObject.GetComponentInChildren<Text>(true);
+                if (tabText != null)
+                    tabText.text = $"Page {capturedPage + 1}";
+
+                Button tabButton = tabObject.GetComponent<Button>();
+                if (tabButton != null)
+                {
+                    tabButton.onClick.RemoveAllListeners();
+                    tabButton.onClick.AddListener(() => GoToPage(capturedPage));
+                }
+
+                Image tabImage = tabObject.GetComponent<Image>();
+                if (tabImage != null)
+                    tabImage.color = capturedPage == currentPage ? new Color(0.25f, 0.5f, 0.9f, 1f) : Color.white;
+
+                activeTabs.Add(tabObject);
+            }
         }
 
         private void DisplayCurrentPageItems()
@@ -145,6 +194,15 @@ namespace AIDrugDiscovery.UI
                 if (textComponent != null)
                 {
                     textComponent.text = smiles;
+                }
+
+                Button itemButton = item.GetComponent<Button>();
+                if (itemButton != null)
+                {
+                    int capturedIndex = i;
+                    string capturedSmiles = smiles;
+                    itemButton.onClick.RemoveAllListeners();
+                    itemButton.onClick.AddListener(() => onSmilesSelected?.Invoke(capturedIndex, capturedSmiles));
                 }
 
                 activeItems.Add(item);

@@ -9,27 +9,27 @@ using UnityEngine.Rendering;
 namespace AIDrugDiscovery
 {
 
-    // ���ģ������
+    // 锟斤拷锟侥ｏ拷锟斤拷锟斤拷锟?
     [System.Serializable]
-    public class BallStickConfig
+    public class CartoonConfig
     {
-        public float bondLength = 1.5f;    // ԭ�Ӽ��׼����
-        public float atomRadius = 0.3f;    // ԭ����뾶
-        public float bondRadius = 0.1f;    // ��ѧ��Բ���뾶
-        public int sphereSegments = 12;    // ԭ����ֶ���
-        public int cylinderSegments = 8;   // ��ѧ��Բ���ֶ���
-        public int topK = 10;              // ����Top-Kɸѡ����ӵ�Mesh
+        public float bondLength = 1.5f;    // 原接间距系数
+        public float atomRadius = 0.3f;    // 原半�?
+        public float bondRadius = 0.3f;    // 化学键圆半径
+        public int sphereSegments = 6;     // 原球段数
+        public int cylinderSegments = 6;   // 化学键圆段数
+        public int topK = 10;              // 保留Top-K筛选后拥有Mesh
     }
 
 
 
-    public class SMILESToBallStickMesh : MonoBehaviour
+    public class SMILESToCartoonMesh : MonoBehaviour
     {
-        public ComputeShader ballStickCS;
-        public BallStickConfig config;
-        //public ComputeBuffer smilesBuffer; // �����SMILES Buffer
-        public int batchSize = 128;              // �������δ�С
-        public int smilesMaxLength = 256;  // ����SMILES��󳤶�
+        public ComputeShader cartoonCS;
+        public CartoonConfig config;
+        //public ComputeBuffer smilesBuffer; // 锟斤拷锟斤拷锟絊MILES Buffer
+        public int batchSize = 128;              // 锟斤拷锟斤拷锟斤拷锟轿达拷小
+        public int smilesMaxLength = 256;  // 锟斤拷锟斤拷SMILES锟斤拷蟪ざ锟?
         public int maxAtomLimit = 60;
         public int maxExtraBondCount = 12;
         public bool useSelectedSubsetDispatch = true;
@@ -39,7 +39,7 @@ namespace AIDrugDiscovery
         private ComputeBuffer vertexBufferNormal;
         private ComputeBuffer vertexBufferColor;
         private ComputeBuffer indexBuffer;
-        private ComputeBuffer atomCountBuffer; // ÿ�����ӵ�ԭ����
+        private ComputeBuffer atomCountBuffer; // 每锟斤拷锟斤拷锟接碉拷原锟斤拷锟斤拷
         private ComputeBuffer bondCountBuffer;
         private ComputeBuffer selectedIndexBuffer;
         private int maxVertexCount;
@@ -86,7 +86,7 @@ namespace AIDrugDiscovery
             maxVertexCount = allocatedBatchSize * (maxAtomLimit * verticesPerAtom + maxBondLimit * verticesPerBond);
             maxIndexCount = allocatedBatchSize * (maxAtomLimit * indicesPerAtom + maxBondLimit * indicesPerBond);
 
-            // ��ʼ��Buffer
+            // 锟斤拷始锟斤拷Buffer
             vertexBufferPosition = new ComputeBuffer(maxVertexCount, System.Runtime.InteropServices.Marshal.SizeOf(typeof(Vector3)));
             vertexBufferNormal = new ComputeBuffer(maxVertexCount, System.Runtime.InteropServices.Marshal.SizeOf(typeof(Vector3)));
             vertexBufferColor = new ComputeBuffer(maxVertexCount, System.Runtime.InteropServices.Marshal.SizeOf(typeof(Vector4)));
@@ -98,10 +98,10 @@ namespace AIDrugDiscovery
         public bool test = true;
 
         /// <summary>
-        /// �������ģ��Mesh
+        /// 锟斤拷锟斤拷锟斤拷锟侥ｏ拷锟組esh
         /// </summary>
-        /// <param name="filteredIndices">ɸѡ��ķ��������б�</param>
-        public async UniTask<List<Mesh>> GenerateBallStickMeshes(List<int> filteredIndices, ComputeBuffer smilesBuffer, int runtimeBatchSize, Texture legacySmilesTexture = null)
+        /// <param name="filteredIndices">筛选锟斤拷姆锟斤拷锟斤拷锟斤拷锟斤拷斜�?/param>
+        public async UniTask<List<Mesh>> GenerateCartoonMeshes(List<int> filteredIndices, ComputeBuffer smilesBuffer, int runtimeBatchSize, Texture legacySmilesTexture = null)
         {
             List<Mesh> molMeshes = new List<Mesh>();
             if ((smilesBuffer == null && !(useLegacySmilesTextureInput && legacySmilesTexture != null)) || runtimeBatchSize <= 0 || filteredIndices == null || filteredIndices.Count == 0)
@@ -128,46 +128,46 @@ namespace AIDrugDiscovery
             selectedIndexBuffer = new ComputeBuffer(generatedMeshCount, sizeof(int));
             selectedIndexBuffer.SetData(selectedIndices);
 
-            // 1. ����Compute Shader
-            int kernelId = ballStickCS.FindKernel("CSGenerateBallStickMesh");
-            ballStickCS.SetInt("batchSize", runtimeBatchSize);
-            ballStickCS.SetInt("selectedCount", generatedMeshCount);
-            ballStickCS.SetInt("useSmilesTextureInput", useLegacySmilesTextureInput && legacySmilesTexture != null ? 1 : 0);
-            ballStickCS.SetInt("smilesMaxLength", smilesMaxLength);
-            ballStickCS.SetInt("sphereSegments", config.sphereSegments);
-            ballStickCS.SetInt("cylinderSegments", config.cylinderSegments);
-            ballStickCS.SetFloat("bondLength", config.bondLength);
-            ballStickCS.SetFloat("atomRadius", config.atomRadius);
-            ballStickCS.SetFloat("bondRadius", config.bondRadius);
-            ballStickCS.SetInt("topK", config.topK);
-            ballStickCS.SetInt("maxBondCount", maxBondLimit);
+            // 1. 锟斤拷锟斤拷Compute Shader
+            int kernelId = cartoonCS.FindKernel("CSGenerateCartoonMesh");
+            cartoonCS.SetInt("batchSize", runtimeBatchSize);
+            cartoonCS.SetInt("selectedCount", generatedMeshCount);
+            cartoonCS.SetInt("useSmilesTextureInput", useLegacySmilesTextureInput && legacySmilesTexture != null ? 1 : 0);
+            cartoonCS.SetInt("smilesMaxLength", smilesMaxLength);
+            cartoonCS.SetInt("sphereSegments", config.sphereSegments);
+            cartoonCS.SetInt("cylinderSegments", config.cylinderSegments);
+            cartoonCS.SetFloat("bondLength", config.bondLength);
+            cartoonCS.SetFloat("atomRadius", config.atomRadius);
+            cartoonCS.SetFloat("bondRadius", config.bondRadius);
+            cartoonCS.SetInt("topK", config.topK);
+            cartoonCS.SetInt("maxBondCount", maxBondLimit);
 
             Texture boundTexture = legacySmilesTexture ?? CreateDummyTexture();
             bool disposeDummyTexture = legacySmilesTexture == null;
             ComputeBuffer boundBuffer = smilesBuffer ?? new ComputeBuffer(1, sizeof(int));
             bool disposeDummyBuffer = smilesBuffer == null;
 
-            // 2. ��Buffer
-            ballStickCS.SetBuffer(kernelId, "smilesInputBuffer", boundBuffer);
-            ballStickCS.SetTexture(kernelId, "smilesInputTexture", boundTexture);
-            ballStickCS.SetBuffer(kernelId, "selectedMolIndexBuffer", selectedIndexBuffer);
-            ballStickCS.SetBuffer(kernelId, "vertexOutputBuffer_position", vertexBufferPosition);
-            ballStickCS.SetBuffer(kernelId, "vertexOutputBuffer_normal", vertexBufferNormal);
-            ballStickCS.SetBuffer(kernelId, "vertexOutputBuffer_color", vertexBufferColor);
-            ballStickCS.SetBuffer(kernelId, "indexOutputBuffer", indexBuffer);
-            ballStickCS.SetBuffer(kernelId, "atomCountOutputBuffer", atomCountBuffer);
-            ballStickCS.SetBuffer(kernelId, "bondCountOutputBuffer", bondCountBuffer);
+            // 2. 锟斤拷Buffer
+            cartoonCS.SetBuffer(kernelId, "smilesInputBuffer", boundBuffer);
+            cartoonCS.SetTexture(kernelId, "smilesInputTexture", boundTexture);
+            cartoonCS.SetBuffer(kernelId, "selectedMolIndexBuffer", selectedIndexBuffer);
+            cartoonCS.SetBuffer(kernelId, "vertexOutputBuffer_position", vertexBufferPosition);
+            cartoonCS.SetBuffer(kernelId, "vertexOutputBuffer_normal", vertexBufferNormal);
+            cartoonCS.SetBuffer(kernelId, "vertexOutputBuffer_color", vertexBufferColor);
+            cartoonCS.SetBuffer(kernelId, "indexOutputBuffer", indexBuffer);
+            cartoonCS.SetBuffer(kernelId, "atomCountOutputBuffer", atomCountBuffer);
+            cartoonCS.SetBuffer(kernelId, "bondCountOutputBuffer", bondCountBuffer);
 
-            // 3. ����GPU���㣨�����ƶ���32�߳��飩
+            // 3. 锟斤拷锟斤拷GPU锟斤拷锟姐（锟斤拷锟斤拷锟狡讹拷锟斤�?2锟竭筹拷锟介�?
             int threadGroupX = Mathf.CeilToInt(generatedMeshCount / 32f);
-            ballStickCS.Dispatch(kernelId, threadGroupX, 1, 1);
+            cartoonCS.Dispatch(kernelId, threadGroupX, 1, 1);
             //while (test && Application.isPlaying)
             //{
-            //    ballStickCS.Dispatch(kernelId, threadGroupX, 1, 1);
+            //    cartoonCS.Dispatch(kernelId, threadGroupX, 1, 1);
             //    await UniTask.NextFrame();
             //}
 
-            // 4. ��ȡԭ����
+            // 4. 锟斤拷取原锟斤拷锟斤�?
             int[] atomCounts = new int[generatedMeshCount];
             int[] bondCounts = new int[generatedMeshCount];
             {
@@ -180,7 +180,7 @@ namespace AIDrugDiscovery
             }
             //atomCountBuffer.GetData(atomCounts);
 
-            // 5. ��ȡ�������������
+            // 5. 锟斤拷取锟斤拷锟斤拷锟斤拷锟斤拷锟斤拷锟斤拷�?
             Vector3[] allPositions = new Vector3[maxVertexCount];
             Vector3[] allNormals = new Vector3[maxVertexCount];
             Vector4[] allColors = new Vector4[maxVertexCount];
@@ -206,7 +206,7 @@ namespace AIDrugDiscovery
                 allIndices = req.GetData<int>().ToArray();
             }
 
-            // 6. Ϊÿ��ɸѡ��������Mesh
+            // 6. 为每锟斤拷筛选锟斤拷锟斤拷锟斤拷锟斤拷Mesh
             int vertexOffset = 0;
             int indexOffset = 0;
             for (int outputIdx = 0; outputIdx < filteredIndices.Count; outputIdx++)
@@ -223,13 +223,13 @@ namespace AIDrugDiscovery
                 vertexOffset = meshIdx * (maxAtomLimit * verticesPerAtom + maxBondLimit * verticesPerBond);
                 indexOffset = meshIdx * (maxAtomLimit * indicesPerAtom + maxBondLimit * indicesPerBond);
 
-                // ���㵱ǰ���ӵĶ���/��������
+                // 锟斤拷锟姐当前锟斤拷锟接的讹拷锟斤拷/锟斤拷锟斤拷锟斤拷锟斤拷
                 int totalVertices = atomCount * verticesPerAtom + bondCount * verticesPerBond;
                 int totalIndices = atomCount * indicesPerAtom + bondCount * indicesPerBond;
                 if (vertexOffset + totalVertices > maxVertexCount || indexOffset + totalIndices > maxIndexCount) 
                     break;
 
-                // ���Mesh����
+                // 锟斤拷锟組esh锟斤拷锟斤拷
                 Mesh mesh = new Mesh();
                 mesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
                 Vector3[] positions = new Vector3[totalVertices];
@@ -254,7 +254,7 @@ namespace AIDrugDiscovery
                 mesh.RecalculateBounds();
                 molMeshes.Add(mesh);
 
-                //// ����ƫ����
+                //// 锟斤拷锟斤拷偏锟斤拷锟斤�?
                 //vertexOffset += totalVertices;
                 //indexOffset += totalIndices;
             }
@@ -267,7 +267,7 @@ namespace AIDrugDiscovery
             return molMeshes;
         }
 
-        public async UniTask<Mesh> GenerateSingleBallStickMesh(string smiles)
+        public async UniTask<Mesh> GenerateSingleCartoonMesh(string smiles)
         {
             if (string.IsNullOrEmpty(smiles))
                 return null;
@@ -293,7 +293,7 @@ namespace AIDrugDiscovery
                 singleSmilesTexture.Apply();
             }
 
-            List<Mesh> meshes = await GenerateBallStickMeshes(new List<int> { 0 }, singleSmilesBuffer, 1, singleSmilesTexture);
+            List<Mesh> meshes = await GenerateCartoonMeshes(new List<int> { 0 }, singleSmilesBuffer, 1, singleSmilesTexture);
             singleSmilesBuffer.Dispose();
             if (singleSmilesTexture != null)
                 Destroy(singleSmilesTexture);
