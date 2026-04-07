@@ -211,54 +211,54 @@ void CSBuildCartoonGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
         }
         if (c0 == '(') { if (branchTop < 16) branchStack[branchTop++] = currentAtom; i++; continue; }
         if (c0 == ')') { if (branchTop > 0) currentAtom = branchStack[--branchTop]; i++; continue; }
-        if (c0 == '[')
-        {
-            int end = i + 1;
-            while (end < smilesMaxLength)
-            {
-                int ce = useSmilesTextureInput != 0
-                    ? (int)round(smilesInputTexture[int2(end, molIdx)].r * 255.0f)
-                    : smilesInputBuffer[molIdx * smilesMaxLength + end];
-                if (ce == 0 || ce == ']')
-                    break;
-                end++;
-            }
+        //if (c0 == '[')
+        //{
+        //    int end = i + 1;
+        //    while (end < smilesMaxLength)
+        //    {
+        //        int ce = useSmilesTextureInput != 0
+        //            ? (int)round(smilesInputTexture[int2(end, molIdx)].r * 255.0f)
+        //            : smilesInputBuffer[molIdx * smilesMaxLength + end];
+        //        if (ce == 0 || ce == ']')
+        //            break;
+        //        end++;
+        //    }
 
-            int mappedType = ATOM_TYPE_UNKNOWN;
-            bool mapped = false;
-            for (int p = i + 1; p < end && !mapped; p++)
-            {
-                int ca = useSmilesTextureInput != 0
-                    ? (int)round(smilesInputTexture[int2(p, molIdx)].r * 255.0f)
-                    : smilesInputBuffer[molIdx * smilesMaxLength + p];
-                if (!((ca >= 'A' && ca <= 'Z') || (ca >= 'a' && ca <= 'z')))
-                    continue;
-                int cb = 0;
-                if (p + 1 < end)
-                {
-                    cb = useSmilesTextureInput != 0
-                        ? (int)round(smilesInputTexture[int2(p + 1, molIdx)].r * 255.0f)
-                        : smilesInputBuffer[molIdx * smilesMaxLength + p + 1];
-                }
-                int consumedTmp;
-                if (TryMapSimpleAtom(ca, cb, mappedType, consumedTmp))
-                    mapped = true;
-            }
+        //    int mappedType = ATOM_TYPE_UNKNOWN;
+        //    bool mapped = false;
+        //    for (int p = i + 1; p < end && !mapped; p++)
+        //    {
+        //        int ca = useSmilesTextureInput != 0
+        //            ? (int)round(smilesInputTexture[int2(p, molIdx)].r * 255.0f)
+        //            : smilesInputBuffer[molIdx * smilesMaxLength + p];
+        //        if (!((ca >= 'A' && ca <= 'Z') || (ca >= 'a' && ca <= 'z')))
+        //            continue;
+        //        int cb = 0;
+        //        if (p + 1 < end)
+        //        {
+        //            cb = useSmilesTextureInput != 0
+        //                ? (int)round(smilesInputTexture[int2(p + 1, molIdx)].r * 255.0f)
+        //                : smilesInputBuffer[molIdx * smilesMaxLength + p + 1];
+        //        }
+        //        int consumedTmp;
+        //        if (TryMapSimpleAtom(ca, cb, mappedType, consumedTmp))
+        //            mapped = true;
+        //    }
 
-            if (mapped)
-            {
-                int newAtom = atomCount;
-                atomTypeInputBuffer[atomStart + newAtom] = mappedType;
-                atomPositionInputBuffer[atomStart + newAtom] = float3(0, 0, 0);
-                if (currentAtom >= 0 && writeBondCount < maxBondCount)
-                    bondInputBuffer[bondStart + writeBondCount++] = int2(currentAtom, newAtom);
-                currentAtom = newAtom;
-                atomCount++;
-            }
-            pendingBond = 0;
-            i = min(end + 1, smilesMaxLength);
-            continue;
-        }
+        //    if (mapped)
+        //    {
+        //        int newAtom = atomCount;
+        //        atomTypeInputBuffer[atomStart + newAtom] = mappedType;
+        //        atomPositionInputBuffer[atomStart + newAtom] = float3(0, 0, 0);
+        //        if (currentAtom >= 0 && writeBondCount < maxBondCount)
+        //            bondInputBuffer[bondStart + writeBondCount++] = int2(currentAtom, newAtom);
+        //        currentAtom = newAtom;
+        //        atomCount++;
+        //    }
+        //    pendingBond = 0;
+        //    i = min(end + 1, smilesMaxLength);
+        //    continue;
+        //}
         if (c0 >= '0' && c0 <= '9')
         {
             int ring = c0 - '0';
@@ -337,15 +337,75 @@ void CSBuildCartoonLayoutBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
     int bondStart = meshBondStartBuffer[meshIdx];
     int bondCount = meshBondCountInputBuffer[meshIdx];
     float3 positions[MAX_ATOM_COUNT];
-    float centerOffset = (atomCount - 1) * bondLength * 0.5f;
+    int parent[MAX_ATOM_COUNT];
+    int depth[MAX_ATOM_COUNT];
+    bool placed[MAX_ATOM_COUNT];
+    int queue[MAX_ATOM_COUNT];
     for (int i = 0; i < atomCount; i++)
     {
-        uint s0 = (uint)(meshIdx * 131 + i * 17 + 7);
-        uint s1 = (uint)(meshIdx * 197 + i * 29 + 13);
-        float a = Hash01(s0) * 6.2831853f;
-        float r = bondLength * (0.6f + 0.2f * Hash01(s1));
-        float x = i * bondLength * 0.25f - centerOffset * 0.25f;
-        positions[i] = float3(x + cos(a) * r, sin(a) * r, sin(a * 0.5f) * r * 0.6f);
+        positions[i] = float3(0, 0, 0);
+        parent[i] = -1;
+        depth[i] = 0;
+        placed[i] = false;
+    }
+
+    int qHead = 0;
+    int qTail = 0;
+    placed[0] = true;
+    queue[qTail++] = 0;
+    while (qHead < qTail)
+    {
+        int current = queue[qHead++];
+        int children[MAX_GRAPH_NEIGHBORS];
+        int childCount = 0;
+        for (int b = 0; b < bondCount; b++)
+        {
+            int2 bond = bondInputBuffer[bondStart + b];
+            int n = -1;
+            if (bond.x == current) n = bond.y;
+            else if (bond.y == current) n = bond.x;
+            if (n < 0 || n >= atomCount || placed[n])
+                continue;
+
+            bool exists = false;
+            for (int c = 0; c < childCount; c++)
+            {
+                if (children[c] == n) { exists = true; break; }
+            }
+            if (!exists && childCount < MAX_GRAPH_NEIGHBORS)
+                children[childCount++] = n;
+        }
+
+        float3 parentDir = float3(1, 0, 0);
+        if (parent[current] >= 0)
+        {
+            parentDir = positions[current] - positions[parent[current]];
+            float d = length(parentDir);
+            parentDir = d < 1e-6f ? float3(1, 0, 0) : parentDir / d;
+        }
+        float baseAngle = atan2(parentDir.y, parentDir.x);
+        float spread = childCount > 1 ? 1.8f : 0.0f;
+        for (int c = 0; c < childCount; c++)
+        {
+            int child = children[c];
+            float t = childCount == 1 ? 0.5f : (float)c / (childCount - 1);
+            float angle = baseAngle + lerp(-spread, spread, t);
+            float3 offset = normalize(float3(cos(angle), sin(angle), (depth[current] & 1) == 0 ? 0.15f : -0.15f)) * bondLength;
+            positions[child] = positions[current] + offset;
+            parent[child] = current;
+            depth[child] = depth[current] + 1;
+            placed[child] = true;
+            queue[qTail++] = child;
+        }
+    }
+
+    for (int i = 0; i < atomCount; i++)
+    {
+        if (!placed[i])
+        {
+            float a = Hash01((uint)(meshIdx * 193 + i * 17 + 7)) * 6.2831853f;
+            positions[i] = float3(cos(a), sin(a), sin(a * 0.5f)) * bondLength * 0.7f;
+        }
     }
 
     for (int iter = 0; iter < 4; iter++)
@@ -407,7 +467,7 @@ void CSBuildCartoonLayoutBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
         atomPositionInputBuffer[atomStart + i] = positions[i];
 }
 // Emit a compact sphere so cartoon mode keeps a smoother silhouette.
-void GenerateAtomSphere(float3 center, int type, int vertexOffset, int indexOffset, inout int vCount, inout int iCount)
+void GenerateAtomSphere(float3 center, int type, int meshIdx, int atomLocalIdx, int vertexOffset, int indexOffset, inout int vCount, inout int iCount)
 {
     float radius = atomRadius;
     float4 color = GetAtomColor(type);
@@ -546,7 +606,7 @@ void CSGenerateCartoonMesh(uint3 dispatchThreadID : SV_DispatchThreadID)
     for (int a = 0; a < atomCount; a++)
     {
         int atomIndex = atomStart + a;
-        GenerateAtomSphere(atomPositionInputBuffer[atomIndex], atomTypeInputBuffer[atomIndex], vertexOffset, indexOffset, vCount, iCount);
+        GenerateAtomSphere(atomPositionInputBuffer[atomIndex], atomTypeInputBuffer[atomIndex], meshIdx, a, vertexOffset, indexOffset, vCount, iCount);
     }
 
     for (int bondIdx = 0; bondIdx < bondCount; bondIdx++)

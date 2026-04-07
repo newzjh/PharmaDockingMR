@@ -167,13 +167,13 @@ void CSBuildBallStickGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
         if (c0 == 0)
             break;
 
-        if (c0 == '=') { pendingBond = 1; i++; continue; }
-        if (c0 == '#') { pendingBond = 2; i++; continue; }
-        if (c0 == ':') { pendingBond = 3; i++; continue; }
-        if (c0 == '-') { pendingBond = 0; i++; continue; }
-        if (c0 == '.') { currentAtom = -1; pendingBond = 0; i++; continue; }
-        if (c0 == 47 || c0 == 92 || c0 == 64) { i++; continue; } // '/', '\\', '@'
-        if (c0 == '%')
+        else if (c0 == '=') { pendingBond = 1; i++; continue; }
+        else if (c0 == '#') { pendingBond = 2; i++; continue; }
+        else if (c0 == ':') { pendingBond = 3; i++; continue; }
+        else if (c0 == '-') { pendingBond = 0; i++; continue; }
+        else if (c0 == '.') { currentAtom = -1; pendingBond = 0; i++; continue; }
+        else if (c0 == 47 || c0 == 92 || c0 == 64) { i++; continue; } // '/', '\\', '@'
+        else if (c0 == '%')
         {
             int d1 = (i + 1 < smilesMaxLength) ? (useSmilesTextureInput != 0
                 ? (int)round(smilesInputTexture[int2(i + 1, molIdx)].r * 255.0f)
@@ -204,57 +204,69 @@ void CSBuildBallStickGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
                 continue;
             }
         }
-        if (c0 == '(') { if (branchTop < 16) branchStack[branchTop++] = currentAtom; i++; continue; }
-        if (c0 == ')') { if (branchTop > 0) currentAtom = branchStack[--branchTop]; i++; continue; }
-        if (c0 == '[')
+        else if (c0 == '(')
         {
-            int end = i + 1;
-            while (end < smilesMaxLength)
-            {
-                int ce = useSmilesTextureInput != 0
-                    ? (int)round(smilesInputTexture[int2(end, molIdx)].r * 255.0f)
-                    : smilesInputBuffer[molIdx * smilesMaxLength + end];
-                if (ce == 0 || ce == ']')
-                    break;
-                end++;
-            }
-
-            int mappedType = ATOM_TYPE_UNKNOWN;
-            bool mapped = false;
-            for (int p = i + 1; p < end && !mapped; p++)
-            {
-                int ca = useSmilesTextureInput != 0
-                    ? (int)round(smilesInputTexture[int2(p, molIdx)].r * 255.0f)
-                    : smilesInputBuffer[molIdx * smilesMaxLength + p];
-                if (!((ca >= 'A' && ca <= 'Z') || (ca >= 'a' && ca <= 'z')))
-                    continue;
-                int cb = 0;
-                if (p + 1 < end)
-                {
-                    cb = useSmilesTextureInput != 0
-                        ? (int)round(smilesInputTexture[int2(p + 1, molIdx)].r * 255.0f)
-                        : smilesInputBuffer[molIdx * smilesMaxLength + p + 1];
-                }
-                int consumedTmp;
-                if (TryMapSimpleAtom(ca, cb, mappedType, consumedTmp))
-                    mapped = true;
-            }
-
-            if (mapped)
-            {
-                int newAtom = atomCount;
-                atomTypeInputBuffer[atomStart + newAtom] = mappedType;
-                atomPositionInputBuffer[atomStart + newAtom] = float3(0, 0, 0);
-                if (currentAtom >= 0 && writeBondCount < maxBondCount)
-                    bondInputBuffer[bondStart + writeBondCount++] = int2(currentAtom, newAtom);
-                currentAtom = newAtom;
-                atomCount++;
-            }
-            pendingBond = 0;
-            i = min(end + 1, smilesMaxLength);
+            if (branchTop < 16)
+                branchStack[branchTop++] = currentAtom;
+            i++;
             continue;
         }
-        if (c0 >= '0' && c0 <= '9')
+        else if (c0 == ')')
+        {
+            if (branchTop > 0)
+                currentAtom = branchStack[--branchTop];
+            i++;
+            continue;
+        }
+        //else if (c0 == '[')
+        //{
+        //    int end = i + 1;
+        //    while (end < smilesMaxLength)
+        //    {
+        //        int ce = useSmilesTextureInput != 0
+        //            ? (int) round(smilesInputTexture[int2(end, molIdx)].r * 255.0f)
+        //            : smilesInputBuffer[molIdx * smilesMaxLength + end];
+        //        if (ce == 0 || ce == ']')
+        //            break;
+        //        end++;
+        //    }
+
+        //    int mappedType = ATOM_TYPE_UNKNOWN;
+        //    bool mapped = false;
+        //    for (int p = i + 1; p < end && !mapped; p++)
+        //    {
+        //        int ca = useSmilesTextureInput != 0
+        //            ? (int) round(smilesInputTexture[int2(p, molIdx)].r * 255.0f)
+        //            : smilesInputBuffer[molIdx * smilesMaxLength + p];
+        //        if (!((ca >= 'A' && ca <= 'Z') || (ca >= 'a' && ca <= 'z')))
+        //            continue;
+        //        int cb = 0;
+        //        if (p + 1 < end)
+        //        {
+        //            cb = useSmilesTextureInput != 0
+        //                ? (int) round(smilesInputTexture[int2(p + 1, molIdx)].r * 255.0f)
+        //                : smilesInputBuffer[molIdx * smilesMaxLength + p + 1];
+        //        }
+        //        int consumedTmp;
+        //        if (TryMapSimpleAtom(ca, cb, mappedType, consumedTmp))
+        //            mapped = true;
+        //    }
+
+        //    if (mapped)
+        //    {
+        //        int newAtom = atomCount;
+        //        atomTypeInputBuffer[atomStart + newAtom] = mappedType;
+        //        atomPositionInputBuffer[atomStart + newAtom] = float3(0, 0, 0);
+        //        if (currentAtom >= 0 && writeBondCount < maxBondCount)
+        //            bondInputBuffer[bondStart + writeBondCount++] = int2(currentAtom, newAtom);
+        //        currentAtom = newAtom;
+        //        atomCount++;
+        //    }
+        //    pendingBond = 0;
+        //    i = min(end + 1, smilesMaxLength);
+        //    continue;
+        //}
+        else if (c0 >= '0' && c0 <= '9')
         {
             int ring = c0 - '0';
             if (ring >= 0 && ring < 10 && currentAtom >= 0)
@@ -277,8 +289,8 @@ void CSBuildBallStickGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
             continue;
         }
 
-        int atomType;
-        int consumed;
+        int atomType = ATOM_TYPE_UNKNOWN;
+        int consumed = 1;
         if (TryMapSimpleAtom(c0, c1, atomType, consumed))
         {
             int newAtom = atomCount;
