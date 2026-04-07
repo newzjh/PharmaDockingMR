@@ -65,6 +65,60 @@ float Hash01(uint seed)
     return frac(sin(seed * 12.9898f + 78.233f) * 43758.5453f);
 }
 
+int ReadSmilesChar(int molIdx, int charIdx)
+{
+    if (charIdx < 0 || charIdx >= smilesMaxLength)
+        return 0;
+    return useSmilesTextureInput != 0
+        ? (int)round(smilesInputTexture[int2(charIdx, molIdx)].r * 255.0f)
+        : smilesInputBuffer[molIdx * smilesMaxLength + charIdx];
+}
+
+bool TryParseBracketAtomToken(int molIdx, int startIdx, out int mappedType, out int nextIdx)
+{
+    mappedType = ATOM_TYPE_UNKNOWN;
+    nextIdx = startIdx + 1;
+    int firstInside = ReadSmilesChar(molIdx, startIdx + 1);
+    bool plausibleStart =
+        (firstInside >= 48 && firstInside <= 57) ||
+        (firstInside >= 65 && firstInside <= 90) ||
+        (firstInside >= 97 && firstInside <= 122) ||
+        firstInside == 64 || firstInside == 43 || firstInside == 45;
+    if (!plausibleStart)
+        return false;
+
+    int end = startIdx + 1;
+    bool foundCloseBracket = false;
+    int maxBracketSpan = 24;
+    while (end < smilesMaxLength && (end - startIdx) <= maxBracketSpan)
+    {
+        int ce = ReadSmilesChar(molIdx, end);
+        if (ce == 0) break;
+        if (ce == 93) { foundCloseBracket = true; break; } // ']'
+        end++;
+    }
+    if (!foundCloseBracket)
+        return false;
+
+    int p = startIdx + 1;
+    while (p < end)
+    {
+        int cp = ReadSmilesChar(molIdx, p);
+        if (cp < 48 || cp > 57) break;
+        p++;
+    }
+    if (p >= end)
+        return false;
+
+    int ca = ReadSmilesChar(molIdx, p);
+    int cb = (p + 1 < end) ? ReadSmilesChar(molIdx, p + 1) : 0;
+    int consumedTmp;
+    if (!TryMapSimpleAtom(ca, cb, mappedType, consumedTmp))
+        return false;
+    nextIdx = min(end + 1, smilesMaxLength);
+    return true;
+}
+
 [numthreads(32, 1, 1)]
 void CSBuildBallGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
@@ -90,16 +144,8 @@ void CSBuildBallGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
     int i = 0;
     while (i < smilesMaxLength && atomCount < MAX_ATOM_COUNT)
     {
-        int c0 = useSmilesTextureInput != 0
-            ? (int)round(smilesInputTexture[int2(i, molIdx)].r * 255.0f)
-            : smilesInputBuffer[molIdx * smilesMaxLength + i];
-        int c1 = 0;
-        if (i + 1 < smilesMaxLength)
-        {
-            c1 = useSmilesTextureInput != 0
-                ? (int)round(smilesInputTexture[int2(i + 1, molIdx)].r * 255.0f)
-                : smilesInputBuffer[molIdx * smilesMaxLength + i + 1];
-        }
+        int c0 = ReadSmilesChar(molIdx, i);
+        int c1 = ReadSmilesChar(molIdx, i + 1);
         if (c0 == 0)
             break;
 
@@ -141,52 +187,26 @@ void CSBuildBallGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
         }
         if (c0 == '(') { if (branchTop < 16) branchStack[branchTop++] = currentAtom; i++; continue; }
         if (c0 == ')') { if (branchTop > 0) currentAtom = branchStack[--branchTop]; i++; continue; }
-        //if (c0 == '[')
-        //{
-        //    int end = i + 1;
-        //    while (end < smilesMaxLength)
-        //    {
-        //        int ce = useSmilesTextureInput != 0
-        //            ? (int)round(smilesInputTexture[int2(end, molIdx)].r * 255.0f)
-        //            : smilesInputBuffer[molIdx * smilesMaxLength + end];
-        //        if (ce == 0 || ce == ']')
-        //            break;
-        //        end++;
-        //    }
-
-        //    int mappedType = ATOM_TYPE_UNKNOWN;
-        //    bool mapped = false;
-        //    for (int p = i + 1; p < end && !mapped; p++)
-        //    {
-        //        int ca = useSmilesTextureInput != 0
-        //            ? (int)round(smilesInputTexture[int2(p, molIdx)].r * 255.0f)
-        //            : smilesInputBuffer[molIdx * smilesMaxLength + p];
-        //        if (!((ca >= 'A' && ca <= 'Z') || (ca >= 'a' && ca <= 'z')))
-        //            continue;
-        //        int cb = 0;
-        //        if (p + 1 < end)
-        //        {
-        //            cb = useSmilesTextureInput != 0
-        //                ? (int)round(smilesInputTexture[int2(p + 1, molIdx)].r * 255.0f)
-        //                : smilesInputBuffer[molIdx * smilesMaxLength + p + 1];
-        //        }
-        //        int consumedTmp;
-        //        if (TryMapSimpleAtom(ca, cb, mappedType, consumedTmp))
-        //            mapped = true;
-        //    }
-
-        //    if (mapped)
-        //    {
-        //        int newAtom = atomCount;
-        //        atomTypeInputBuffer[atomStart + newAtom] = mappedType;
-        //        atomPositionInputBuffer[atomStart + newAtom] = float3(0, 0, 0);
-        //        currentAtom = newAtom;
-        //        atomCount++;
-        //    }
-        //    pendingBond = 0;
-        //    i = min(end + 1, smilesMaxLength);
-        //    continue;
-        //}
+#if ALLOW_C0_91           
+        if (c0 == 91) // '['
+        {
+            int mappedType;
+            int nextIdx;
+            if (TryParseBracketAtomToken(molIdx, i, mappedType, nextIdx))
+            {
+                int newAtom = atomCount;
+                atomTypeInputBuffer[atomStart + newAtom] = mappedType;
+                atomPositionInputBuffer[atomStart + newAtom] = float3(0, 0, 0);
+                currentAtom = newAtom;
+                atomCount++;
+                pendingBond = 0;
+                i = nextIdx;
+                continue;
+            }
+            i++;
+            continue;
+        }
+#endif
         if (c0 >= '0' && c0 <= '9')
         {
             int ring = c0 - '0';

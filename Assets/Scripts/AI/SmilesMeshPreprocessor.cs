@@ -443,14 +443,20 @@ namespace AIDrugDiscovery
                         parentDir.Normalize();
                 }
 
-                float baseAngle = Mathf.Atan2(parentDir.y, parentDir.x);
-                float spread = children.Count > 1 ? 1.8f : 0f;
+                Vector3 refUp = Mathf.Abs(parentDir.y) < 0.9f ? Vector3.up : Vector3.right;
+                Vector3 tangent = Vector3.Cross(parentDir, refUp).normalized;
+                Vector3 bitangent = Vector3.Cross(parentDir, tangent).normalized;
+                float spread = children.Count > 1 ? 1.5f : 0f;
                 for (int childIdx = 0; childIdx < children.Count; childIdx++)
                 {
                     int child = children[childIdx];
                     float t = children.Count == 1 ? 0.5f : childIdx / (float)(children.Count - 1);
-                    float angle = baseAngle + Mathf.Lerp(-spread, spread, t);
-                    Vector3 offset = new Vector3(Mathf.Cos(angle), Mathf.Sin(angle), (depth[current] & 1) == 0 ? 0.15f : -0.15f).normalized * bondLength;
+                    float azimuth = Mathf.Lerp(-spread, spread, t);
+                    float elevation = ((depth[current] + childIdx) & 1) == 0 ? 0.45f : -0.45f;
+                    Vector3 dir = (parentDir * Mathf.Cos(elevation) +
+                                   tangent * (Mathf.Sin(elevation) * Mathf.Cos(azimuth)) +
+                                   bitangent * (Mathf.Sin(elevation) * Mathf.Sin(azimuth))).normalized;
+                    Vector3 offset = dir * bondLength;
                     positions[child] = positions[current] + offset;
                     parent[child] = current;
                     depth[child] = depth[current] + 1;
