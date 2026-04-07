@@ -1,0 +1,120 @@
+#pragma kernel CSPriorGuidedForwardDistilled
+#pragma enable_d3d11_debug_symbols
+
+#define SMILES_MAX_LENGTH 256
+#define MAX_ATOM_COUNT 50
+
+int batchSize;
+int batchOffset;
+int timesteps;
+float heatmapWeight;
+int maxAtoms;
+float minFeatureScore;
+int heatmapSize;
+int writeDebugScores;
+int writeSmilesTexture;
+int usePriorGridGuidance;
+float priorBlendWeight;
+
+Texture2D<float4> proteinHeatmap;
+Texture3D<float4> proteinHeatmap3D;
+Texture3D<float4> priorGuidanceGrid3D;
+float4 atomWeightBuffer;
+float4 activeCenterBuffer;
+RWStructuredBuffer<int> smilesOutputBuffer;
+RWTexture2D<float4> smilesOutputTexture;
+RWStructuredBuffer<float> matchScoreDebugBuffer;
+
+uint Hash(uint2 seed)
+{
+    seed = uint2(seed.x ^ seed.y * 16807, seed.y ^ seed.x * 48271);
+    return seed.x * 2654435769u + seed.y * 1234567u;
+}
+
+float Random01(uint2 seed)
+{
+    return frac(Hash(seed) * 0.00000000023283064365386962890625);
+}
+
+int PickAtomType(float4 feat, uint2 seed)
+{
+    // Distilled heuristic: combine feature channels with a small stochastic term.
+    float carbonScore = feat.r * atomWeightBuffer.x + 0.15 + Random01(seed) * 0.05;
+    float oxygenScore = feat.g * atomWeightBuffer.y + 0.10 + Random01(seed + 1) * 0.04;
+    float nitrogenScore = feat.a * atomWeightBuffer.z + 0.10 + Random01(seed + 2) * 0.04;
+    float sulfurScore = feat.b * atomWeightBuffer.w + 0.08 + Random01(seed + 3) * 0.03;
+
+    float best = carbonScore;
+    int atom = 'C';
+    if (oxygenScore > best) { best = oxygenScore; atom = 'O'; }
+    if (nitrogenScore > best) { best = nitrogenScore; atom = 'N'; }
+    if (sulfurScore > best) { best = sulfurScore; atom = 'S'; }
+    return atom;
+}
+
+[numthreads(64, 1, 1)]
+void CSPriorGuidedForwardDistilled(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    int localIdx = dispatchThreadID.x;
+    if (localIdx >= batchSize)
+        return;
+
+    int molIdx = batchOffset + localIdx;
+    int outMolIdx = localIdx;
+
+    float3 center = activeCenterBuffer.xyz;
+    float scoreAccum = 0.0f;
+    int atomCount = clamp((int)round(8 + Random01(uint2(molIdx, 11)) * (maxAtoms - 8)), 6, maxAtoms);
+
+    int2 uv2 = int2(
+        clamp((int)(center.x + heatmapSize * 0.5f), 0, heatmapSize - 1),
+        clamp((int)(center.z + heatmapSize * 0.5f), 0, heatmapSize - 1));
+    float4 feat2D = proteinHeatmap.Load(int3(uv2, 0));
+
+    for (int i = 0; i < SMILES_MAX_LENGTH; i++)
+        smilesOutputBuffer[outMolIdx * SMILES_MAX_LENGTH + i] = 0;
+
+    int writeIdx = 0;
+    for (int a = 0; a < atomCount && writeIdx < SMILES_MAX_LENGTH - 1; a++)
+    {
+        float3 probe = center + float3((a - atomCount * 0.5f) * 0.6f, 0, sin(a * 0.5f) * 0.8f);
+        int3 uv3 = int3(probe - center + heatmapSize * 0.5f);
+        uv3 = clamp(uv3, 0, int3(heatmapSize - 1, heatmapSize - 1, heatmapSize - 1));
+        float4 feat3D = proteinHeatmap3D.Load(int4(uv3, 0));
+        if (usePriorGridGuidance != 0)
+        {
+            float4 prior = priorGuidanceGrid3D.Load(int4(uv3, 0));
+            feat3D = lerp(feat3D, prior, saturate(priorBlendWeight));
+        }
+
+        float4 feat = lerp(feat2D, feat3D, 0.7f);
+        int atomChar = PickAtomType(feat, uint2(molIdx, a));
+        smilesOutputBuffer[outMolIdx * SMILES_MAX_LENGTH + writeIdx++] = atomChar;
+
+        // Distilled forward-only rule: mostly single bonds, occasionally aromatic separators.
+        if (a < atomCount - 1 && writeIdx < SMILES_MAX_LENGTH - 1)
+        {
+            float r = Random01(uint2(a, molIdx));
+            int bondChar = (r > 0.84f) ? ':' : '-';
+            smilesOutputBuffer[outMolIdx * SMILES_MAX_LENGTH + writeIdx++] = bondChar;
+        }
+
+        scoreAccum += (feat.r + feat.g + feat.b + feat.a) * 0.25f;
+    }
+
+    if (writeSmilesTexture != 0)
+    {
+        for (int i = 0; i < SMILES_MAX_LENGTH; i++)
+        {
+            float r = smilesOutputBuffer[outMolIdx * SMILES_MAX_LENGTH + i] / 255.0f;
+            smilesOutputTexture[int2(i, localIdx)] = float4(r, 0, 0, 1);
+        }
+    }
+
+    if (writeDebugScores != 0)
+    {
+        float avgScore = scoreAccum / max(atomCount, 1);
+        for (int a = 0; a < maxAtoms; a++)
+            matchScoreDebugBuffer[localIdx * maxAtoms + a] = avgScore;
+    }
+}

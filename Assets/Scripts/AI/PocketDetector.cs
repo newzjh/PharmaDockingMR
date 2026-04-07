@@ -1277,7 +1277,20 @@ namespace AIDrugDiscovery
                     density = density
                 });
             }
-
+            if (pockets.Count > 0)
+            {
+                float minScore = pockets.Min(p => p.score);
+                float maxScore = pockets.Max(p => p.score);
+                float span = Mathf.Max(maxScore - minScore, 1e-5f);
+                for (int i = 0; i < pockets.Count; i++)
+                {
+                    float normalized = (pockets[i].score - minScore) / span;
+                    // Re-expand to match the legacy score dynamic range (historically many strong pockets were >0.5).
+                    var r = pockets[i];
+                    r.score = Mathf.Clamp01(0.15f + normalized * 0.85f);
+                    pockets[i] = r;
+                }
+            }
             return pockets;
         }
         private float NormalizeValue(float value, float min, float max)

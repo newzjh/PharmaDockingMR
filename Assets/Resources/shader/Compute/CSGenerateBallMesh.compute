@@ -12,6 +12,7 @@ int smilesMaxLength;
 int sphereSegments;
 float bondLength;
 float atomRadius;
+int vertexCapacity;
 
 StructuredBuffer<int> smilesInputBuffer;
 Texture2D<float4> smilesInputTexture;
@@ -20,11 +21,9 @@ StructuredBuffer<int> meshAtomStartBuffer;
 RWStructuredBuffer<int> meshAtomCountInputBuffer;
 RWStructuredBuffer<int> atomTypeInputBuffer;
 RWStructuredBuffer<float3> atomPositionInputBuffer;
-RWStructuredBuffer<float3> vertexOutputBuffer_position;
-RWStructuredBuffer<float3> vertexOutputBuffer_normal;
+RWStructuredBuffer<float3> vertexPosNormalBuffer;
 RWStructuredBuffer<float4> vertexOutputBuffer_color;
 RWStructuredBuffer<int> indexOutputBuffer;
-RWStructuredBuffer<int> atomCountOutputBuffer;
 
 bool TryMapSimpleAtom(int c0, int c1, out int atomType, out int consumed)
 {
@@ -68,9 +67,21 @@ void CSBuildBallGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (meshIdx >= selectedCount)
         return;
 
+    int ringAtom[10];
+    int ringBond[10];
+    int branchStack[16];
+    for (int r = 0; r < 10; r++) { ringAtom[r] = -1; ringBond[r] = 0; }
+    int branchTop = 0;
     int atomCount = 0;
     int atomStart = meshAtomStartBuffer[meshIdx];
+    int currentAtom = -1;
+    int pendingBond = 0;
     int molIdx = selectedMolIndexBuffer[meshIdx];
+    if (molIdx < 0 || molIdx >= batchSize)
+    {
+        meshAtomCountInputBuffer[meshIdx] = 0;
+        return;
+    }
     int i = 0;
     while (i < smilesMaxLength && atomCount < MAX_ATOM_COUNT)
     {
@@ -87,13 +98,44 @@ void CSBuildBallGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
         if (c0 == 0)
             break;
 
+        if (c0 == '=') { pendingBond = 1; i++; continue; }
+        if (c0 == '#') { pendingBond = 2; i++; continue; }
+        if (c0 == ':') { pendingBond = 3; i++; continue; }
+        if (c0 == '-') { pendingBond = 0; i++; continue; }
+        if (c0 == '(') { if (branchTop < 16) branchStack[branchTop++] = currentAtom; i++; continue; }
+        if (c0 == ')') { if (branchTop > 0) currentAtom = branchStack[--branchTop]; i++; continue; }
+        if (c0 >= '0' && c0 <= '9')
+        {
+            int ring = c0 - '0';
+            if (ring >= 0 && ring < 10 && currentAtom >= 0)
+            {
+                if (ringAtom[ring] >= 0)
+                {
+                    currentAtom = ringAtom[ring];
+                    ringAtom[ring] = -1;
+                    ringBond[ring] = 0;
+                }
+                else
+                {
+                    ringAtom[ring] = currentAtom;
+                    ringBond[ring] = pendingBond;
+                }
+            }
+            pendingBond = 0;
+            i++;
+            continue;
+        }
+
         int atomType;
         int consumed;
         if (TryMapSimpleAtom(c0, c1, atomType, consumed))
         {
-            atomTypeInputBuffer[atomStart + atomCount] = atomType;
-            atomPositionInputBuffer[atomStart + atomCount] = float3(0, 0, 0);
+            int newAtom = atomCount;
+            atomTypeInputBuffer[atomStart + newAtom] = atomType;
+            atomPositionInputBuffer[atomStart + newAtom] = float3(0, 0, 0);
+            currentAtom = newAtom;
             atomCount++;
+            pendingBond = 0;
             i += consumed;
             continue;
         }
@@ -106,7 +148,6 @@ void CSBuildBallGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
         atomPositionInputBuffer[atomStart + atomIdx] = float3(0, 0, 0);
     }
     meshAtomCountInputBuffer[meshIdx] = atomCount;
-    atomCountOutputBuffer[meshIdx] = atomCount;
 }
 
 [numthreads(32, 1, 1)]
@@ -154,8 +195,9 @@ void GenerateAtomSphere(float3 center, int type, int vertexOffset, int indexOffs
                 cos(phi),
                 sin(phi) * sin(theta)
             );
-            vertexOutputBuffer_position[vertexOffset + vCount] = center + normal * radius;
-            vertexOutputBuffer_normal[vertexOffset + vCount] = normal;
+            int outIdx = vertexOffset + vCount;
+            vertexPosNormalBuffer[outIdx] = center + normal * radius;
+            vertexPosNormalBuffer[vertexCapacity + outIdx] = normal;
             vertexOutputBuffer_color[vertexOffset + vCount] = color;
             vCount++;
         }
@@ -186,7 +228,6 @@ void CSGenerateBallMesh(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     int atomStart = meshAtomStartBuffer[meshIdx];
     int atomCount = meshAtomCountInputBuffer[meshIdx];
-    atomCountOutputBuffer[meshIdx] = atomCount;
     if (atomCount <= 0)
         return;
 

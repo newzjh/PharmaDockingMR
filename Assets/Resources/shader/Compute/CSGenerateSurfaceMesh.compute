@@ -121,11 +121,20 @@ float3 InterpolateVertex(float3 p1, float3 p2, float val1, float val2)
     return lerp(p1, p2, mu);
 }
 
+float SampleDensityClamped(int3 id)
+{
+    int3 clampedId = int3(
+        clamp(id.x, 0, gridSize.x - 1),
+        clamp(id.y, 0, gridSize.y - 1),
+        clamp(id.z, 0, gridSize.z - 1));
+    return densityGrid[GetGridIndex(clampedId)];
+}
+
 float3 ComputeNormal(int3 id)
 {
-    float nx = densityGrid[GetGridIndex(id + int3(1,0,0))] - densityGrid[GetGridIndex(id - int3(1,0,0))];
-    float ny = densityGrid[GetGridIndex(id + int3(0,1,0))] - densityGrid[GetGridIndex(id - int3(0,1,0))];
-    float nz = densityGrid[GetGridIndex(id + int3(0,0,1))] - densityGrid[GetGridIndex(id - int3(0,0,1))];
+    float nx = SampleDensityClamped(id + int3(1, 0, 0)) - SampleDensityClamped(id - int3(1, 0, 0));
+    float ny = SampleDensityClamped(id + int3(0, 1, 0)) - SampleDensityClamped(id - int3(0, 1, 0));
+    float nz = SampleDensityClamped(id + int3(0, 0, 1)) - SampleDensityClamped(id - int3(0, 0, 1));
     return normalize(-float3(nx, ny, nz));
 }
 

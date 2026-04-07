@@ -102,7 +102,7 @@ namespace AIDrugDiscovery
             maxIndexCount = allocatedBatchSize * (maxAtomLimit * indicesPerAtom + maxBondLimit * indicesPerBond);
 
             
-            vertexBufferPosition = new ComputeBuffer(maxVertexCount, System.Runtime.InteropServices.Marshal.SizeOf(typeof(Vector3)));
+            vertexBufferPosition = new ComputeBuffer(maxVertexCount * 2, System.Runtime.InteropServices.Marshal.SizeOf(typeof(Vector3)));
             vertexBufferColor = new ComputeBuffer(maxVertexCount, System.Runtime.InteropServices.Marshal.SizeOf(typeof(Vector4)));
             indexBuffer = new ComputeBuffer(maxIndexCount, sizeof(int));
             atomCountBuffer = new ComputeBuffer(allocatedBatchSize, sizeof(int));
@@ -189,15 +189,18 @@ namespace AIDrugDiscovery
 
             foreach (int kernelId in new[] { kernelGraph, kernelLayout, kernelMesh })
             {
+                int shaderSmilesLength = DiffusionGenerator.SMILES_MAX_LENGTH;
                 cartoonCS.SetInt("batchSize", runtimeBatchSize);
                 cartoonCS.SetInt("selectedCount", generatedMeshCount);
                 cartoonCS.SetInt("useSmilesTextureInput", useLegacySmilesTextureInput && legacySmilesTexture != null ? 1 : 0);
-                cartoonCS.SetInt("smilesMaxLength", smilesMaxLength);
+                cartoonCS.SetInt("smilesMaxLength", shaderSmilesLength);
                 cartoonCS.SetInt("sphereSegments", config.sphereSegments);
                 cartoonCS.SetInt("cylinderSegments", config.cylinderSegments);
                 cartoonCS.SetFloat("bondLength", config.bondLength);
+                cartoonCS.SetFloat("atomRadius", config.atomRadius);
                 cartoonCS.SetFloat("bondRadius", config.bondRadius);
                 cartoonCS.SetInt("maxBondCount", maxBondLimit);
+                cartoonCS.SetInt("vertexCapacity", maxVertexCount);
                 cartoonCS.SetBuffer(kernelId, "smilesInputBuffer", smilesBuffer ?? dummySmilesInputBuffer);
                 cartoonCS.SetTexture(kernelId, "smilesInputTexture", legacySmilesTexture ?? dummySmilesInputTexture);
                 cartoonCS.SetBuffer(kernelId, "selectedMolIndexBuffer", selectedIndexBuffer);
@@ -210,7 +213,7 @@ namespace AIDrugDiscovery
                 cartoonCS.SetBuffer(kernelId, "bondInputBuffer", bondInputBuffer);
             }
 
-            cartoonCS.SetBuffer(kernelMesh, "vertexOutputBuffer_position", vertexBufferPosition);
+            cartoonCS.SetBuffer(kernelMesh, "vertexPosNormalBuffer", vertexBufferPosition);
             cartoonCS.SetBuffer(kernelMesh, "vertexOutputBuffer_color", vertexBufferColor);
             cartoonCS.SetBuffer(kernelMesh, "indexOutputBuffer", indexBuffer);
 
@@ -232,7 +235,7 @@ namespace AIDrugDiscovery
             //atomCountBuffer.GetData(atomCounts);
 
             
-            Vector3[] allPositions = new Vector3[maxVertexCount];
+            Vector3[] allPosNormals = new Vector3[maxVertexCount * 2];
             Vector4[] allColors = new Vector4[maxVertexCount];
             int[] allIndices = new int[maxIndexCount];
             //vertexBufferPosition.GetData(allPositions);
@@ -241,7 +244,7 @@ namespace AIDrugDiscovery
             //indexBuffer.GetData(allIndices);
             {
                 var req = await AsyncGPUReadback.RequestAsync(vertexBufferPosition);
-                allPositions = req.GetData<Vector3>().ToArray();
+                allPosNormals = req.GetData<Vector3>().ToArray();
             }
             {
                 var req = await AsyncGPUReadback.RequestAsync(vertexBufferColor);
@@ -275,7 +278,6 @@ namespace AIDrugDiscovery
                 Mesh mesh = new Mesh();
                 mesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
                 Vector3[] positions = new Vector3[totalVertices];
-                Vector3[] normals = new Vector3[totalVertices];
                 Color[] colors = new Color[totalVertices];
                 int[] triangles = new int[totalIndices];
 
@@ -285,13 +287,30 @@ namespace AIDrugDiscovery
                     Color* dest = (Color*)UnsafeUtility.AddressOf<Color>(ref colors[0]);
                     UnsafeUtility.MemCpy(dest, src, totalVertices * UnsafeUtility.SizeOf<Vector4>());
                 }
-                Array.Copy(allPositions, vertexOffset, positions, 0, totalVertices);
+                Array.Copy(allPosNormals, vertexOffset, positions, 0, totalVertices);
                 Array.Copy(allIndices, indexOffset, triangles, 0, totalIndices);
+                for (int v = 0; v < totalVertices; v++)
+                {
+                    if (float.IsNaN(positions[v].x) || float.IsNaN(positions[v].y) || float.IsNaN(positions[v].z) ||
+                        float.IsInfinity(positions[v].x) || float.IsInfinity(positions[v].y) || float.IsInfinity(positions[v].z))
+                    {
+                        positions[v] = Vector3.zero;
+                    }
+                }
 
                 mesh.vertices = positions;
                 mesh.colors = colors;
                 mesh.triangles = triangles;
-                mesh.RecalculateNormals();
+                if (allPosNormals.Length >= maxVertexCount + vertexOffset + totalVertices)
+                {
+                    Vector3[] normals = new Vector3[totalVertices];
+                    Array.Copy(allPosNormals, maxVertexCount + vertexOffset, normals, 0, totalVertices);
+                    mesh.normals = normals;
+                }
+                else
+                {
+                    mesh.RecalculateNormals();
+                }
                 mesh.RecalculateBounds();
                 molMeshes.Add(mesh);
             }
@@ -337,8 +356,10 @@ namespace AIDrugDiscovery
             cartoonCS.SetInt("selectedCount", 1);
             cartoonCS.SetInt("sphereSegments", config.sphereSegments);
             cartoonCS.SetInt("cylinderSegments", config.cylinderSegments);
+            cartoonCS.SetFloat("atomRadius", config.atomRadius);
             cartoonCS.SetFloat("bondRadius", config.bondRadius);
             cartoonCS.SetInt("maxBondCount", maxBondLimit);
+            cartoonCS.SetInt("vertexCapacity", maxVertexCount);
             cartoonCS.SetBuffer(kernelId, "meshAtomStartBuffer", meshAtomStartBuffer);
             cartoonCS.SetBuffer(kernelId, "meshAtomCountInputBuffer", meshAtomCountInputBuffer);
             cartoonCS.SetBuffer(kernelId, "meshBondStartBuffer", meshBondStartBuffer);
@@ -346,7 +367,7 @@ namespace AIDrugDiscovery
             cartoonCS.SetBuffer(kernelId, "atomTypeInputBuffer", atomTypeInputBuffer);
             cartoonCS.SetBuffer(kernelId, "atomPositionInputBuffer", atomPositionInputBuffer);
             cartoonCS.SetBuffer(kernelId, "bondInputBuffer", bondInputBuffer);
-            cartoonCS.SetBuffer(kernelId, "vertexOutputBuffer_position", vertexBufferPosition);
+            cartoonCS.SetBuffer(kernelId, "vertexPosNormalBuffer", vertexBufferPosition);
             cartoonCS.SetBuffer(kernelId, "vertexOutputBuffer_color", vertexBufferColor);
             cartoonCS.SetBuffer(kernelId, "indexOutputBuffer", indexBuffer);
             cartoonCS.Dispatch(kernelId, 1, 1, 1);
@@ -356,7 +377,7 @@ namespace AIDrugDiscovery
             if (atomCounts.Length == 0 || atomCounts[0] <= 1)
                 return null;
 
-            Vector3[] allPositions = (await AsyncGPUReadback.RequestAsync(vertexBufferPosition)).GetData<Vector3>().ToArray();
+            Vector3[] allPosNormals = (await AsyncGPUReadback.RequestAsync(vertexBufferPosition)).GetData<Vector3>().ToArray();
             Vector4[] allColors = (await AsyncGPUReadback.RequestAsync(vertexBufferColor)).GetData<Vector4>().ToArray();
             int[] allIndices = (await AsyncGPUReadback.RequestAsync(indexBuffer)).GetData<int>().ToArray();
 
@@ -375,12 +396,21 @@ namespace AIDrugDiscovery
                 Color* dest = (Color*)UnsafeUtility.AddressOf<Color>(ref colors[0]);
                 UnsafeUtility.MemCpy(dest, src, totalVertices * UnsafeUtility.SizeOf<Vector4>());
             }
-            Array.Copy(allPositions, 0, positions, 0, totalVertices);
+            Array.Copy(allPosNormals, 0, positions, 0, totalVertices);
             Array.Copy(allIndices, 0, triangles, 0, totalIndices);
             mesh.vertices = positions;
             mesh.colors = colors;
             mesh.triangles = triangles;
-            mesh.RecalculateNormals();
+            if (allPosNormals.Length >= maxVertexCount + totalVertices)
+            {
+                Vector3[] normals = new Vector3[totalVertices];
+                Array.Copy(allPosNormals, maxVertexCount, normals, 0, totalVertices);
+                mesh.normals = normals;
+            }
+            else
+            {
+                mesh.RecalculateNormals();
+            }
             mesh.RecalculateBounds();
             return mesh;
         }

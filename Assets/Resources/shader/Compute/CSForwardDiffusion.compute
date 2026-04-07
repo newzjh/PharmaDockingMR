@@ -77,10 +77,13 @@ float minFeatureScore;
 int heatmapSize;
 int writeDebugScores;
 int writeSmilesTexture;
+int usePriorGridGuidance;
+float priorBlendWeight;
 
 
 Texture2D<float4> proteinHeatmap;
 Texture3D<float4> proteinHeatmap3D;
+Texture3D<float4> priorGuidanceGrid3D;
 StructuredBuffer<float> betaBuffer;
 StructuredBuffer<float> alphaCumprodBuffer;
 float4 atomWeightBuffer;
@@ -163,6 +166,11 @@ float GetProteinFeatureConstraint3D(int totalMolIdx, float3 atomPos, float3 acti
     int3 uv3 = int3(atomPos - activeCenter + heatmapSize * 0.5f);
     uv3 = clamp(uv3, 0, int3(heatmapSize - 1, heatmapSize - 1, heatmapSize - 1));
     float4 heatmapFeat = proteinHeatmap3D.Load(int4(uv3, 0));
+    if (usePriorGridGuidance != 0)
+    {
+        float4 priorFeat = priorGuidanceGrid3D.Load(int4(uv3, 0));
+        heatmapFeat = lerp(heatmapFeat, priorFeat, saturate(priorBlendWeight));
+    }
     
     
     atomTypeR = heatmapFeat.r * 10; 

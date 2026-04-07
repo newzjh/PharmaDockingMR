@@ -11,6 +11,12 @@ namespace AIDrugDiscovery
     [Serializable]
     public class ProteinDiffusionConfig
     {
+        public enum ForwardGuidanceMode
+        {
+            HeatmapOnly = 0,
+            PriorGridGuided = 1
+        }
+
         [Header("Settings")]
         public string proteinName = "1AQ1"; 
 
@@ -34,6 +40,12 @@ namespace AIDrugDiscovery
 
         [Header("Settings")]
         public bool lowPowerMode = false; 
+
+        [Header("Prior Guidance")]
+        public ForwardGuidanceMode forwardGuidanceMode = ForwardGuidanceMode.HeatmapOnly;
+        public Texture priorGuidanceGrid3D;
+        [Range(0f, 1f)]
+        public float priorBlendWeight = 0.45f;
     }
 
     public class DiffusionGenerator : MonoBehaviour
@@ -68,6 +80,7 @@ namespace AIDrugDiscovery
 
         [Header("Settings")]
         public ComputeShader diffusionCS;
+        public ComputeShader distilledPriorDiffusionCS;
         public List<ProteinDiffusionConfig> diffusionConfigs; 
         public bool collectDebugScores = false;
         public bool useLegacySmilesTextureTransport = true;
@@ -102,17 +115,25 @@ namespace AIDrugDiscovery
             int effectiveTimesteps = config.lowPowerMode ? Mathf.RoundToInt(config.timesteps * 0.5f) : config.timesteps;
 
             
-            float[] betas = new float[effectiveTimesteps];
-            float[] alphas = new float[effectiveTimesteps];
-            float[] alphaCumprod = new float[effectiveTimesteps];
-            ComputeBetaSchedule(betas, alphas, alphaCumprod, effectiveTimesteps, config);
+            bool useDistilledPriorPipeline =
+                config.forwardGuidanceMode == ProteinDiffusionConfig.ForwardGuidanceMode.PriorGridGuided &&
+                distilledPriorDiffusionCS != null &&
+                config.priorGuidanceGrid3D != null;
 
-            
-            
-            ComputeBuffer betaBuffer = new ComputeBuffer(effectiveTimesteps, sizeof(float));
-            betaBuffer.SetData(betas);
-            ComputeBuffer alphaCumprodBuffer = new ComputeBuffer(effectiveTimesteps, sizeof(float));
-            alphaCumprodBuffer.SetData(alphaCumprod);
+            ComputeBuffer betaBuffer = null;
+            ComputeBuffer alphaCumprodBuffer = null;
+            if (!useDistilledPriorPipeline)
+            {
+                float[] betas = new float[effectiveTimesteps];
+                float[] alphas = new float[effectiveTimesteps];
+                float[] alphaCumprod = new float[effectiveTimesteps];
+                ComputeBetaSchedule(betas, alphas, alphaCumprod, effectiveTimesteps, config);
+
+                betaBuffer = new ComputeBuffer(effectiveTimesteps, sizeof(float));
+                betaBuffer.SetData(betas);
+                alphaCumprodBuffer = new ComputeBuffer(effectiveTimesteps, sizeof(float));
+                alphaCumprodBuffer.SetData(alphaCumprod);
+            }
 
             
             Vector4 atomWeightBuffer = new Vector4(config.cWeight, config.oWeight, config.nWeight, config.sWeight);
@@ -120,8 +141,7 @@ namespace AIDrugDiscovery
             
 
             
-            int smilesStride = SMILES_MAX_LENGTH * sizeof(int);
-            ComputeBuffer smilesBuffer = new ComputeBuffer(effectiveBatchSize, smilesStride);
+            ComputeBuffer smilesBuffer = new ComputeBuffer(effectiveBatchSize * SMILES_MAX_LENGTH, sizeof(int));
             int[] initSmiles = new int[effectiveBatchSize * SMILES_MAX_LENGTH];
             smilesBuffer.SetData(initSmiles);
             RenderTexture boundSmilesTexture = new RenderTexture(SMILES_MAX_LENGTH, effectiveBatchSize, 0, UnityEngine.Experimental.Rendering.GraphicsFormat.R16_SFloat);
@@ -130,34 +150,40 @@ namespace AIDrugDiscovery
             RenderTexture exportedSmilesTexture = useLegacySmilesTextureTransport ? boundSmilesTexture : null;
 
             
-            int kernelId = diffusionCS.FindKernel("CSForwardDiffusion");
-            diffusionCS.SetInt("batchSize", effectiveBatchSize);
-            diffusionCS.SetInt("batchOffset", batchOffset);
-            diffusionCS.SetInt("timesteps", effectiveTimesteps);
-            diffusionCS.SetFloat("heatmapWeight", config.heatmapWeight);
-            diffusionCS.SetInt("maxAtoms", config.maxAtomLimit);
-            diffusionCS.SetFloat("minFeatureScore", config.minFeatureScore);
-            diffusionCS.SetInt("heatmapSize", proteinHeatmap.width); 
-            diffusionCS.SetInt("writeDebugScores", collectDebugScores ? 1 : 0);
-            diffusionCS.SetInt("writeSmilesTexture", useLegacySmilesTextureTransport ? 1 : 0);
+            ComputeShader activeShader = useDistilledPriorPipeline ? distilledPriorDiffusionCS : diffusionCS;
+            int kernelId = activeShader.FindKernel(useDistilledPriorPipeline ? "CSPriorGuidedForwardDistilled" : "CSForwardDiffusion");
+            activeShader.SetInt("batchSize", effectiveBatchSize);
+            activeShader.SetInt("batchOffset", batchOffset);
+            activeShader.SetInt("timesteps", effectiveTimesteps);
+            activeShader.SetFloat("heatmapWeight", config.heatmapWeight);
+            activeShader.SetInt("maxAtoms", config.maxAtomLimit);
+            activeShader.SetFloat("minFeatureScore", config.minFeatureScore);
+            activeShader.SetInt("heatmapSize", proteinHeatmap.width);
+            activeShader.SetInt("writeDebugScores", collectDebugScores ? 1 : 0);
+            activeShader.SetInt("writeSmilesTexture", useLegacySmilesTextureTransport ? 1 : 0);
+            activeShader.SetInt("usePriorGridGuidance", config.forwardGuidanceMode == ProteinDiffusionConfig.ForwardGuidanceMode.PriorGridGuided && config.priorGuidanceGrid3D != null ? 1 : 0);
+            activeShader.SetFloat("priorBlendWeight", config.priorBlendWeight);
 
-            
-            diffusionCS.SetTexture(kernelId, "proteinHeatmap", proteinHeatmap);
-            diffusionCS.SetTexture(kernelId, "proteinHeatmap3D", proteinHeatmap3D);
-            diffusionCS.SetBuffer(kernelId, "betaBuffer", betaBuffer);
-            diffusionCS.SetBuffer(kernelId, "alphaCumprodBuffer", alphaCumprodBuffer);
-            diffusionCS.SetVector("atomWeightBuffer", atomWeightBuffer);
-            diffusionCS.SetVector("activeCenterBuffer", config.proteinActiveCenter);
-            diffusionCS.SetBuffer(kernelId, "smilesOutputBuffer", smilesBuffer);
-            diffusionCS.SetTexture(kernelId, "smilesOutputTexture", boundSmilesTexture);
+            activeShader.SetTexture(kernelId, "proteinHeatmap", proteinHeatmap);
+            activeShader.SetTexture(kernelId, "proteinHeatmap3D", proteinHeatmap3D);
+            activeShader.SetTexture(kernelId, "priorGuidanceGrid3D", config.priorGuidanceGrid3D != null ? config.priorGuidanceGrid3D : proteinHeatmap3D);
+            if (!useDistilledPriorPipeline)
+            {
+                activeShader.SetBuffer(kernelId, "betaBuffer", betaBuffer);
+                activeShader.SetBuffer(kernelId, "alphaCumprodBuffer", alphaCumprodBuffer);
+            }
+            activeShader.SetVector("atomWeightBuffer", atomWeightBuffer);
+            activeShader.SetVector("activeCenterBuffer", config.proteinActiveCenter);
+            activeShader.SetBuffer(kernelId, "smilesOutputBuffer", smilesBuffer);
+            activeShader.SetTexture(kernelId, "smilesOutputTexture", boundSmilesTexture);
 
             
             ComputeBuffer matchScoreDebugBuffer = new ComputeBuffer(effectiveBatchSize * config.maxAtomLimit, sizeof(float));
-            diffusionCS.SetBuffer(kernelId, "matchScoreDebugBuffer", matchScoreDebugBuffer);
+            activeShader.SetBuffer(kernelId, "matchScoreDebugBuffer", matchScoreDebugBuffer);
 
             
             int threadGroupX = Mathf.CeilToInt(effectiveBatchSize / 64f);
-            diffusionCS.Dispatch(kernelId, threadGroupX, 1, 1);
+            activeShader.Dispatch(kernelId, threadGroupX, 1, 1);
             //while (test && Application.isPlaying)
             //{
             //    diffusionCS.Dispatch(kernelId, threadGroupX, 1, 1);
@@ -223,12 +249,12 @@ namespace AIDrugDiscovery
             }
 
             
-            betaBuffer.Release();
-            alphaCumprodBuffer.Release();
+            betaBuffer?.Release();
+            alphaCumprodBuffer?.Release();
             matchScoreDebugBuffer?.Release();
             matchScoreDebugBuffer?.Dispose();
 
-            Debug.Log($"Diffusion generation status");
+            Debug.Log(useDistilledPriorPipeline ? "Distilled prior-guided forward generation completed." : "Diffusion generation status");
             if (!useLegacySmilesTextureTransport)
                 RenderTexture.Destroy(boundSmilesTexture);
 

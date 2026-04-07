@@ -396,7 +396,7 @@ MonoBehaviour:
     sphereSegments: 12
     cylinderSegments: 8
     topK: 10
-  batchSize: 1024
+  batchSize: 128
   smilesMaxLength: 256
   maxAtomLimit: 60
   maxExtraBondCount: 12
@@ -695,7 +695,7 @@ MonoBehaviour:
   useGeneratedSphereCountDispatch: 1
   onlyProcessGeneratedSphereRange: 1
   useSpatialHashDbscan: 1
-  implementationMode: 0
+  implementationMode: 2
   singleLinkageThreshold: 4.5
 --- !u!1 &738985758
 GameObject:
@@ -727,6 +727,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::AIDrugDiscovery.DiffusionGenerator
   diffusionCS: {fileID: 7200000, guid: 460b7a850a98bf34b9f088ff4a934fcc, type: 3}
+  distilledPriorDiffusionCS: {fileID: 0}
   diffusionConfigs:
   - proteinName: 1AQ1
     batchSize: 1024
@@ -742,6 +743,9 @@ MonoBehaviour:
     nWeight: 0.2
     sWeight: 0.1
     lowPowerMode: 0
+    forwardGuidanceMode: 0
+    priorGuidanceGrid3D: {fileID: 0}
+    priorBlendWeight: 0.45
   collectDebugScores: 0
   useLegacySmilesTextureTransport: 1
   test: 1
@@ -984,7 +988,8 @@ MonoBehaviour:
   currentBatch: 0
   templateMat: {fileID: 2100000, guid: 26695abc36ac7b141ad14c66a9c0a5eb, type: 2}
   detectPocket: 0
-  generateMesh: 1
+  generateMeshSingle: 0
+  generateMeshBatch: 1
   renderMode: 1
   FlipPageView: {fileID: 2117598675}
 --- !u!4 &1149687865
@@ -1007,6 +1012,37 @@ Transform:
   - {fileID: 1792559666}
   - {fileID: 1088922785}
   - {fileID: 1388594168}
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &1237151887
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1237151888}
+  m_Layer: 0
+  m_Name: ligands_for_1AQ1
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &1237151888
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1237151887}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &1265958805
@@ -2203,3 +2239,4 @@ SceneRoots:
   - {fileID: 1149687865}
   - {fileID: 2002570451}
   - {fileID: 681985742}
+  - {fileID: 1237151888}

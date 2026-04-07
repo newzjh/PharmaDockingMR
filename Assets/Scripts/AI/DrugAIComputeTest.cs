@@ -31,7 +31,8 @@ namespace AIDrugDiscovery
         public bool detectPocket = true;
 
         [Header("Render Modes")]
-        public bool generateMesh = false;
+        public bool generateMeshSingle = true;
+        public bool generateMeshBatch = false;
         public MoleculeRenderMode renderMode = MoleculeRenderMode.BallStick;
         private SMILESToBallMesh ballGen;
         private SMILESToCartoonMesh cartoonGen;
@@ -156,10 +157,10 @@ namespace AIDrugDiscovery
                     }
 
                     List<Mesh> meshes = null;
-                    //if (generateMesh)
-                    //{
-                    //    meshes = await mg.GenerateBallStickMeshes(filters, smilesBatch.SmilesBuffer, smilesBatch.BatchSize, smilesBatch.SmilesTexture);
-                    //}
+                    if (generateMeshBatch)
+                    {
+                        meshes = await ballStickGen.GenerateBallStickMeshes(filters, smilesBatch.SmilesBuffer, smilesBatch.BatchSize, smilesBatch.SmilesTexture);
+                    }
 
                     if (!Application.isPlaying)
                         return;
@@ -168,29 +169,29 @@ namespace AIDrugDiscovery
 
                     await UniTask.NextFrame();
 
-                    //if (generateMesh)
-                    //{
-                    //    for(int i=0;i<filters.Count;i++)
-                    //    {
-                    //        GameObject go = new GameObject(smiles[i]);
-                    //        go.transform.parent = parentgo.transform;
-                    //        go.transform.localScale = Vector3.one;
-                    //        go.transform.localEulerAngles = Vector3.zero;
-                    //        go.transform.localPosition = Vector3.forward * ligandCount * 2;
-                    //        var mf = go.AddComponent<MeshFilter>();
-                    //        mf.mesh = meshes[i];
-                    //        var mr = go.AddComponent<MeshRenderer>();
-                    //        mr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-                    //        mr.receiveShadows = false;
-                    //        mr.material = templateMat;
+                    if (generateMeshBatch)
+                    {
+                        for (int i = 0; i < smiles.Count && i < meshes.Count; i++)
+                        {
+                            GameObject go = new GameObject(smiles[i]);
+                            go.transform.parent = parentgo.transform;
+                            go.transform.localScale = Vector3.one;
+                            go.transform.localEulerAngles = Vector3.zero;
+                            go.transform.localPosition = Vector3.forward * ligandCount * 2;
+                            var mf = go.AddComponent<MeshFilter>();
+                            mf.mesh = meshes[i];
+                            var mr = go.AddComponent<MeshRenderer>();
+                            mr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+                            mr.receiveShadows = false;
+                            mr.material = templateMat;
 
-                    //    }
-                    //}
+                            ligandCount++;
+                        }
+                    }
 
-                    for (int i = 0; i < filters.Count; i++)
+                    for (int i = 0; i < smiles.Count; i++)
                     {
                         FlipPageView.allSMILES.Add(smiles[i]);
-                        ligandCount++;
                     }
                     FlipPageView.UpdatePageDisplay();
 
@@ -242,7 +243,7 @@ namespace AIDrugDiscovery
 
         private async void HandleSmilesSelected(int smilesIndex, string smiles)
         {
-            if (!generateMesh || string.IsNullOrEmpty(smiles))
+            if (!generateMeshSingle || string.IsNullOrEmpty(smiles))
                 return;
 
             if (activePreviewMesh != null)
