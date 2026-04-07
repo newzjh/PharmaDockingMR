@@ -35,7 +35,6 @@ namespace AIDrugDiscovery
         public bool useLegacySmilesTextureInput = false;
 
         private ComputeBuffer vertexBufferPosition;
-        private ComputeBuffer vertexBufferNormal;
         private ComputeBuffer vertexBufferColor;
         private ComputeBuffer indexBuffer;
         private ComputeBuffer atomCountBuffer; 
@@ -86,7 +85,6 @@ namespace AIDrugDiscovery
                 return;
 
             vertexBufferPosition?.Release();
-            vertexBufferNormal?.Release();
             vertexBufferColor?.Release();
             indexBuffer?.Release();
             atomCountBuffer?.Release();
@@ -105,7 +103,6 @@ namespace AIDrugDiscovery
 
             
             vertexBufferPosition = new ComputeBuffer(maxVertexCount, System.Runtime.InteropServices.Marshal.SizeOf(typeof(Vector3)));
-            vertexBufferNormal = new ComputeBuffer(maxVertexCount, System.Runtime.InteropServices.Marshal.SizeOf(typeof(Vector3)));
             vertexBufferColor = new ComputeBuffer(maxVertexCount, System.Runtime.InteropServices.Marshal.SizeOf(typeof(Vector4)));
             indexBuffer = new ComputeBuffer(maxIndexCount, sizeof(int));
             atomCountBuffer = new ComputeBuffer(allocatedBatchSize, sizeof(int));
@@ -211,12 +208,9 @@ namespace AIDrugDiscovery
                 ballStickCS.SetBuffer(kernelId, "atomTypeInputBuffer", atomTypeInputBuffer);
                 ballStickCS.SetBuffer(kernelId, "atomPositionInputBuffer", atomPositionInputBuffer);
                 ballStickCS.SetBuffer(kernelId, "bondInputBuffer", bondInputBuffer);
-                ballStickCS.SetBuffer(kernelId, "atomCountOutputBuffer", atomCountBuffer);
-                ballStickCS.SetBuffer(kernelId, "bondCountOutputBuffer", bondCountBuffer);
             }
 
             ballStickCS.SetBuffer(kernelMesh, "vertexOutputBuffer_position", vertexBufferPosition);
-            ballStickCS.SetBuffer(kernelMesh, "vertexOutputBuffer_normal", vertexBufferNormal);
             ballStickCS.SetBuffer(kernelMesh, "vertexOutputBuffer_color", vertexBufferColor);
             ballStickCS.SetBuffer(kernelMesh, "indexOutputBuffer", indexBuffer);
 
@@ -228,18 +222,17 @@ namespace AIDrugDiscovery
             int[] atomCounts = new int[generatedMeshCount];
             int[] bondCounts = new int[generatedMeshCount];
             {
-                var req = await AsyncGPUReadback.RequestAsync(atomCountBuffer);
+                var req = await AsyncGPUReadback.RequestAsync(meshAtomCountInputBuffer);
                 atomCounts = req.GetData<int>().ToArray();
             }
             {
-                var req = await AsyncGPUReadback.RequestAsync(bondCountBuffer);
+                var req = await AsyncGPUReadback.RequestAsync(meshBondCountInputBuffer);
                 bondCounts = req.GetData<int>().ToArray();
             }
             //atomCountBuffer.GetData(atomCounts);
 
             
             Vector3[] allPositions = new Vector3[maxVertexCount];
-            Vector3[] allNormals = new Vector3[maxVertexCount];
             Vector4[] allColors = new Vector4[maxVertexCount];
             int[] allIndices = new int[maxIndexCount];
             //vertexBufferPosition.GetData(allPositions);
@@ -249,10 +242,6 @@ namespace AIDrugDiscovery
             {
                 var req = await AsyncGPUReadback.RequestAsync(vertexBufferPosition);
                 allPositions = req.GetData<Vector3>().ToArray();
-            }
-            {
-                var req = await AsyncGPUReadback.RequestAsync(vertexBufferNormal);
-                allNormals = req.GetData<Vector3>().ToArray();
             }
             {
                 var req = await AsyncGPUReadback.RequestAsync(vertexBufferColor);
@@ -297,13 +286,12 @@ namespace AIDrugDiscovery
                     UnsafeUtility.MemCpy(dest, src, totalVertices * UnsafeUtility.SizeOf<Vector4>());
                 }
                 Array.Copy(allPositions, vertexOffset, positions, 0, totalVertices);
-                Array.Copy(allNormals, vertexOffset, normals, 0, totalVertices);
                 Array.Copy(allIndices, indexOffset, triangles, 0, totalIndices);
 
                 mesh.vertices = positions;
-                mesh.normals = normals;
                 mesh.colors = colors;
                 mesh.triangles = triangles;
+                mesh.RecalculateNormals();
                 mesh.RecalculateBounds();
                 molMeshes.Add(mesh);
             }
@@ -359,20 +347,16 @@ namespace AIDrugDiscovery
             ballStickCS.SetBuffer(kernelId, "atomPositionInputBuffer", atomPositionInputBuffer);
             ballStickCS.SetBuffer(kernelId, "bondInputBuffer", bondInputBuffer);
             ballStickCS.SetBuffer(kernelId, "vertexOutputBuffer_position", vertexBufferPosition);
-            ballStickCS.SetBuffer(kernelId, "vertexOutputBuffer_normal", vertexBufferNormal);
             ballStickCS.SetBuffer(kernelId, "vertexOutputBuffer_color", vertexBufferColor);
             ballStickCS.SetBuffer(kernelId, "indexOutputBuffer", indexBuffer);
-            ballStickCS.SetBuffer(kernelId, "atomCountOutputBuffer", atomCountBuffer);
-            ballStickCS.SetBuffer(kernelId, "bondCountOutputBuffer", bondCountBuffer);
             ballStickCS.Dispatch(kernelId, 1, 1, 1);
 
-            int[] atomCounts = (await AsyncGPUReadback.RequestAsync(atomCountBuffer)).GetData<int>().ToArray();
-            int[] bondCounts = (await AsyncGPUReadback.RequestAsync(bondCountBuffer)).GetData<int>().ToArray();
+            int[] atomCounts = (await AsyncGPUReadback.RequestAsync(meshAtomCountInputBuffer)).GetData<int>().ToArray();
+            int[] bondCounts = (await AsyncGPUReadback.RequestAsync(meshBondCountInputBuffer)).GetData<int>().ToArray();
             if (atomCounts.Length == 0 || atomCounts[0] <= 1)
                 return null;
 
             Vector3[] allPositions = (await AsyncGPUReadback.RequestAsync(vertexBufferPosition)).GetData<Vector3>().ToArray();
-            Vector3[] allNormals = (await AsyncGPUReadback.RequestAsync(vertexBufferNormal)).GetData<Vector3>().ToArray();
             Vector4[] allColors = (await AsyncGPUReadback.RequestAsync(vertexBufferColor)).GetData<Vector4>().ToArray();
             int[] allIndices = (await AsyncGPUReadback.RequestAsync(indexBuffer)).GetData<int>().ToArray();
 
@@ -382,7 +366,6 @@ namespace AIDrugDiscovery
             int totalIndices = atomCount * indicesPerAtom + bondCount * indicesPerBond;
             Mesh mesh = new Mesh { indexFormat = IndexFormat.UInt32 };
             Vector3[] positions = new Vector3[totalVertices];
-            Vector3[] normals = new Vector3[totalVertices];
             Color[] colors = new Color[totalVertices];
             int[] triangles = new int[totalIndices];
 
@@ -393,12 +376,11 @@ namespace AIDrugDiscovery
                 UnsafeUtility.MemCpy(dest, src, totalVertices * UnsafeUtility.SizeOf<Vector4>());
             }
             Array.Copy(allPositions, 0, positions, 0, totalVertices);
-            Array.Copy(allNormals, 0, normals, 0, totalVertices);
             Array.Copy(allIndices, 0, triangles, 0, totalIndices);
             mesh.vertices = positions;
-            mesh.normals = normals;
             mesh.colors = colors;
             mesh.triangles = triangles;
+            mesh.RecalculateNormals();
             mesh.RecalculateBounds();
             return mesh;
         }
@@ -406,7 +388,6 @@ namespace AIDrugDiscovery
         void OnDestroy()
         {
             vertexBufferPosition?.Release();
-            vertexBufferNormal?.Release();
             vertexBufferColor?.Release();
             indexBuffer?.Release();
             atomCountBuffer?.Release();

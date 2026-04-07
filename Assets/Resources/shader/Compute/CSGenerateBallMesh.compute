@@ -26,22 +26,38 @@ RWStructuredBuffer<float4> vertexOutputBuffer_color;
 RWStructuredBuffer<int> indexOutputBuffer;
 RWStructuredBuffer<int> atomCountOutputBuffer;
 
-void ReadSmilesCharsForMesh(int meshIdx, out int smilesChars[SMILES_MAX_LENGTH])
+bool TryMapSimpleAtom(int c0, int c1, out int atomType, out int consumed)
 {
-    int molIdx = selectedMolIndexBuffer[meshIdx];
-    if (molIdx < 0 || molIdx >= batchSize)
-    {
-        for (int i = 0; i < SMILES_MAX_LENGTH; i++)
-            smilesChars[i] = 0;
-        return;
-    }
+    atomType = ATOM_TYPE_UNKNOWN;
+    consumed = 0;
+    if (c0 == 0)
+        return false;
 
-    for (int i = 0; i < SMILES_MAX_LENGTH; i++)
+    if (c0 == 'C' && c1 == 'l') { atomType = ATOM_TYPE_Cl; consumed = 2; return true; }
+    if (c0 == 'B' && c1 == 'r') { atomType = ATOM_TYPE_Br; consumed = 2; return true; }
+    if (c0 == 'S' && c1 == 'i') { atomType = ATOM_TYPE_Si; consumed = 2; return true; }
+    if (c0 == 'A' && c1 == 's') { atomType = ATOM_TYPE_As; consumed = 2; return true; }
+    if (c0 == 'S' && c1 == 'e') { atomType = ATOM_TYPE_Se; consumed = 2; return true; }
+
+    consumed = 1;
+    switch (c0)
     {
-        if (useSmilesTextureInput != 0)
-            smilesChars[i] = (int)round(smilesInputTexture[int2(i, molIdx)].r * 255.0f);
-        else
-            smilesChars[i] = smilesInputBuffer[molIdx * smilesMaxLength + i];
+        case 'H': atomType = ATOM_TYPE_H; return true;
+        case 'B': atomType = ATOM_TYPE_B; return true;
+        case 'C': atomType = ATOM_TYPE_C; return true;
+        case 'N': atomType = ATOM_TYPE_N; return true;
+        case 'O': atomType = ATOM_TYPE_O; return true;
+        case 'F': atomType = ATOM_TYPE_F; return true;
+        case 'P': atomType = ATOM_TYPE_P; return true;
+        case 'S': atomType = ATOM_TYPE_S; return true;
+        case 'I': atomType = ATOM_TYPE_I; return true;
+        case 'c': atomType = ATOM_TYPE_c; return true;
+        case 'n': atomType = ATOM_TYPE_n; return true;
+        case 'o': atomType = ATOM_TYPE_o; return true;
+        case 's': atomType = ATOM_TYPE_s; return true;
+        case 'p': atomType = ATOM_TYPE_p; return true;
+        default:
+            return false;
     }
 }
 
@@ -52,25 +68,45 @@ void CSBuildBallGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (meshIdx >= selectedCount)
         return;
 
-    int smilesChars[SMILES_MAX_LENGTH];
-    int atomTypes[MAX_ATOM_COUNT];
-    int atomDegrees[MAX_ATOM_COUNT];
-    int neighborIndices[MAX_ATOM_COUNT * MAX_GRAPH_NEIGHBORS];
-    int neighborBondTypes[MAX_ATOM_COUNT * MAX_GRAPH_NEIGHBORS];
     int atomCount = 0;
-    int bondCount = 0;
     int atomStart = meshAtomStartBuffer[meshIdx];
-
-    ReadSmilesCharsForMesh(meshIdx, smilesChars);
-    ParseSMILESGraph(smilesChars, atomTypes, atomCount, atomDegrees, neighborIndices, neighborBondTypes, bondCount);
-
-    meshAtomCountInputBuffer[meshIdx] = atomCount;
-    atomCountOutputBuffer[meshIdx] = atomCount;
-    for (int atomIdx = 0; atomIdx < MAX_ATOM_COUNT; atomIdx++)
+    int molIdx = selectedMolIndexBuffer[meshIdx];
+    int i = 0;
+    while (i < smilesMaxLength && atomCount < MAX_ATOM_COUNT)
     {
-        atomTypeInputBuffer[atomStart + atomIdx] = atomIdx < atomCount ? atomTypes[atomIdx] : 0;
+        int c0 = useSmilesTextureInput != 0
+            ? (int)round(smilesInputTexture[int2(i, molIdx)].r * 255.0f)
+            : smilesInputBuffer[molIdx * smilesMaxLength + i];
+        int c1 = 0;
+        if (i + 1 < smilesMaxLength)
+        {
+            c1 = useSmilesTextureInput != 0
+                ? (int)round(smilesInputTexture[int2(i + 1, molIdx)].r * 255.0f)
+                : smilesInputBuffer[molIdx * smilesMaxLength + i + 1];
+        }
+        if (c0 == 0)
+            break;
+
+        int atomType;
+        int consumed;
+        if (TryMapSimpleAtom(c0, c1, atomType, consumed))
+        {
+            atomTypeInputBuffer[atomStart + atomCount] = atomType;
+            atomPositionInputBuffer[atomStart + atomCount] = float3(0, 0, 0);
+            atomCount++;
+            i += consumed;
+            continue;
+        }
+        i++;
+    }
+
+    for (int atomIdx = atomCount; atomIdx < MAX_ATOM_COUNT; atomIdx++)
+    {
+        atomTypeInputBuffer[atomStart + atomIdx] = 0;
         atomPositionInputBuffer[atomStart + atomIdx] = float3(0, 0, 0);
     }
+    meshAtomCountInputBuffer[meshIdx] = atomCount;
+    atomCountOutputBuffer[meshIdx] = atomCount;
 }
 
 [numthreads(32, 1, 1)]
@@ -81,23 +117,18 @@ void CSBuildBallLayoutBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
         return;
 
     int atomStart = meshAtomStartBuffer[meshIdx];
-    int smilesChars[SMILES_MAX_LENGTH];
-    int atomTypes[MAX_ATOM_COUNT];
-    int atomCount = 0;
-    int atomDegrees[MAX_ATOM_COUNT];
-    int neighborIndices[MAX_ATOM_COUNT * MAX_GRAPH_NEIGHBORS];
-    int neighborBondTypes[MAX_ATOM_COUNT * MAX_GRAPH_NEIGHBORS];
-    float3 atomPositions[MAX_ATOM_COUNT];
-
-    int bondCount = 0;
-    ReadSmilesCharsForMesh(meshIdx, smilesChars);
-    ParseSMILESGraph(smilesChars, atomTypes, atomCount, atomDegrees, neighborIndices, neighborBondTypes, bondCount);
+    int atomCount = meshAtomCountInputBuffer[meshIdx];
     if (atomCount <= 0)
         return;
 
-    BuildAtomLayoutGraph(atomCount, atomDegrees, neighborIndices, neighborBondTypes, bondLength, atomPositions);
+    float centerOffset = (atomCount - 1) * bondLength * 0.5f;
     for (int atomIdx = 0; atomIdx < atomCount; atomIdx++)
-        atomPositionInputBuffer[atomStart + atomIdx] = atomPositions[atomIdx];
+    {
+        float x = atomIdx * bondLength - centerOffset;
+        float y = ((atomIdx & 1) == 0 ? -0.18f : 0.18f) * bondLength;
+        float z = ((atomIdx % 5) - 2) * 0.05f * bondLength;
+        atomPositionInputBuffer[atomStart + atomIdx] = float3(x, y, z);
+    }
 }
 
 float GetDisplayRadius(int type)

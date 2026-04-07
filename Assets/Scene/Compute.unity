@@ -366,6 +366,9 @@ GameObject:
   m_Component:
   - component: {fileID: 245285011}
   - component: {fileID: 245285010}
+  - component: {fileID: 245285014}
+  - component: {fileID: 245285013}
+  - component: {fileID: 245285012}
   m_Layer: 0
   m_Name: MeshGenerator
   m_TagString: Untagged
@@ -415,6 +418,76 @@ Transform:
   m_Children: []
   m_Father: {fileID: 1149687865}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &245285012
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 245285009}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f6446e130a3ffa34d9e2048ab56c555d, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::AIDrugDiscovery.SMILESToSurfaceMesh
+  surfaceCS: {fileID: 7200000, guid: 103db736744114344bba1755e20b5ed3, type: 3}
+  config:
+    gridSpacing: 0.3
+    isoLevel: 0.5
+    gridResolution: 64
+    padding: 3
+    bondLength: 1.5
+  smilesMaxLength: 256
+  maxVertexLimit: 65000
+  useLegacySmilesTextureInput: 0
+--- !u!114 &245285013
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 245285009}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: e7be2ddc2e439e045810214244acc09a, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::AIDrugDiscovery.SMILESToCartoonMesh
+  cartoonCS: {fileID: 7200000, guid: 69b605d78aee5774b999a3f092dd84ec, type: 3}
+  config:
+    bondLength: 1.5
+    atomRadius: 0.3
+    bondRadius: 0.3
+    sphereSegments: 6
+    cylinderSegments: 6
+    topK: 10
+  batchSize: 1024
+  smilesMaxLength: 256
+  maxAtomLimit: 60
+  maxExtraBondCount: 12
+  useSelectedSubsetDispatch: 1
+  useLegacySmilesTextureInput: 0
+  test: 1
+--- !u!114 &245285014
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 245285009}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: a170d164980022a4e8b2d2b426a3cd7b, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::AIDrugDiscovery.SMILESToBallMesh
+  meshGeneratorCS: {fileID: 7200000, guid: bdccec3dd84741947aae1ef6789f7310, type: 3}
+  config:
+    bondLength: 1
+    baseRadius: 0.5
+    sphereSegments: 16
+    topK: 10
+  batchSize: 1024
+  smilesMaxLength: 256
+  maxAtomLimit: 60
 --- !u!1 &341746814
 GameObject:
   m_ObjectHideFlags: 0
@@ -622,6 +695,8 @@ MonoBehaviour:
   useGeneratedSphereCountDispatch: 1
   onlyProcessGeneratedSphereRange: 1
   useSpatialHashDbscan: 1
+  implementationMode: 0
+  singleLinkageThreshold: 4.5
 --- !u!1 &738985758
 GameObject:
   m_ObjectHideFlags: 0
@@ -874,8 +949,6 @@ MonoBehaviour:
   usePackedFpReadback: 1
   useLegacySmilesTextureInput: 0
   useGraphTopologyMorgan: 1
-  useSafeGraphKernel: 1
-  useCpuPrecomputedGraph: 1
   graphKernelChunkSize: 8
 --- !u!1 &1149687863
 GameObject:
@@ -911,7 +984,7 @@ MonoBehaviour:
   currentBatch: 0
   templateMat: {fileID: 2100000, guid: 26695abc36ac7b141ad14c66a9c0a5eb, type: 2}
   detectPocket: 0
-  generateMesh: 0
+  generateMesh: 1
   renderMode: 1
   FlipPageView: {fileID: 2117598675}
 --- !u!4 &1149687865
@@ -1953,7 +2026,7 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0, y: 1}
   m_AnchorMax: {x: 1, y: 1}
-  m_AnchoredPosition: {x: 0, y: -0.000030517578}
+  m_AnchoredPosition: {x: 0, y: 299.99997}
   m_SizeDelta: {x: 0, y: 300}
   m_Pivot: {x: 0, y: 1}
 --- !u!114 &2010502588
