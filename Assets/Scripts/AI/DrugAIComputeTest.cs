@@ -113,7 +113,7 @@ namespace AIDrugDiscovery
                 GameObject parentgo = new GameObject("ligands_for_"+config.proteinName);
                 parentgo.transform.localScale = Vector3.one;
                 parentgo.transform.localEulerAngles = Vector3.zero;
-                parentgo.transform.localPosition = Vector3.zero;
+                parentgo.transform.localPosition = new Vector3(-10,0,10);
                 currentLigandParent = parentgo.transform;
 
                 int ligandCount = 0;
