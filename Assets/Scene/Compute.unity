@@ -119,6 +119,81 @@ NavMeshSettings:
     debug:
       m_Flags: 0
   m_NavMeshData: {fileID: 0}
+--- !u!1 &56779892
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 56779895}
+  - component: {fileID: 56779894}
+  - component: {fileID: 56779893}
+  m_Layer: 0
+  m_Name: UIDocument
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &56779893
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 56779892}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 099a9472ffded8744aeb816512002570, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::AIDrugDiscovery.UI.SmilesDynamicUIToolkitView
+  uiDocument: {fileID: 56779894}
+  visibleSlots: 50
+  gridColumns: 5
+  stagedUpdateGroupSize: 8
+  stagedUpdateInterval: 0.06
+  enableBatchCeremony: 1
+  highlightNewItem: 1
+--- !u!114 &56779894
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 56779892}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 19102, guid: 0000000000000000e000000000000000, type: 0}
+  m_Name: 
+  m_EditorClassIdentifier: UnityEngine.dll::UnityEngine.UIElements.UIDocument
+  m_PanelSettings: {fileID: 11400000, guid: 824ce4a87ce640449a6f329851e7dcec, type: 2}
+  m_ParentUI: {fileID: 0}
+  sourceAsset: {fileID: 9197481963319205126, guid: 64270fa092de7c042a5155e1553f6c55, type: 3}
+  m_SortingOrder: 0
+  m_Position: 0
+  m_WorldSpaceSizeMode: 1
+  m_WorldSpaceWidth: 1920
+  m_WorldSpaceHeight: 1080
+  m_PivotReferenceSize: 0
+  m_Pivot: 0
+  m_WorldSpaceCollider: {fileID: 0}
+--- !u!4 &56779895
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 56779892}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 1.59716, y: 0, z: 1.33713}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &73406542
 GameObject:
   m_ObjectHideFlags: 0
@@ -988,10 +1063,13 @@ MonoBehaviour:
   currentBatch: 0
   templateMat: {fileID: 2100000, guid: 26695abc36ac7b141ad14c66a9c0a5eb, type: 2}
   detectPocket: 0
-  generateMeshSingle: 0
-  generateMeshBatch: 1
+  generateMeshSingle: 1
+  generateMeshBatch: 0
   renderMode: 1
   FlipPageView: {fileID: 2117598675}
+  useDynamicUIToolkitDisplay: 0
+  dynamicAnimationMode: 1
+  dynamicSmilesView: {fileID: 56779893}
 --- !u!4 &1149687865
 Transform:
   m_ObjectHideFlags: 0
@@ -1012,37 +1090,6 @@ Transform:
   - {fileID: 1792559666}
   - {fileID: 1088922785}
   - {fileID: 1388594168}
-  m_Father: {fileID: 0}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!1 &1237151887
-GameObject:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  serializedVersion: 6
-  m_Component:
-  - component: {fileID: 1237151888}
-  m_Layer: 0
-  m_Name: ligands_for_1AQ1
-  m_TagString: Untagged
-  m_Icon: {fileID: 0}
-  m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
-  m_IsActive: 1
---- !u!4 &1237151888
-Transform:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1237151887}
-  serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: 0}
-  m_LocalScale: {x: 1, y: 1, z: 1}
-  m_ConstrainProportionsScale: 0
-  m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &1265958805
@@ -2239,4 +2286,4 @@ SceneRoots:
   - {fileID: 1149687865}
   - {fileID: 2002570451}
   - {fileID: 681985742}
-  - {fileID: 1237151888}
+  - {fileID: 56779895}

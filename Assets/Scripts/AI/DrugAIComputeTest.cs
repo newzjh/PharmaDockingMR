@@ -40,8 +40,13 @@ namespace AIDrugDiscovery
         private SMILESToBallStickMesh ballStickGen;
 
         public SMILESFlipPageView FlipPageView;
+        [Header("SMILES UI Strategy")]
+        public bool useDynamicUIToolkitDisplay = false;
+        public SmilesDynamicAnimationMode dynamicAnimationMode = SmilesDynamicAnimationMode.GridShuffle;
+        public SmilesDynamicUIToolkitView dynamicSmilesView;
         private Transform currentLigandParent;
         private GameObject activePreviewMesh;
+        private int totalSmilesGenerated = 0;
 
         public async void Start()
         {
@@ -58,6 +63,8 @@ namespace AIDrugDiscovery
 
             if (FlipPageView != null)
                 FlipPageView.onSmilesSelected = HandleSmilesSelected;
+            if (useDynamicUIToolkitDisplay && dynamicSmilesView != null)
+                dynamicSmilesView.Initialize(HandleSmilesSelected);
 
             string tempfolder = Application.persistentDataPath + "/cachepdb";
             if (Directory.Exists(tempfolder) == false)
@@ -113,6 +120,7 @@ namespace AIDrugDiscovery
 
 
                 currentBatch = 0;
+                totalSmilesGenerated = 0;
                 while (currentBatch < TOTAL_BATCHES && !isTerminated)
                 {
        
@@ -189,11 +197,19 @@ namespace AIDrugDiscovery
                         }
                     }
 
-                    for (int i = 0; i < smiles.Count; i++)
+                    if (useDynamicUIToolkitDisplay && dynamicSmilesView != null)
                     {
-                        FlipPageView.allSMILES.Add(smiles[i]);
+                        await dynamicSmilesView.ShowBatchAsync(smiles, currentBatch + 1, totalSmilesGenerated, dynamicAnimationMode);
                     }
-                    FlipPageView.UpdatePageDisplay();
+                    else if (FlipPageView != null)
+                    {
+                        for (int i = 0; i < smiles.Count; i++)
+                        {
+                            FlipPageView.allSMILES.Add(smiles[i]);
+                        }
+                        FlipPageView.UpdatePageDisplay();
+                    }
+                    totalSmilesGenerated += smiles.Count;
 
                     if (!Application.isPlaying)
                         return;
@@ -234,6 +250,9 @@ namespace AIDrugDiscovery
             isPaused = false;
             isTerminated = false;
             currentBatch = 0;
+            totalSmilesGenerated = 0;
+            if (useDynamicUIToolkitDisplay && dynamicSmilesView != null)
+                dynamicSmilesView.ResetView();
         }
 
         void OnDestroy()
