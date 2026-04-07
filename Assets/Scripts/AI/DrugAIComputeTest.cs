@@ -217,7 +217,7 @@ namespace AIDrugDiscovery
                     currentBatch++;
                     Debug.Log($"finish: {currentBatch}/{TOTAL_BATCHES}");
 
-                    await UniTask.WaitForSeconds(15);
+                    await UniTask.WaitForSeconds(10);
                 }
 
                 if (isTerminated)
@@ -260,10 +260,17 @@ namespace AIDrugDiscovery
             Terminate();
         }
 
+        private bool generating = false;
+
         private async void HandleSmilesSelected(int smilesIndex, string smiles)
         {
             if (!generateMeshSingle || string.IsNullOrEmpty(smiles))
                 return;
+
+            if (generating)
+                return;
+
+            generating = true;
 
             if (activePreviewMesh != null)
             {
@@ -309,6 +316,8 @@ namespace AIDrugDiscovery
             mr.receiveShadows = false;
             mr.material = templateMat;
             activePreviewMesh = go;
+
+            generating = false;
         }
     }
 

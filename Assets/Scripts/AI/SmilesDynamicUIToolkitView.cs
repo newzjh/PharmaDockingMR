@@ -241,7 +241,7 @@ namespace AIDrugDiscovery.UI
 
             card.smiles = smiles;
             card.smilesIndex = smilesIndex;
-            card.label.text = Shorten(smiles, 64);
+            card.label.text = smiles;
             card.label.tooltip = smiles;
             card.element.transform.scale = new Vector3(0.92f, 0.92f, 1f);
             card.element.style.opacity = 0f;
@@ -269,10 +269,10 @@ namespace AIDrugDiscovery.UI
             for (int i = 0; i < updates; i++)
             {
                 int sourceIndex = batchSmiles.Count - 1 - i;
-                SmilesCard card = CreateCard(42);
+                SmilesCard card = CreateCard(52);
                 card.smiles = batchSmiles[sourceIndex];
                 card.smilesIndex = globalStartIndex + sourceIndex;
-                card.label.text = Shorten(card.smiles, 72);
+                card.label.text = card.smiles;
                 card.label.tooltip = card.smiles;
                 card.element.transform.position = new Vector3(160f, 0f, 0f);
                 card.element.style.opacity = 0f;
@@ -303,10 +303,10 @@ namespace AIDrugDiscovery.UI
             for (int i = 0; i < updates; i++)
             {
                 int sourceIndex = i;
-                SmilesCard card = CreateCard(38);
+                SmilesCard card = CreateCard(48);
                 card.smiles = batchSmiles[sourceIndex];
                 card.smilesIndex = globalStartIndex + sourceIndex;
-                card.label.text = Shorten(card.smiles, 68);
+                card.label.text = card.smiles;
                 card.label.tooltip = card.smiles;
                 card.element.transform.position = new Vector3(0f, 40f, 0f);
                 card.element.transform.scale = new Vector3(0.96f, 0.96f, 1f);
@@ -352,10 +352,11 @@ namespace AIDrugDiscovery.UI
             contentRoot.Add(gridRoot);
 
             gridCards.Clear();
-            float basisPercent = Mathf.Max(8f, (100f / Mathf.Max(1, gridColumns)) - 1.2f);
+            int effectiveColumns = Mathf.Max(1, gridColumns - 1);
+            float basisPercent = Mathf.Max(8f, (100f / effectiveColumns) - 1.2f);
             for (int i = 0; i < visibleSlots; i++)
             {
-                SmilesCard card = CreateCard(34);
+                SmilesCard card = CreateCard(52);
                 card.element.style.flexBasis = new StyleLength(new Length(basisPercent, LengthUnit.Percent));
                 card.element.style.marginRight = 4;
                 card.element.style.marginBottom = 4;
@@ -415,10 +416,10 @@ namespace AIDrugDiscovery.UI
             }
         }
 
-        private SmilesCard CreateCard(float height)
+        private SmilesCard CreateCard(float minHeight)
         {
             VisualElement card = new VisualElement();
-            card.style.height = height;
+            card.style.minHeight = minHeight;
             card.style.backgroundColor = new Color(0.09f, 0.13f, 0.22f, 0.95f);
             card.style.borderLeftWidth = 1;
             card.style.borderRightWidth = 1;
@@ -435,15 +436,16 @@ namespace AIDrugDiscovery.UI
             card.style.marginBottom = 4;
             card.style.paddingLeft = 8;
             card.style.paddingRight = 8;
-            card.style.justifyContent = Justify.Center;
+            card.style.paddingTop = 5;
+            card.style.paddingBottom = 5;
+            card.style.justifyContent = Justify.FlexStart;
 
             Label text = new Label();
-            text.style.unityTextAlign = TextAnchor.MiddleLeft;
+            text.style.unityTextAlign = TextAnchor.UpperLeft;
             text.style.color = new Color(0.86f, 0.93f, 1f, 0.95f);
             text.style.fontSize = 12;
-            text.style.whiteSpace = WhiteSpace.NoWrap;
-            text.style.overflow = Overflow.Hidden;
-            text.style.textOverflow = TextOverflow.Ellipsis;
+            text.style.whiteSpace = WhiteSpace.Normal;
+            text.style.overflow = Overflow.Visible;
             card.Add(text);
 
             SmilesCard smilesCard = new SmilesCard
@@ -507,13 +509,6 @@ namespace AIDrugDiscovery.UI
                 await UniTask.Yield();
             }
             updater(1f);
-        }
-
-        private string Shorten(string value, int maxLen)
-        {
-            if (string.IsNullOrEmpty(value) || value.Length <= maxLen)
-                return value;
-            return value.Substring(0, Mathf.Max(1, maxLen - 3)) + "...";
         }
 
         private Vector3 RandomEdgeOffset()
