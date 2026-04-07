@@ -68,6 +68,11 @@ bool TryMapSimpleAtom(int c0, int c1, out int atomType, out int consumed)
     }
 }
 
+float Hash01(uint seed)
+{
+    return frac(sin(seed * 12.9898f + 78.233f) * 43758.5453f);
+}
+
 [numthreads(32, 1, 1)]
 void CSBuildBallStickGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
@@ -116,6 +121,52 @@ void CSBuildBallStickGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
         if (c0 == '-') { pendingBond = 0; i++; continue; }
         if (c0 == '(') { if (branchTop < 16) branchStack[branchTop++] = currentAtom; i++; continue; }
         if (c0 == ')') { if (branchTop > 0) currentAtom = branchStack[--branchTop]; i++; continue; }
+        if (c0 == '[')
+        {
+            int end = i + 1;
+            while (end < smilesMaxLength)
+            {
+                int ce = useSmilesTextureInput != 0
+                    ? (int)round(smilesInputTexture[int2(end, molIdx)].r * 255.0f)
+                    : smilesInputBuffer[molIdx * smilesMaxLength + end];
+                if (ce == 0 || ce == ']')
+                    break;
+                end++;
+            }
+
+            int mappedType = ATOM_TYPE_UNKNOWN;
+            bool mapped = false;
+            for (int p = i + 1; p < end && !mapped; p++)
+            {
+                int ca = useSmilesTextureInput != 0
+                    ? (int)round(smilesInputTexture[int2(p, molIdx)].r * 255.0f)
+                    : smilesInputBuffer[molIdx * smilesMaxLength + p];
+                int cb = 0;
+                if (p + 1 < end)
+                {
+                    cb = useSmilesTextureInput != 0
+                        ? (int)round(smilesInputTexture[int2(p + 1, molIdx)].r * 255.0f)
+                        : smilesInputBuffer[molIdx * smilesMaxLength + p + 1];
+                }
+                int consumedTmp;
+                if (TryMapSimpleAtom(ca, cb, mappedType, consumedTmp))
+                    mapped = true;
+            }
+
+            if (mapped)
+            {
+                int newAtom = atomCount;
+                atomTypeInputBuffer[atomStart + newAtom] = mappedType;
+                atomPositionInputBuffer[atomStart + newAtom] = float3(0, 0, 0);
+                if (currentAtom >= 0 && writeBondCount < maxBondCount)
+                    bondInputBuffer[bondStart + writeBondCount++] = int2(currentAtom, newAtom);
+                currentAtom = newAtom;
+                atomCount++;
+            }
+            pendingBond = 0;
+            i = min(end + 1, smilesMaxLength);
+            continue;
+        }
         if (c0 >= '0' && c0 <= '9')
         {
             int ring = c0 - '0';
@@ -185,18 +236,83 @@ void CSBuildBallStickLayoutBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (atomCount <= 0)
         return;
 
-    float centerOffset = (atomCount - 1) * bondLength * 0.5f;
-    for (int atomIdx = 0; atomIdx < atomCount; atomIdx++)
+    int degree[MAX_ATOM_COUNT];
+    int neighbors[MAX_ATOM_COUNT * MAX_GRAPH_NEIGHBORS];
+    bool bondedFlags[MAX_ATOM_COUNT * MAX_ATOM_COUNT];
+    for (int a = 0; a < atomCount; a++)
     {
-        float t = (float)atomIdx;
-        float x = t * bondLength - centerOffset;
-        float y = ((atomIdx & 1) == 0 ? -0.22f : 0.22f) * bondLength;
-        float z = ((atomIdx % 3) - 1) * 0.08f * bondLength;
-        atomPositionInputBuffer[atomStart + atomIdx] = float3(x, y, z);
+        degree[a] = 0;
+        for (int s = 0; s < MAX_GRAPH_NEIGHBORS; s++)
+            neighbors[a * MAX_GRAPH_NEIGHBORS + s] = -1;
+        for (int b = 0; b < atomCount; b++)
+            bondedFlags[a * atomCount + b] = false;
+    }
+    for (int b = 0; b < bondCount; b++)
+    {
+        int2 bond = bondInputBuffer[bondStart + b];
+        int a0 = clamp(bond.x, 0, atomCount - 1);
+        int a1 = clamp(bond.y, 0, atomCount - 1);
+        if (a0 == a1) continue;
+        bondedFlags[a0 * atomCount + a1] = true;
+        bondedFlags[a1 * atomCount + a0] = true;
+        if (degree[a0] < MAX_GRAPH_NEIGHBORS)
+            neighbors[a0 * MAX_GRAPH_NEIGHBORS + degree[a0]++] = a1;
+        if (degree[a1] < MAX_GRAPH_NEIGHBORS)
+            neighbors[a1 * MAX_GRAPH_NEIGHBORS + degree[a1]++] = a0;
     }
 
-    // Relax the initial layout using bond-length constraints so branched/ring graphs are less distorted.
-    for (int iter = 0; iter < 3; iter++)
+    float3 positions[MAX_ATOM_COUNT];
+    int parent[MAX_ATOM_COUNT];
+    int depth[MAX_ATOM_COUNT];
+    bool placed[MAX_ATOM_COUNT];
+    int queue[MAX_ATOM_COUNT];
+    for (int i = 0; i < atomCount; i++)
+    {
+        positions[i] = float3(0, 0, 0);
+        parent[i] = -1;
+        depth[i] = 0;
+        placed[i] = false;
+    }
+
+    int qHead = 0, qTail = 0;
+    placed[0] = true;
+    queue[qTail++] = 0;
+    while (qHead < qTail)
+    {
+        int current = queue[qHead++];
+        int children[MAX_GRAPH_NEIGHBORS];
+        int childCount = 0;
+        for (int s = 0; s < degree[current]; s++)
+        {
+            int n = neighbors[current * MAX_GRAPH_NEIGHBORS + s];
+            if (n < 0 || placed[n]) continue;
+            children[childCount++] = n;
+        }
+
+        float3 parentDir = float3(1, 0, 0);
+        if (parent[current] >= 0)
+        {
+            parentDir = positions[current] - positions[parent[current]];
+            float d = length(parentDir);
+            parentDir = d < 1e-6f ? float3(1, 0, 0) : parentDir / d;
+        }
+        float baseAngle = atan2(parentDir.y, parentDir.x);
+        float spread = childCount > 1 ? 1.8f : 0.0f;
+        for (int c = 0; c < childCount; c++)
+        {
+            int child = children[c];
+            float t = childCount == 1 ? 0.5f : (float)c / (childCount - 1);
+            float angle = baseAngle + lerp(-spread, spread, t);
+            float3 offset = normalize(float3(cos(angle), sin(angle), (depth[current] & 1) == 0 ? 0.15f : -0.15f)) * bondLength;
+            positions[child] = positions[current] + offset;
+            parent[child] = current;
+            depth[child] = depth[current] + 1;
+            placed[child] = true;
+            queue[qTail++] = child;
+        }
+    }
+
+    for (int iter = 0; iter < 4; iter++)
     {
         for (int bondIdx = 0; bondIdx < bondCount; bondIdx++)
         {
@@ -206,20 +322,44 @@ void CSBuildBallStickLayoutBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
             if (atomA == atomB)
                 continue;
 
-            int idxA = atomStart + atomA;
-            int idxB = atomStart + atomB;
-            float3 pa = atomPositionInputBuffer[idxA];
-            float3 pb = atomPositionInputBuffer[idxB];
+            float3 pa = positions[atomA];
+            float3 pb = positions[atomB];
             float3 delta = pb - pa;
             float dist = max(length(delta), 1e-4f);
-            float3 correction = delta * ((dist - bondLength) / dist) * 0.16f;
+            float3 correction = delta * ((dist - bondLength) / dist) * 0.18f;
             if (atomA != 0)
                 pa += correction * 0.5f;
             pb -= correction * 0.5f;
-            atomPositionInputBuffer[idxA] = pa;
-            atomPositionInputBuffer[idxB] = pb;
+            positions[atomA] = pa;
+            positions[atomB] = pb;
+        }
+
+        for (int a = 0; a < atomCount; a++)
+        {
+            for (int b = a + 1; b < atomCount; b++)
+            {
+                if (bondedFlags[a * atomCount + b])
+                    continue;
+
+                float3 pa = positions[a];
+                float3 pb = positions[b];
+                float3 delta = pb - pa;
+                float dist = max(length(delta), 1e-4f);
+                float minDist = bondLength * 0.75f;
+                if (dist < minDist)
+                {
+                    float3 repel = delta * ((minDist - dist) / dist) * 0.06f;
+                    if (a != 0) pa -= repel;
+                    pb += repel;
+                    positions[a] = pa;
+                    positions[b] = pb;
+                }
+            }
         }
     }
+
+    for (int i = 0; i < atomCount; i++)
+        atomPositionInputBuffer[atomStart + i] = positions[i];
 }
 
 // Emit a UV sphere for a single atom.

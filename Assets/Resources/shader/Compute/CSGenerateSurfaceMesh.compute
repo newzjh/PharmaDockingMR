@@ -117,7 +117,10 @@ static const int2 edgeConnection[12] = {
 
 float3 InterpolateVertex(float3 p1, float3 p2, float val1, float val2)
 {
-    float mu = (isoLevel - val1) / (val2 - val1 + 0.00001f);
+    float denom = (val2 - val1);
+    if (abs(denom) < 1e-6f)
+        return (p1 + p2) * 0.5f;
+    float mu = (isoLevel - val1) / denom;
     return lerp(p1, p2, mu);
 }
 
@@ -190,6 +193,11 @@ void CSMarchingCubes(uint3 id : SV_DispatchThreadID)
         int triTableIndex = flagIndex * 16 + 3 * i;
         if (triTable[triTableIndex] < 0) break;
         
+        int triBase;
+        InterlockedAdd(vertexCountBuffer[0], 3, triBase);
+        if (triBase + 2 >= maxVertexCount)
+            continue;
+
         for (int j = 0; j < 3; j++)
         {
             int vert = triTable[triTableIndex + j];
@@ -197,11 +205,13 @@ void CSMarchingCubes(uint3 id : SV_DispatchThreadID)
             vd.position = edgeVertex[vert];
             vd.normal = edgeNormal[vert];
             vd.color = edgeColor[vert];
-            
-            int vIndex;
-            InterlockedAdd(vertexCountBuffer[0], 1, vIndex);
-            if (vIndex < maxVertexCount)
-                vertexBuffer[vIndex] = vd;
+
+            if (any(isnan(vd.position)) || any(isinf(vd.position)))
+                continue;
+            if (any(isnan(vd.normal)) || any(isinf(vd.normal)))
+                vd.normal = float3(0, 1, 0);
+
+            vertexBuffer[triBase + j] = vd;
         }
     }
 }

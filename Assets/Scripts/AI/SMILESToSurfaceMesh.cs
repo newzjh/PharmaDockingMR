@@ -198,26 +198,51 @@ namespace AIDrugDiscovery
             {
                 var reqVB = await AsyncGPUReadback.RequestAsync(vertexBuffer, vCount * Marshal.SizeOf(typeof(SurfaceVertexData)), 0);
                 SurfaceVertexData[] verticesData = reqVB.GetData<SurfaceVertexData>().ToArray();
+                List<Vector3> vertList = new List<Vector3>(vCount);
+                List<Vector3> normList = new List<Vector3>(vCount);
+                List<Color> colList = new List<Color>(vCount);
+                List<int> idxList = new List<int>(vCount);
 
-                Vector3[] verts = new Vector3[vCount];
-                Vector3[] norms = new Vector3[vCount];
-                Color[] cols = new Color[vCount];
-                int[] indices = new int[vCount];
-
-                for (int i = 0; i < vCount; i++)
+                for (int i = 0; i + 2 < vCount; i += 3)
                 {
-                    verts[i] = verticesData[i].position;
-                    norms[i] = verticesData[i].normal;
-                    cols[i] = verticesData[i].color;
-                    indices[i] = i;
+                    Vector3 p0 = verticesData[i].position;
+                    Vector3 p1 = verticesData[i + 1].position;
+                    Vector3 p2 = verticesData[i + 2].position;
+                    bool invalid =
+                        float.IsNaN(p0.x) || float.IsNaN(p0.y) || float.IsNaN(p0.z) ||
+                        float.IsNaN(p1.x) || float.IsNaN(p1.y) || float.IsNaN(p1.z) ||
+                        float.IsNaN(p2.x) || float.IsNaN(p2.y) || float.IsNaN(p2.z) ||
+                        float.IsInfinity(p0.x) || float.IsInfinity(p0.y) || float.IsInfinity(p0.z) ||
+                        float.IsInfinity(p1.x) || float.IsInfinity(p1.y) || float.IsInfinity(p1.z) ||
+                        float.IsInfinity(p2.x) || float.IsInfinity(p2.y) || float.IsInfinity(p2.z);
+                    if (invalid)
+                        continue;
+
+                    int baseIdx = vertList.Count;
+                    for (int k = 0; k < 3; k++)
+                    {
+                        var vd = verticesData[i + k];
+                        vertList.Add(vd.position);
+                        Vector3 n = vd.normal;
+                        if (float.IsNaN(n.x) || float.IsNaN(n.y) || float.IsNaN(n.z) ||
+                            float.IsInfinity(n.x) || float.IsInfinity(n.y) || float.IsInfinity(n.z))
+                            n = Vector3.up;
+                        normList.Add(n);
+                        colList.Add(vd.color);
+                        idxList.Add(baseIdx + k);
+                    }
                 }
 
+                if (vertList.Count == 0)
+                    return null;
+
                 finalMesh = new Mesh();
-                finalMesh.indexFormat = vCount > 65000 ? IndexFormat.UInt32 : IndexFormat.UInt16;
-                finalMesh.vertices = verts;
-                finalMesh.normals = norms;
-                finalMesh.colors = cols;
-                finalMesh.triangles = indices;
+                finalMesh.indexFormat = vertList.Count > 65000 ? IndexFormat.UInt32 : IndexFormat.UInt16;
+                finalMesh.SetVertices(vertList);
+                finalMesh.SetNormals(normList);
+                finalMesh.SetColors(colList);
+                finalMesh.SetTriangles(idxList, 0);
+                finalMesh.RecalculateBounds();
             }
 
             return finalMesh;

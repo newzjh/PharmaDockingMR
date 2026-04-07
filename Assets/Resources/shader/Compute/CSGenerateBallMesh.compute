@@ -60,6 +60,11 @@ bool TryMapSimpleAtom(int c0, int c1, out int atomType, out int consumed)
     }
 }
 
+float Hash01(uint seed)
+{
+    return frac(sin(seed * 12.9898f + 78.233f) * 43758.5453f);
+}
+
 [numthreads(32, 1, 1)]
 void CSBuildBallGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
@@ -165,9 +170,15 @@ void CSBuildBallLayoutBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
     float centerOffset = (atomCount - 1) * bondLength * 0.5f;
     for (int atomIdx = 0; atomIdx < atomCount; atomIdx++)
     {
-        float x = atomIdx * bondLength - centerOffset;
-        float y = ((atomIdx & 1) == 0 ? -0.18f : 0.18f) * bondLength;
-        float z = ((atomIdx % 5) - 2) * 0.05f * bondLength;
+        uint seed0 = (uint)(meshIdx * 131 + atomIdx * 17 + 7);
+        uint seed1 = (uint)(meshIdx * 197 + atomIdx * 29 + 13);
+        uint seed2 = (uint)(meshIdx * 269 + atomIdx * 43 + 23);
+        float a = Hash01(seed0) * 6.2831853f;
+        float b = Hash01(seed1) * 6.2831853f;
+        float r = bondLength * (0.35f + 0.18f * Hash01(seed2));
+        float x = cos(a) * sin(b) * r + (atomIdx * bondLength * 0.08f - centerOffset * 0.08f);
+        float y = sin(a) * sin(b) * r;
+        float z = cos(b) * r;
         atomPositionInputBuffer[atomStart + atomIdx] = float3(x, y, z);
     }
 }
