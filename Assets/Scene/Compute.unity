@@ -471,7 +471,7 @@ MonoBehaviour:
     sphereSegments: 12
     cylinderSegments: 8
     topK: 10
-  batchSize: 128
+  batchSize: 1024
   smilesMaxLength: 256
   maxAtomLimit: 60
   maxExtraBondCount: 12

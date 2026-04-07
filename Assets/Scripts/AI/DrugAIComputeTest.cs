@@ -185,7 +185,7 @@ namespace AIDrugDiscovery
                             go.transform.parent = parentgo.transform;
                             go.transform.localScale = Vector3.one;
                             go.transform.localEulerAngles = Vector3.zero;
-                            go.transform.localPosition = Vector3.forward * ligandCount * 2;
+                            go.transform.localPosition = Vector3.forward * ligandCount * 5;
                             var mf = go.AddComponent<MeshFilter>();
                             mf.mesh = meshes[i];
                             var mr = go.AddComponent<MeshRenderer>();

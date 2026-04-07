@@ -160,13 +160,13 @@ void CSBuildCartoonGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
     while (i < smilesMaxLength && atomCount < MAX_ATOM_COUNT)
     {
         int c0 = useSmilesTextureInput != 0
-            ? (int)round(smilesInputTexture[int2(i, molIdx)].r * 255.0f)
+            ? (int)(smilesInputTexture[int2(i, molIdx)].r * 255.0f)
             : smilesInputBuffer[molIdx * smilesMaxLength + i];
         int c1 = 0;
         if (i + 1 < smilesMaxLength)
         {
             c1 = useSmilesTextureInput != 0
-                ? (int)round(smilesInputTexture[int2(i + 1, molIdx)].r * 255.0f)
+                ? (int)(smilesInputTexture[int2(i + 1, molIdx)].r * 255.0f)
                 : smilesInputBuffer[molIdx * smilesMaxLength + i + 1];
         }
         if (c0 == 0)

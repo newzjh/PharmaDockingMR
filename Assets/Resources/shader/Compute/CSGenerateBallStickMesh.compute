@@ -218,33 +218,53 @@ void CSBuildBallStickGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
             i++;
             continue;
         }
-        //else if (c0 == '[')
+        //else if (c0 == 91) // '['
         //{
         //    int end = i + 1;
-        //    while (end < smilesMaxLength)
+        //    bool foundCloseBracket = false;
+        //    int maxBracketSpan = 24;
+        //    while (end < smilesMaxLength && (end - i) <= maxBracketSpan)
         //    {
         //        int ce = useSmilesTextureInput != 0
-        //            ? (int) round(smilesInputTexture[int2(end, molIdx)].r * 255.0f)
+        //            ? (int)round(smilesInputTexture[int2(end, molIdx)].r * 255.0f)
         //            : smilesInputBuffer[molIdx * smilesMaxLength + end];
-        //        if (ce == 0 || ce == ']')
+        //        if (ce == 0)
         //            break;
+        //        if (ce == 93) // ']'
+        //        {
+        //            foundCloseBracket = true;
+        //            break;
+        //        }
         //        end++;
+        //    }
+        //    if (!foundCloseBracket)
+        //    {
+        //        i++;
+        //        continue;
         //    }
 
         //    int mappedType = ATOM_TYPE_UNKNOWN;
         //    bool mapped = false;
-        //    for (int p = i + 1; p < end && !mapped; p++)
+        //    int p = i + 1;
+        //    while (p < end)
+        //    {
+        //        int cp = useSmilesTextureInput != 0
+        //            ? (int)round(smilesInputTexture[int2(p, molIdx)].r * 255.0f)
+        //            : smilesInputBuffer[molIdx * smilesMaxLength + p];
+        //        if (cp < 48 || cp > 57) // skip isotope digits
+        //            break;
+        //        p++;
+        //    }
+        //    if (p < end)
         //    {
         //        int ca = useSmilesTextureInput != 0
-        //            ? (int) round(smilesInputTexture[int2(p, molIdx)].r * 255.0f)
+        //            ? (int)round(smilesInputTexture[int2(p, molIdx)].r * 255.0f)
         //            : smilesInputBuffer[molIdx * smilesMaxLength + p];
-        //        if (!((ca >= 'A' && ca <= 'Z') || (ca >= 'a' && ca <= 'z')))
-        //            continue;
         //        int cb = 0;
         //        if (p + 1 < end)
         //        {
         //            cb = useSmilesTextureInput != 0
-        //                ? (int) round(smilesInputTexture[int2(p + 1, molIdx)].r * 255.0f)
+        //                ? (int)round(smilesInputTexture[int2(p + 1, molIdx)].r * 255.0f)
         //                : smilesInputBuffer[molIdx * smilesMaxLength + p + 1];
         //        }
         //        int consumedTmp;
@@ -344,15 +364,80 @@ void CSBuildBallStickLayoutBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
         return;
 
     float3 positions[MAX_ATOM_COUNT];
-    float centerOffset = (atomCount - 1) * bondLength * 0.5f;
+    int parent[MAX_ATOM_COUNT];
+    int depth[MAX_ATOM_COUNT];
+    bool placed[MAX_ATOM_COUNT];
+    int queue[MAX_ATOM_COUNT];
     for (int i = 0; i < atomCount; i++)
     {
-        uint s0 = (uint)(meshIdx * 131 + i * 17 + 7);
-        uint s1 = (uint)(meshIdx * 197 + i * 29 + 13);
-        float a = Hash01(s0) * 6.2831853f;
-        float r = bondLength * (0.6f + 0.2f * Hash01(s1));
-        float x = i * bondLength * 0.25f - centerOffset * 0.25f;
-        positions[i] = float3(x + cos(a) * r, sin(a) * r, sin(a * 0.5f) * r * 0.6f);
+        positions[i] = float3(0, 0, 0);
+        parent[i] = -1;
+        depth[i] = 0;
+        placed[i] = false;
+    }
+
+    int qHead = 0;
+    int qTail = 0;
+    placed[0] = true;
+    queue[qTail++] = 0;
+    while (qHead < qTail)
+    {
+        int current = queue[qHead++];
+        int children[MAX_GRAPH_NEIGHBORS];
+        int childCount = 0;
+        for (int b = 0; b < bondCount; b++)
+        {
+            int2 bond = bondInputBuffer[bondStart + b];
+            int n = -1;
+            if (bond.x == current) n = bond.y;
+            else if (bond.y == current) n = bond.x;
+            if (n < 0 || n >= atomCount || placed[n])
+                continue;
+
+            bool exists = false;
+            for (int c = 0; c < childCount; c++)
+            {
+                if (children[c] == n) { exists = true; break; }
+            }
+            if (!exists && childCount < MAX_GRAPH_NEIGHBORS)
+                children[childCount++] = n;
+        }
+
+        float3 parentDir = float3(1, 0, 0);
+        if (parent[current] >= 0)
+        {
+            parentDir = positions[current] - positions[parent[current]];
+            float d = length(parentDir);
+            parentDir = d < 1e-6f ? float3(1, 0, 0) : parentDir / d;
+        }
+            float3 refUp = abs(parentDir.y) < 0.9f ? float3(0, 1, 0) : float3(1, 0, 0);
+            float3 tangent = normalize(cross(parentDir, refUp));
+            float3 bitangent = normalize(cross(parentDir, tangent));
+            float spread = childCount > 1 ? 1.5f : 0.0f;
+        for (int c = 0; c < childCount; c++)
+        {
+            int child = children[c];
+            float t = childCount == 1 ? 0.5f : (float)c / (childCount - 1);
+                float azimuth = lerp(-spread, spread, t);
+                float elev = ((depth[current] + c) & 1) == 0 ? 0.45f : -0.45f;
+                float3 dir = normalize(parentDir * cos(elev) + tangent * (sin(elev) * cos(azimuth)) + bitangent * (sin(elev) * sin(azimuth)));
+                float3 offset = dir * bondLength;
+            positions[child] = positions[current] + offset;
+            parent[child] = current;
+            depth[child] = depth[current] + 1;
+            placed[child] = true;
+            queue[qTail++] = child;
+        }
+    }
+
+    // Handle disconnected components by placing them around origin.
+    for (int i = 0; i < atomCount; i++)
+    {
+        if (!placed[i])
+        {
+            float a = Hash01((uint)(meshIdx * 193 + i * 17 + 7)) * 6.2831853f;
+            positions[i] = float3(cos(a), sin(a), sin(a * 0.5f)) * bondLength * 0.7f;
+        }
     }
 
     for (int iter = 0; iter < 4; iter++)
@@ -417,7 +502,7 @@ void CSBuildBallStickLayoutBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
 // Emit a UV sphere for a single atom.
 void GenerateAtomSphere(float3 center, int type, int vertexOffset, int indexOffset, inout int vCount, inout int iCount)
 {
-    float radius = atomRadius > 0 ? atomRadius : GetAtomRadius(type) * 0.42f;
+    float radius = atomRadius > 0 ? atomRadius * 0.78f : GetAtomRadius(type) * 0.42f;
     float4 color = GetAtomColor(type);
     float thetaStep = 2 * 3.1415926f / sphereSegments;
     float phiStep = 3.1415926f / sphereSegments;
