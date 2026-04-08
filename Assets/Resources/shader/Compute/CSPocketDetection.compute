@@ -1,4 +1,5 @@
 #pragma kernel CSGenerateAlphaSpheres
+#pragma kernel CSGenerateAlphaSpheresFPocketDir
 #pragma kernel CSFilterAlphaSpheres
 #pragma kernel CSDBSCANCluster
 #pragma kernel CSCalculatePocketScores
@@ -20,6 +21,8 @@ cbuffer FPocketConstants : register(b0)
     int maxPockets; 
     int THREAD_GROUP_SIZE_X; 
     int THREAD_GROUP_SIZE_Y; 
+    int MIN_APOL_NEIGH;
+    int MAX_NEIGHBORS;
 };
 
 
@@ -29,6 +32,7 @@ struct FPocketAtomCS
     float3 pos;
     float vdw_radius;
     float hydrophobicity;
+    float electroneg;
 };
 
 
@@ -43,6 +47,7 @@ struct FPocketAlphaSphereCS
     int parent_atom1;
     int parent_atom2;
     int parent_atom3;
+    int parent_atom4;
 };
 
 
@@ -63,6 +68,8 @@ struct FPocketResultCS
 
 
 StructuredBuffer<FPocketAtomCS> atomBuffer; 
+StructuredBuffer<int> atomNeighborCounts;
+StructuredBuffer<int> atomNeighborIndices;
 RWStructuredBuffer<FPocketAlphaSphereCS> alphaSphereBuffer; 
 RWStructuredBuffer<FPocketResultCS> pocketResultBuffer; 
 RWBuffer<int> sphereCountBuffer; 
@@ -132,6 +139,42 @@ void ComputeCircumsphere(float3 p1, float3 p2, float3 p3, out float3 center, out
     radius = distance(center, p1);
 }
 
+void ComputeCircumsphere4(float3 p1, float3 p2, float3 p3, float3 p4, out float3 center, out float radius)
+{
+    center = float3(0, 0, 0);
+    radius = 0.0f;
+
+    float3 r1 = p2 - p1;
+    float3 r2 = p3 - p1;
+    float3 r3 = p4 - p1;
+
+    float a11 = 2.0f * r1.x;
+    float a12 = 2.0f * r1.y;
+    float a13 = 2.0f * r1.z;
+    float b1 = dot(p2, p2) - dot(p1, p1);
+
+    float a21 = 2.0f * r2.x;
+    float a22 = 2.0f * r2.y;
+    float a23 = 2.0f * r2.z;
+    float b2 = dot(p3, p3) - dot(p1, p1);
+
+    float a31 = 2.0f * r3.x;
+    float a32 = 2.0f * r3.y;
+    float a33 = 2.0f * r3.z;
+    float b3 = dot(p4, p4) - dot(p1, p1);
+
+    float det = a11 * (a22 * a33 - a23 * a32) - a12 * (a21 * a33 - a23 * a31) + a13 * (a21 * a32 - a22 * a31);
+    if (abs(det) < 1e-6)
+        return;
+
+    float detX = b1 * (a22 * a33 - a23 * a32) - a12 * (b2 * a33 - a23 * b3) + a13 * (b2 * a32 - a22 * b3);
+    float detY = a11 * (b2 * a33 - a23 * b3) - b1 * (a21 * a33 - a23 * a31) + a13 * (a21 * b3 - b2 * a31);
+    float detZ = a11 * (a22 * b3 - b2 * a32) - a12 * (a21 * b3 - b2 * a31) + b1 * (a21 * a32 - a22 * a31);
+
+    center = float3(detX / det, detY / det, detZ / det);
+    radius = distance(center, p1);
+}
+
 
 bool IsEmptySphere(float3 center, float radius, int skipI, int skipJ, int skipK)
 {
@@ -150,6 +193,24 @@ bool IsEmptySphere(float3 center, float radius, int skipI, int skipJ, int skipK)
         float distSq = dot(delta, delta);
 
         
+        if (distSq < radiusSq)
+            return false;
+    }
+
+    return true;
+}
+
+bool IsEmptySphere4(float3 center, float radius, int skipA, int skipB, int skipC, int skipD)
+{
+    float radiusSq = (radius - SPHERE_ATOM_EPS) * (radius - SPHERE_ATOM_EPS);
+
+    for (int a = 0; a < atomCount; a++)
+    {
+        if (a == skipA || a == skipB || a == skipC || a == skipD)
+            continue;
+
+        float3 delta = atomBuffer[a].pos - center;
+        float distSq = dot(delta, delta);
         if (distSq < radiusSq)
             return false;
     }
@@ -255,9 +316,83 @@ void CSGenerateAlphaSpheres(uint3 id : SV_DispatchThreadID)
         alphaSphere.parent_atom1 = i;
         alphaSphere.parent_atom2 = j;
         alphaSphere.parent_atom3 = k;
+        alphaSphere.parent_atom4 = -1;
 
         
         alphaSphereBuffer[sphereIdx] = alphaSphere;
+    }
+}
+
+[numthreads(256, 1, 1)]
+void CSGenerateAlphaSpheresFPocketDir(uint3 id : SV_DispatchThreadID)
+{
+    int atomIdx = id.x;
+    if (atomIdx >= atomCount)
+        return;
+
+    int neighborCount = atomNeighborCounts[atomIdx];
+    if (neighborCount <= 0)
+        return;
+
+    neighborCount = min(neighborCount, MAX_NEIGHBORS);
+
+    int baseOffset = atomIdx * MAX_NEIGHBORS;
+
+    for (int j = 0; j < neighborCount - 2; j++)
+    {
+        int atomJ = atomNeighborIndices[baseOffset + j];
+        if (atomJ < 0 || atomJ <= atomIdx)
+            continue;
+
+        for (int k = j + 1; k < neighborCount - 1; k++)
+        {
+            int atomK = atomNeighborIndices[baseOffset + k];
+            if (atomK < 0 || atomK <= atomJ)
+                continue;
+
+            for (int l = k + 1; l < neighborCount; l++)
+            {
+                int atomL = atomNeighborIndices[baseOffset + l];
+                if (atomL < 0 || atomL <= atomK)
+                    continue;
+
+                float3 sphereCenter;
+                float sphereRadius;
+                ComputeCircumsphere4(atomBuffer[atomIdx].pos, atomBuffer[atomJ].pos, atomBuffer[atomK].pos, atomBuffer[atomL].pos, sphereCenter, sphereRadius);
+                if (sphereRadius < MIN_ALPHA_SPHERE_RADIUS || sphereRadius > MAX_ALPHA_SPHERE_RADIUS)
+                    continue;
+
+                if (!IsEmptySphere4(sphereCenter, sphereRadius, atomIdx, atomJ, atomK, atomL))
+                    continue;
+
+                int tmpApolar = 0;
+                if (atomBuffer[atomIdx].electroneg < 2.8) tmpApolar++;
+                if (atomBuffer[atomJ].electroneg < 2.8) tmpApolar++;
+                if (atomBuffer[atomK].electroneg < 2.8) tmpApolar++;
+                if (atomBuffer[atomL].electroneg < 2.8) tmpApolar++;
+
+                float isApolar = (tmpApolar >= MIN_APOL_NEIGH) ? 1.0f : 0.0f;
+
+                int sphereIdx;
+                InterlockedAdd(sphereCountBuffer[0], 1, sphereIdx);
+                if (sphereIdx >= maxAlphaSpheres)
+                    continue;
+
+                FPocketAlphaSphereCS alphaSphere;
+                alphaSphere.center = sphereCenter;
+                alphaSphere.radius = sphereRadius;
+                alphaSphere.nb_atoms = 4;
+                alphaSphere.hydrophobicity = isApolar;
+                alphaSphere.polarity = 1.0f - isApolar;
+                alphaSphere.visited = 0;
+                alphaSphere.parent_atom1 = atomIdx;
+                alphaSphere.parent_atom2 = atomJ;
+                alphaSphere.parent_atom3 = atomK;
+                alphaSphere.parent_atom4 = atomL;
+
+                alphaSphereBuffer[sphereIdx] = alphaSphere;
+            }
+        }
     }
 }
 

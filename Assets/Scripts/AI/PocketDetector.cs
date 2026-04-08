@@ -60,6 +60,22 @@ namespace AIDrugDiscovery
         public const int THREAD_GROUP_SIZE_Y = 32; 
     }
 
+    public static class FPocketDirDefaults
+    {
+        public const float MinAsphereRadius = 3.0f;
+        public const float MaxAsphereRadius = 6.0f;
+        public const float ClustMaxDist = 1.73f;
+        public const float RefineClustDist = 4.5f;
+        public const float RefineMinApolarProp = 0.0f;
+        public const float SlClustMaxDist = 2.5f;
+        public const int SlClustMinNumNeigh = 2;
+        public const int MinApolNeigh = 3;
+        public const int McIter = 3000;
+        public const float VolumeCorrect = -1.6f;
+        public const int MinPocketNbAsph = 36;
+        public const int MaxNeighbors = 24;
+    }
+
     
     [Serializable]
     public struct FPocketAtom
@@ -70,6 +86,8 @@ namespace AIDrugDiscovery
         public float vdw_radius;       
         public float hydrophobicity;   
         public int res_id;             
+        public int aaIndex;
+        public float electroneg;
     }
 
     
@@ -109,6 +127,7 @@ namespace AIDrugDiscovery
         public Vector3 pos;
         public float vdw_radius;
         public float hydrophobicity;
+        public float electroneg;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -123,6 +142,7 @@ namespace AIDrugDiscovery
         public int parent_atom1; 
         public int parent_atom2;
         public int parent_atom3;
+        public int parent_atom4;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -351,22 +371,15 @@ namespace AIDrugDiscovery
         private void RunFPocketOfficialCPU()
         {
             atoms = LoadAtomsFromPDBQT(pdbqtFilePath);
-            if (atoms.Count < 3)
+            if (atoms.Count < 4)
             {
                 Debug.LogError("Not enough atoms to build alpha spheres.");
                 return;
             }
 
-            alphaSpheres = GenerateAlphaSpheresOfficialStyle(atoms);
-            List<FPocketAlphaSphere> validSpheres = RefineAlphaSpheresOfficialStyle(alphaSpheres);
-            List<List<FPocketAlphaSphere>> clusters = SingleLinkageCluster(validSpheres);
-            List<FPocketResult> pockets = ComputePocketFeaturesOfficialStyle(clusters);
-            List<FPocketResult> finalPockets = RemoveOverlappingPockets(
-                pockets.Where(p => p.volume >= FPocketConstants.MIN_POCKET_VOLUME && p.score >= 0.35f)
-                       .OrderByDescending(p => p.score)
-                       .ToList(),
-                0.7f);
-            PrintPocketResults(finalPockets);
+            alphaSpheres = GenerateAlphaSpheresFPocketDirCPU(atoms);
+            List<FPocketResult> pockets = DetectPocketsFPocketDir(alphaSpheres);
+            PrintPocketResults(pockets);
         }
 
         private async void RunFPocketOfficialGPU()
@@ -378,17 +391,18 @@ namespace AIDrugDiscovery
             }
 
             atoms = LoadAtomsFromPDBQT(pdbqtFilePath);
-            if (atoms.Count < 3)
+            if (atoms.Count < 4)
             {
                 Debug.LogError("Not enough atoms to build alpha spheres.");
                 return;
             }
 
             int atomCount = atoms.Count;
-            int threadGroupsX = Mathf.CeilToInt((float)atomCount / FPocketConstants.THREAD_GROUP_SIZE_X);
-            int threadGroupsY = Mathf.CeilToInt((float)atomCount / FPocketConstants.THREAD_GROUP_SIZE_Y);
+            int threadGroups = Mathf.CeilToInt((float)atomCount / 256f);
 
             ComputeBuffer atomBuffer = null;
+            ComputeBuffer neighborCountsBuffer = null;
+            ComputeBuffer neighborIndicesBuffer = null;
             ComputeBuffer alphaSphereBuffer = null;
             ComputeBuffer pocketResultBuffer = null;
             ComputeBuffer sphereCountBuffer = null;
@@ -397,6 +411,11 @@ namespace AIDrugDiscovery
             try
             {
                 atomBuffer = InitAtomBuffer(atoms);
+                BuildNeighborBuffers(atoms, out int[] neighborCounts, out int[] neighborIndices, FPocketDirDefaults.MaxNeighbors);
+                neighborCountsBuffer = new ComputeBuffer(atomCount, sizeof(int), ComputeBufferType.Structured);
+                neighborIndicesBuffer = new ComputeBuffer(atomCount * FPocketDirDefaults.MaxNeighbors, sizeof(int), ComputeBufferType.Structured);
+                neighborCountsBuffer.SetData(neighborCounts);
+                neighborIndicesBuffer.SetData(neighborIndices);
                 alphaSphereBuffer = InitAlphaSphereBuffer();
                 pocketResultBuffer = InitPocketResultBuffer();
                 sphereCountBuffer = new ComputeBuffer(1, sizeof(int));
@@ -404,28 +423,22 @@ namespace AIDrugDiscovery
                 int[] initCount = { 0 };
                 sphereCountBuffer.SetData(initCount);
                 clusterCountBuffer.SetData(initCount);
-                SetShaderConstants(fpocketComputeShader, atomCount, 0);
+                SetShaderConstantsFPocketDir(fpocketComputeShader, atomCount, 0);
 
-                int kernel1 = fpocketComputeShader.FindKernel("CSGenerateAlphaSpheres");
+                int kernel1 = fpocketComputeShader.FindKernel("CSGenerateAlphaSpheresFPocketDir");
                 fpocketComputeShader.SetBuffer(kernel1, "atomBuffer", atomBuffer);
+                fpocketComputeShader.SetBuffer(kernel1, "atomNeighborCounts", neighborCountsBuffer);
+                fpocketComputeShader.SetBuffer(kernel1, "atomNeighborIndices", neighborIndicesBuffer);
                 fpocketComputeShader.SetBuffer(kernel1, "alphaSphereBuffer", alphaSphereBuffer);
                 fpocketComputeShader.SetBuffer(kernel1, "pocketResultBuffer", pocketResultBuffer);
                 fpocketComputeShader.SetBuffer(kernel1, "sphereCountBuffer", sphereCountBuffer);
                 fpocketComputeShader.SetBuffer(kernel1, "clusterCountBuffer", clusterCountBuffer);
-                fpocketComputeShader.Dispatch(kernel1, threadGroupsX, threadGroupsY, 1);
+                fpocketComputeShader.Dispatch(kernel1, threadGroups, 1, 1);
 
                 int[] generatedCountData = { 0 };
                 sphereCountBuffer.GetData(generatedCountData);
                 int generatedSphereCount = Mathf.Clamp(generatedCountData[0], 0, FPocketConstants.MAX_ALPHA_SPHERES);
-                SetShaderConstants(fpocketComputeShader, atomCount, generatedSphereCount);
-
-                int kernel2 = fpocketComputeShader.FindKernel("CSFilterAlphaSpheres");
-                fpocketComputeShader.SetBuffer(kernel2, "atomBuffer", atomBuffer);
-                fpocketComputeShader.SetBuffer(kernel2, "alphaSphereBuffer", alphaSphereBuffer);
-                fpocketComputeShader.SetBuffer(kernel2, "pocketResultBuffer", pocketResultBuffer);
-                fpocketComputeShader.SetBuffer(kernel2, "sphereCountBuffer", sphereCountBuffer);
-                fpocketComputeShader.SetBuffer(kernel2, "clusterCountBuffer", clusterCountBuffer);
-                fpocketComputeShader.Dispatch(kernel2, Mathf.CeilToInt(Mathf.Max(1, generatedSphereCount) / 256f), 1, 1);
+                SetShaderConstantsFPocketDir(fpocketComputeShader, atomCount, generatedSphereCount);
 
                 FPocketAlphaSphereCS[] data = null;
                 var request = await AsyncGPUReadback.RequestAsync(alphaSphereBuffer);
@@ -449,19 +462,12 @@ namespace AIDrugDiscovery
                         hydrophobicity = sphere.hydrophobicity,
                         polarity = sphere.polarity,
                         visited = sphere.visited,
-                        parent_atoms = new[] { sphere.parent_atom1, sphere.parent_atom2, sphere.parent_atom3 }
+                        parent_atoms = new[] { sphere.parent_atom1, sphere.parent_atom2, sphere.parent_atom3, sphere.parent_atom4 }
                     });
                 }
 
-                validSpheres = RefineAlphaSpheresOfficialStyle(validSpheres);
-                List<List<FPocketAlphaSphere>> clusters = SingleLinkageCluster(validSpheres);
-                List<FPocketResult> pockets = ComputePocketFeaturesOfficialStyle(clusters);
-                List<FPocketResult> finalPockets = RemoveOverlappingPockets(
-                    pockets.Where(p => p.volume >= FPocketConstants.MIN_POCKET_VOLUME && p.score >= 0.35f)
-                           .OrderByDescending(p => p.score)
-                           .ToList(),
-                    0.7f);
-                PrintPocketResults(finalPockets);
+                List<FPocketResult> pockets = DetectPocketsFPocketDir(validSpheres);
+                PrintPocketResults(pockets);
             }
             catch (Exception e)
             {
@@ -469,7 +475,7 @@ namespace AIDrugDiscovery
             }
             finally
             {
-                ReleaseBuffers(atomBuffer, alphaSphereBuffer, pocketResultBuffer, sphereCountBuffer, clusterCountBuffer);
+                ReleaseBuffers(atomBuffer, neighborCountsBuffer, neighborIndicesBuffer, alphaSphereBuffer, pocketResultBuffer, sphereCountBuffer, clusterCountBuffer);
             }
         }
         private List<FPocketAlphaSphere> GenerateAlphaSpheresFromAtomTriples(List<FPocketAtom> atoms)
@@ -529,18 +535,18 @@ namespace AIDrugDiscovery
             return alphaSpheres;
         }
 
-        private List<FPocketAlphaSphere> GenerateAlphaSpheresOfficialStyle(List<FPocketAtom> atoms)
+        private List<FPocketAlphaSphere> GenerateAlphaSpheresFPocketDirCPU(List<FPocketAtom> atoms)
         {
             List<FPocketAlphaSphere> alphaSpheres = new List<FPocketAlphaSphere>();
-            Dictionary<Vector3Int, List<int>> spatialHash = BuildAtomSpatialHash(atoms, FPocketConstants.OFFICIAL_NEIGHBOR_CUTOFF);
+            Dictionary<Vector3Int, List<int>> spatialHash = BuildAtomSpatialHash(atoms, FPocketDirDefaults.MaxAsphereRadius);
 
             for (int atomIdx = 0; atomIdx < atoms.Count; atomIdx++)
             {
-                List<int> nearbyAtoms = GetNearbyAtomIndices(atomIdx, atoms, spatialHash, FPocketConstants.OFFICIAL_NEIGHBOR_CUTOFF);
+                List<int> nearbyAtoms = GetNearbyAtomIndices(atomIdx, atoms, spatialHash, FPocketDirDefaults.MaxAsphereRadius);
                 if (nearbyAtoms.Count < 3)
                     continue;
 
-                int nearbyLimit = Mathf.Min(nearbyAtoms.Count, FPocketConstants.OFFICIAL_MAX_NEARBY_ATOMS);
+                int nearbyLimit = Mathf.Min(nearbyAtoms.Count, FPocketDirDefaults.MaxNeighbors);
                 for (int j = 0; j < nearbyLimit - 2; j++)
                 {
                     int atomJ = nearbyAtoms[j];
@@ -564,25 +570,26 @@ namespace AIDrugDiscovery
                                 atoms[atomJ].pos,
                                 atoms[atomK].pos,
                                 atoms[atomL].pos);
-                            if (radius < FPocketConstants.MIN_ALPHA_SPHERE_RADIUS || radius > FPocketConstants.MAX_ALPHA_SPHERE_RADIUS)
+                            if (radius < FPocketDirDefaults.MinAsphereRadius || radius > FPocketDirDefaults.MaxAsphereRadius)
                                 continue;
 
                             if (!IsEmptySphere(center, radius, atoms, atomIdx, atomJ, atomK, atomL))
                                 continue;
-                            if (!IsSphereCenterOutsideMolecule(center, atoms))
-                                continue;
 
-                            FPocketAtom[] parents = { atoms[atomIdx], atoms[atomJ], atoms[atomK], atoms[atomL] };
-                            float hydrophobicity = parents.Average(a => a.hydrophobicity);
-                            float polarity = 1f - hydrophobicity;
+                            int apol = 0;
+                            if (atoms[atomIdx].electroneg < 2.8f) apol++;
+                            if (atoms[atomJ].electroneg < 2.8f) apol++;
+                            if (atoms[atomK].electroneg < 2.8f) apol++;
+                            if (atoms[atomL].electroneg < 2.8f) apol++;
+                            float isApolar = apol >= FPocketDirDefaults.MinApolNeigh ? 1f : 0f;
 
                             alphaSpheres.Add(new FPocketAlphaSphere
                             {
                                 center = center,
                                 radius = radius,
                                 nb_atoms = 4,
-                                hydrophobicity = hydrophobicity,
-                                polarity = polarity,
+                                hydrophobicity = isApolar,
+                                polarity = 1f - isApolar,
                                 visited = 0,
                                 parent_atoms = new[] { atomIdx, atomJ, atomK, atomL }
                             });
@@ -748,36 +755,698 @@ namespace AIDrugDiscovery
             ).ToList();
         }
 
-        private List<FPocketAlphaSphere> RefineAlphaSpheresOfficialStyle(List<FPocketAlphaSphere> spheres)
+        private struct FPocketDesc
         {
-            List<FPocketAlphaSphere> refined = new List<FPocketAlphaSphere>();
-            for (int i = 0; i < spheres.Count; i++)
+            public int nb_asph;
+            public float apolar_asphere_prop;
+            public float mean_loc_hyd_dens;
+            public int polarity_score;
+            public float hydrophobicity_score;
+            public float as_density;
+            public float as_max_dst;
+            public float mean_asph_ray;
+            public float masph_sacc;
+            public float volume;
+
+            public float as_max_dst_norm;
+            public float as_density_norm;
+            public float polarity_score_norm;
+            public float mean_loc_hyd_dens_norm;
+            public float nas_norm;
+            public float prop_asapol_norm;
+        }
+
+        private List<FPocketResult> DetectPocketsFPocketDir(List<FPocketAlphaSphere> spheres)
+        {
+            List<FPocketResult> pockets = new List<FPocketResult>();
+            if (spheres == null || spheres.Count == 0)
+                return pockets;
+
+            List<List<int>> clusters = ClusterSpheresByDistance(spheres, FPocketDirDefaults.ClustMaxDist);
+            clusters = RefineClustersByBarycenter(spheres, clusters, FPocketDirDefaults.RefineClustDist);
+
+            FPocketDesc[] preFinalDescs = clusters.Select(c => ComputeDescriptorsFPocketDir(spheres, c, true)).ToArray();
+            clusters = FinalClusterFPocketDir(spheres, clusters, preFinalDescs);
+
+            FPocketDesc[] finalDescs = clusters.Select(c => ComputeDescriptorsFPocketDir(spheres, c, true)).ToArray();
+            NormalizeDescriptorsFPocketDir(finalDescs);
+
+            List<(FPocketResult result, FPocketDesc desc)> results = new List<(FPocketResult, FPocketDesc)>(clusters.Count);
+            for (int i = 0; i < clusters.Count; i++)
             {
-                FPocketAlphaSphere sphere = spheres[i];
-                if (sphere.radius < FPocketConstants.MIN_ALPHA_SPHERE_RADIUS || sphere.radius > FPocketConstants.MAX_ALPHA_SPHERE_RADIUS)
-                    continue;
-                if (sphere.parent_atoms == null || sphere.parent_atoms.Length < 3)
-                    continue;
-                if (CountNearbyAtoms(sphere.center, sphere.radius + 2.2f, atoms) < FPocketConstants.OFFICIAL_MIN_NEARBY_ATOMS)
+                FPocketDesc d = finalDescs[i];
+                if (d.nb_asph < FPocketDirDefaults.MinPocketNbAsph)
                     continue;
 
-                bool duplicate = false;
-                for (int existingIdx = 0; existingIdx < refined.Count; existingIdx++)
+                Vector3 center = ComputeClusterCenter(spheres, clusters[i]);
+                int nbAtoms = CountUniqueContactAtoms(clusters[i], spheres);
+                float score = ScorePocketFPocketDir(d);
+
+                results.Add((new FPocketResult
                 {
-                    FPocketAlphaSphere existing = refined[existingIdx];
-                    if ((existing.center - sphere.center).sqrMagnitude <= FPocketConstants.OFFICIAL_DUPLICATE_CENTER_EPS * FPocketConstants.OFFICIAL_DUPLICATE_CENTER_EPS &&
-                        Mathf.Abs(existing.radius - sphere.radius) <= FPocketConstants.OFFICIAL_DUPLICATE_RADIUS_EPS)
+                    id = 0,
+                    center = center,
+                    volume = d.volume,
+                    score = score,
+                    hydrophobic_score = d.apolar_asphere_prop,
+                    polar_score = d.polarity_score_norm,
+                    depth_score = d.masph_sacc,
+                    nb_alpha_spheres = d.nb_asph,
+                    nb_atoms = nbAtoms,
+                    density = d.as_density
+                }, d));
+            }
+
+            results.Sort((a, b) => b.result.score.CompareTo(a.result.score));
+            for (int i = 0; i < results.Count; i++)
+            {
+                FPocketResult r = results[i].result;
+                r.id = i;
+                pockets.Add(r);
+            }
+
+            return pockets;
+        }
+
+        private float ScorePocketFPocketDir(FPocketDesc d)
+        {
+            return -0.65784f
+                   + 29.78270f * d.nas_norm
+                   - 4.06632f * d.prop_asapol_norm
+                   + 11.72346f * d.mean_loc_hyd_dens_norm
+                   + 1.16349f * d.polarity_score
+                   - 2.06835f * d.as_density;
+        }
+
+        private List<List<int>> ClusterSpheresByDistance(List<FPocketAlphaSphere> spheres, float dist)
+        {
+            int n = spheres.Count;
+            if (n == 0)
+                return new List<List<int>>();
+
+            float distSqr = dist * dist;
+            Dictionary<Vector3Int, List<int>> spatialIndex = BuildSpatialHash(spheres, dist);
+
+            int[] parent = new int[n];
+            int[] rank = new int[n];
+            for (int i = 0; i < n; i++) parent[i] = i;
+
+            int Find(int x)
+            {
+                while (parent[x] != x)
+                {
+                    parent[x] = parent[parent[x]];
+                    x = parent[x];
+                }
+                return x;
+            }
+
+            void Union(int a, int b)
+            {
+                int ra = Find(a);
+                int rb = Find(b);
+                if (ra == rb) return;
+                if (rank[ra] < rank[rb]) parent[ra] = rb;
+                else if (rank[ra] > rank[rb]) parent[rb] = ra;
+                else
+                {
+                    parent[rb] = ra;
+                    rank[ra]++;
+                }
+            }
+
+            for (int i = 0; i < n; i++)
+            {
+                Vector3 center = spheres[i].center;
+                Vector3Int cell = GetSpatialCell(center, dist);
+                for (int dx = -1; dx <= 1; dx++)
+                for (int dy = -1; dy <= 1; dy++)
+                for (int dz = -1; dz <= 1; dz++)
+                {
+                    Vector3Int neighborCell = new Vector3Int(cell.x + dx, cell.y + dy, cell.z + dz);
+                    if (!spatialIndex.TryGetValue(neighborCell, out var bucket))
+                        continue;
+
+                    for (int b = 0; b < bucket.Count; b++)
                     {
-                        duplicate = true;
-                        break;
+                        int j = bucket[b];
+                        if (j <= i) continue;
+                        Vector3 delta = center - spheres[j].center;
+                        if (delta.sqrMagnitude <= distSqr)
+                            Union(i, j);
+                    }
+                }
+            }
+
+            Dictionary<int, List<int>> groups = new Dictionary<int, List<int>>();
+            for (int i = 0; i < n; i++)
+            {
+                int r = Find(i);
+                if (!groups.TryGetValue(r, out var lst))
+                {
+                    lst = new List<int>();
+                    groups[r] = lst;
+                }
+                lst.Add(i);
+            }
+
+            return groups.Values.ToList();
+        }
+
+        private List<List<int>> RefineClustersByBarycenter(List<FPocketAlphaSphere> spheres, List<List<int>> clusters, float dist)
+        {
+            int m = clusters.Count;
+            if (m <= 1)
+                return clusters;
+
+            float distSqr = dist * dist;
+            Vector3[] bary = new Vector3[m];
+            for (int i = 0; i < m; i++)
+                bary[i] = ComputeClusterCenter(spheres, clusters[i]);
+
+            int[] parent = new int[m];
+            int[] rank = new int[m];
+            for (int i = 0; i < m; i++) parent[i] = i;
+
+            int Find(int x)
+            {
+                while (parent[x] != x)
+                {
+                    parent[x] = parent[parent[x]];
+                    x = parent[x];
+                }
+                return x;
+            }
+
+            void Union(int a, int b)
+            {
+                int ra = Find(a);
+                int rb = Find(b);
+                if (ra == rb) return;
+                if (rank[ra] < rank[rb]) parent[ra] = rb;
+                else if (rank[ra] > rank[rb]) parent[rb] = ra;
+                else
+                {
+                    parent[rb] = ra;
+                    rank[ra]++;
+                }
+            }
+
+            for (int i = 0; i < m - 1; i++)
+            {
+                for (int j = i + 1; j < m; j++)
+                {
+                    Vector3 delta = bary[i] - bary[j];
+                    if (delta.sqrMagnitude <= distSqr)
+                        Union(i, j);
+                }
+            }
+
+            Dictionary<int, List<int>> merged = new Dictionary<int, List<int>>();
+            for (int i = 0; i < m; i++)
+            {
+                int r = Find(i);
+                if (!merged.TryGetValue(r, out var lst))
+                {
+                    lst = new List<int>();
+                    merged[r] = lst;
+                }
+                lst.AddRange(clusters[i]);
+            }
+
+            return merged.Values.ToList();
+        }
+
+        private struct PocketPair
+        {
+            public int pid1;
+            public int pid2;
+            public int dist;
+        }
+
+        private List<List<int>> FinalClusterFPocketDir(List<FPocketAlphaSphere> spheres, List<List<int>> pockets, FPocketDesc[] preDescs)
+        {
+            int n = pockets.Count;
+            if (n <= 1)
+                return pockets;
+
+            float distSqr = FPocketDirDefaults.SlClustMaxDist * FPocketDirDefaults.SlClustMaxDist;
+
+            float[] densPerSphere = new float[n];
+            for (int i = 0; i < n; i++)
+            {
+                int nb = Mathf.Max(1, preDescs[i].nb_asph);
+                densPerSphere[i] = preDescs[i].as_density / nb;
+                if (float.IsNaN(densPerSphere[i])) densPerSphere[i] = 0f;
+            }
+
+            List<PocketPair> pairs = new List<PocketPair>((n * (n - 1)) / 2);
+            for (int i = 0; i < n - 1; i++)
+            {
+                for (int j = i + 1; j < n; j++)
+                {
+                    int cnt = 0;
+                    List<int> pi = pockets[i];
+                    List<int> pj = pockets[j];
+                    for (int a = 0; a < pi.Count; a++)
+                    {
+                        Vector3 ca = spheres[pi[a]].center;
+                        for (int b = 0; b < pj.Count; b++)
+                        {
+                            Vector3 delta = ca - spheres[pj[b]].center;
+                            if (delta.sqrMagnitude < distSqr)
+                                cnt++;
+                        }
+                    }
+                    pairs.Add(new PocketPair { pid1 = i, pid2 = j, dist = -cnt });
+                }
+            }
+
+            pairs.Sort((a, b) => a.dist.CompareTo(b.dist));
+
+            int[] rep = new int[n];
+            for (int i = 0; i < n; i++) rep[i] = i;
+
+            for (int idx = 0; idx < pairs.Count; idx++)
+            {
+                PocketPair p = pairs[idx];
+                if (p.dist > -FPocketDirDefaults.SlClustMinNumNeigh)
+                    break;
+
+                int r1 = rep[p.pid1];
+                int r2 = rep[p.pid2];
+                if (r1 == r2)
+                    continue;
+
+                if (densPerSphere[r1] < 0.1f && densPerSphere[r2] < 0.1f)
+                {
+                    for (int k = 0; k < n; k++)
+                    {
+                        if (rep[k] == r2)
+                            rep[k] = r1;
+                    }
+                    pockets[r1].AddRange(pockets[r2]);
+                    pockets[r2].Clear();
+                }
+            }
+
+            Dictionary<int, List<int>> merged = new Dictionary<int, List<int>>();
+            for (int i = 0; i < n; i++)
+            {
+                int r = rep[i];
+                if (!merged.TryGetValue(r, out var lst))
+                {
+                    lst = new List<int>();
+                    merged[r] = lst;
+                }
+                lst.AddRange(pockets[i]);
+            }
+
+            return merged.Values.Where(l => l.Count > 0).ToList();
+        }
+
+        private Vector3 ComputeClusterCenter(List<FPocketAlphaSphere> spheres, List<int> clusterIndices)
+        {
+            Vector3 sum = Vector3.zero;
+            for (int i = 0; i < clusterIndices.Count; i++)
+                sum += spheres[clusterIndices[i]].center;
+            return sum / Mathf.Max(1, clusterIndices.Count);
+        }
+
+        private int CountUniqueContactAtoms(List<int> cluster, List<FPocketAlphaSphere> spheres)
+        {
+            HashSet<int> set = new HashSet<int>();
+            for (int i = 0; i < cluster.Count; i++)
+            {
+                int[] parents = spheres[cluster[i]].parent_atoms;
+                if (parents == null) continue;
+                for (int j = 0; j < parents.Length; j++)
+                {
+                    int a = parents[j];
+                    if (a >= 0) set.Add(a);
+                }
+            }
+            return set.Count;
+        }
+
+        private FPocketDesc ComputeDescriptorsFPocketDir(List<FPocketAlphaSphere> spheres, List<int> clusterIndices, bool doVolume)
+        {
+            FPocketDesc d = new FPocketDesc();
+            int nvert = clusterIndices.Count;
+            d.nb_asph = nvert;
+            if (nvert <= 0)
+                return d;
+
+            float meanRadius = 0f;
+            float masphSacc = 0f;
+            float asDensitySum = 0f;
+            float asMaxDst = -1f;
+
+            int nApol = 0;
+            float mlhdSum = 0f;
+
+            HashSet<int> contactedAtoms = new HashSet<int>();
+
+            for (int i = 0; i < nvert; i++)
+            {
+                FPocketAlphaSphere si = spheres[clusterIndices[i]];
+                meanRadius += si.radius;
+
+                if (si.parent_atoms != null)
+                {
+                    Vector3 bary = Vector3.zero;
+                    int bc = 0;
+                    for (int p = 0; p < si.parent_atoms.Length; p++)
+                    {
+                        int atomIdx = si.parent_atoms[p];
+                        if (atomIdx >= 0 && atomIdx < atoms.Count)
+                        {
+                            bary += atoms[atomIdx].pos;
+                            bc++;
+                            contactedAtoms.Add(atomIdx);
+                        }
+                    }
+                    if (bc > 0)
+                    {
+                        bary /= bc;
+                        masphSacc += Vector3.Distance(si.center, bary) / Mathf.Max(1e-6f, si.radius);
                     }
                 }
 
-                if (!duplicate)
-                    refined.Add(sphere);
+                if (si.hydrophobicity >= 0.5f)
+                    nApol++;
             }
 
-            return refined;
+            for (int i = 0; i < nvert; i++)
+            {
+                FPocketAlphaSphere vi = spheres[clusterIndices[i]];
+                for (int j = i + 1; j < nvert; j++)
+                {
+                    FPocketAlphaSphere vj = spheres[clusterIndices[j]];
+                    float dst = Vector3.Distance(vi.center, vj.center);
+                    if (dst > asMaxDst) asMaxDst = dst;
+                    asDensitySum += dst;
+                }
+            }
+
+            if (nApol > 0)
+            {
+                for (int i = 0; i < nvert; i++)
+                {
+                    FPocketAlphaSphere vi = spheres[clusterIndices[i]];
+                    if (vi.hydrophobicity < 0.5f)
+                        continue;
+
+                    int napol = 0;
+                    for (int j = 0; j < nvert; j++)
+                    {
+                        if (j == i) continue;
+                        FPocketAlphaSphere vj = spheres[clusterIndices[j]];
+                        if (vj.hydrophobicity < 0.5f) continue;
+
+                        float overlap = Vector3.Distance(vi.center, vj.center) - (vi.radius + vj.radius);
+                        if (overlap <= 0f)
+                            napol++;
+                    }
+                    mlhdSum += napol;
+                }
+                d.mean_loc_hyd_dens = mlhdSum / nApol;
+            }
+            else
+            {
+                d.mean_loc_hyd_dens = 0f;
+            }
+
+            d.apolar_asphere_prop = (float)nApol / nvert;
+            d.mean_asph_ray = meanRadius / nvert;
+            d.masph_sacc = masphSacc / nvert;
+            d.as_max_dst = asMaxDst < 0f ? 0f : asMaxDst;
+
+            if (nvert >= 2)
+                d.as_density = asDensitySum / ((nvert * nvert - nvert) * 0.5f);
+            else
+                d.as_density = 0f;
+
+            foreach (int atomIdx in contactedAtoms)
+            {
+                int aa = atoms[atomIdx].aaIndex;
+                if (aa < 0) continue;
+                if (AAPropsByIndex.TryGetValue(aa, out AAProps props))
+                {
+                    d.hydrophobicity_score += props.hydrophobicity;
+                    d.polarity_score += props.polarity;
+                }
+            }
+
+            if (doVolume)
+                d.volume = GetVertsVolumePtr(spheres, clusterIndices, FPocketDirDefaults.McIter, FPocketDirDefaults.VolumeCorrect);
+
+            return d;
+        }
+
+        private void NormalizeDescriptorsFPocketDir(FPocketDesc[] descs)
+        {
+            if (descs == null || descs.Length == 0)
+                return;
+
+            if (descs.Length == 1)
+            {
+                FPocketDesc d = descs[0];
+                d.as_max_dst_norm = 0f;
+                d.as_density_norm = 0f;
+                d.polarity_score_norm = 0f;
+                d.mean_loc_hyd_dens_norm = 0f;
+                d.nas_norm = 0f;
+                d.prop_asapol_norm = 0f;
+                descs[0] = d;
+                return;
+            }
+
+            float asMaxDstM = descs[0].as_max_dst;
+            float asMaxDstm = descs[0].as_max_dst;
+            float densityM = descs[0].as_density;
+            float densitym = descs[0].as_density;
+            int polarityM = descs[0].polarity_score;
+            int polaritym = descs[0].polarity_score;
+            float mlhdM = descs[0].mean_loc_hyd_dens;
+            float mlhdm = descs[0].mean_loc_hyd_dens;
+            int nasM = descs[0].nb_asph;
+            int nasm = descs[0].nb_asph;
+            float apolPropM = descs[0].apolar_asphere_prop;
+            float apolPropm = descs[0].apolar_asphere_prop;
+
+            for (int i = 1; i < descs.Length; i++)
+            {
+                FPocketDesc d = descs[i];
+                if (d.as_max_dst > asMaxDstM) asMaxDstM = d.as_max_dst;
+                if (d.as_max_dst < asMaxDstm) asMaxDstm = d.as_max_dst;
+                if (d.as_density > densityM) densityM = d.as_density;
+                if (d.as_density < densitym) densitym = d.as_density;
+                if (d.polarity_score > polarityM) polarityM = d.polarity_score;
+                if (d.polarity_score < polaritym) polaritym = d.polarity_score;
+                if (d.mean_loc_hyd_dens > mlhdM) mlhdM = d.mean_loc_hyd_dens;
+                if (d.mean_loc_hyd_dens < mlhdm) mlhdm = d.mean_loc_hyd_dens;
+                if (d.nb_asph > nasM) nasM = d.nb_asph;
+                if (d.nb_asph < nasm) nasm = d.nb_asph;
+                if (d.apolar_asphere_prop > apolPropM) apolPropM = d.apolar_asphere_prop;
+                if (d.apolar_asphere_prop < apolPropm) apolPropm = d.apolar_asphere_prop;
+            }
+
+            for (int i = 0; i < descs.Length; i++)
+            {
+                FPocketDesc d = descs[i];
+                if (Mathf.Abs(asMaxDstM - asMaxDstm) > 1e-6f)
+                    d.as_max_dst_norm = (d.as_max_dst - asMaxDstm) / (asMaxDstM - asMaxDstm);
+                if (Mathf.Abs(densityM - densitym) > 1e-6f)
+                    d.as_density_norm = (d.as_density - densitym) / (densityM - densitym);
+                if (polarityM - polaritym != 0)
+                    d.polarity_score_norm = (float)(d.polarity_score - polaritym) / (polarityM - polaritym);
+                if (Mathf.Abs(mlhdM - mlhdm) > 1e-6f)
+                    d.mean_loc_hyd_dens_norm = (d.mean_loc_hyd_dens - mlhdm) / (mlhdM - mlhdm);
+                if (nasM - nasm != 0)
+                    d.nas_norm = (float)(d.nb_asph - nasm) / (nasM - nasm);
+                if (Mathf.Abs(apolPropM - apolPropm) > 1e-6f)
+                    d.prop_asapol_norm = (d.apolar_asphere_prop - apolPropm) / (apolPropM - apolPropm);
+                descs[i] = d;
+            }
+        }
+
+        private float GetVertsVolumePtr(List<FPocketAlphaSphere> spheres, List<int> clusterIndices, int niter, float correct)
+        {
+            int nvert = clusterIndices.Count;
+            if (nvert <= 0 || niter <= 0)
+                return 0f;
+
+            float xmin = 0f, xmax = 0f, ymin = 0f, ymax = 0f, zmin = 0f, zmax = 0f;
+            for (int i = 0; i < nvert; i++)
+            {
+                FPocketAlphaSphere v = spheres[clusterIndices[i]];
+                float r = v.radius;
+                if (i == 0)
+                {
+                    xmin = v.center.x - r + correct;
+                    xmax = v.center.x + r + correct;
+                    ymin = v.center.y - r + correct;
+                    ymax = v.center.y + r + correct;
+                    zmin = v.center.z - r + correct;
+                    zmax = v.center.z + r + correct;
+                }
+                else
+                {
+                    xmin = Mathf.Min(xmin, v.center.x - r + correct);
+                    xmax = Mathf.Max(xmax, v.center.x + r + correct);
+                    ymin = Mathf.Min(ymin, v.center.y - r + correct);
+                    ymax = Mathf.Max(ymax, v.center.y + r + correct);
+                    zmin = Mathf.Min(zmin, v.center.z - r + correct);
+                    zmax = Mathf.Max(zmax, v.center.z + r + correct);
+                }
+            }
+
+            float vbox = (xmax - xmin) * (ymax - ymin) * (zmax - zmin);
+            if (vbox <= 0f)
+                return 0f;
+
+            System.Random rng = new System.Random();
+            int nbIn = 0;
+            for (int i = 0; i < niter; i++)
+            {
+                float xr = (float)(xmin + rng.NextDouble() * (xmax - xmin));
+                float yr = (float)(ymin + rng.NextDouble() * (ymax - ymin));
+                float zr = (float)(zmin + rng.NextDouble() * (zmax - zmin));
+
+                for (int j = 0; j < nvert; j++)
+                {
+                    FPocketAlphaSphere v = spheres[clusterIndices[j]];
+                    float rr = v.radius + correct;
+                    float dx = v.center.x - xr;
+                    float dy = v.center.y - yr;
+                    float dz = v.center.z - zr;
+                    if (rr * rr > dx * dx + dy * dy + dz * dz)
+                    {
+                        nbIn++;
+                        break;
+                    }
+                }
+            }
+
+            return ((float)nbIn / niter) * vbox;
+        }
+
+        private void BuildNeighborBuffers(List<FPocketAtom> sourceAtoms, out int[] neighborCounts, out int[] neighborIndices, int maxNeighbors)
+        {
+            neighborCounts = new int[sourceAtoms.Count];
+            neighborIndices = Enumerable.Repeat(-1, sourceAtoms.Count * maxNeighbors).ToArray();
+
+            Dictionary<Vector3Int, List<int>> spatialHash = BuildAtomSpatialHash(sourceAtoms, FPocketDirDefaults.MaxAsphereRadius);
+            for (int atomIdx = 0; atomIdx < sourceAtoms.Count; atomIdx++)
+            {
+                List<int> nearby = GetNearbyAtomIndices(atomIdx, sourceAtoms, spatialHash, FPocketDirDefaults.MaxAsphereRadius);
+                if (nearby.Count > maxNeighbors)
+                    nearby = nearby.Take(maxNeighbors).ToList();
+
+                neighborCounts[atomIdx] = nearby.Count;
+                for (int j = 0; j < nearby.Count; j++)
+                    neighborIndices[atomIdx * maxNeighbors + j] = nearby[j];
+            }
+        }
+
+        private static readonly Dictionary<int, AAProps> AAPropsByIndex = new Dictionary<int, AAProps>
+        {
+            { 0, new AAProps { volume = 2f, hydrophobicity = 41f, charge = 0, polarity = 0, func_grp = 2 } },
+            { 14, new AAProps { volume = 7f, hydrophobicity = -14f, charge = 1, polarity = 1, func_grp = 5 } },
+            { 11, new AAProps { volume = 3f, hydrophobicity = -28f, charge = 0, polarity = 1, func_grp = 3 } },
+            { 2, new AAProps { volume = 3f, hydrophobicity = -55f, charge = -1, polarity = 1, func_grp = 3 } },
+            { 1, new AAProps { volume = 3f, hydrophobicity = 49f, charge = 0, polarity = 0, func_grp = 6 } },
+            { 13, new AAProps { volume = 4f, hydrophobicity = -10f, charge = 0, polarity = 1, func_grp = 3 } },
+            { 3, new AAProps { volume = 4f, hydrophobicity = -31f, charge = -1, polarity = 1, func_grp = 3 } },
+            { 5, new AAProps { volume = 1f, hydrophobicity = 0f, charge = 0, polarity = 0, func_grp = 2 } },
+            { 6, new AAProps { volume = 4f, hydrophobicity = 8f, charge = 1, polarity = 1, func_grp = 1 } },
+            { 7, new AAProps { volume = 5f, hydrophobicity = 99f, charge = 0, polarity = 0, func_grp = 2 } },
+            { 9, new AAProps { volume = 5f, hydrophobicity = 97f, charge = 0, polarity = 0, func_grp = 2 } },
+            { 8, new AAProps { volume = 6f, hydrophobicity = -23f, charge = 1, polarity = 1, func_grp = 5 } },
+            { 10, new AAProps { volume = 5f, hydrophobicity = 74f, charge = 0, polarity = 0, func_grp = 5 } },
+            { 4, new AAProps { volume = 6f, hydrophobicity = 100f, charge = 0, polarity = 0, func_grp = 1 } },
+            { 12, new AAProps { volume = 3f, hydrophobicity = -46f, charge = 0, polarity = 0, func_grp = 2 } },
+            { 15, new AAProps { volume = 2f, hydrophobicity = -5f, charge = 0, polarity = 1, func_grp = 4 } },
+            { 16, new AAProps { volume = 3f, hydrophobicity = 13f, charge = 0, polarity = 1, func_grp = 4 } },
+            { 18, new AAProps { volume = 8f, hydrophobicity = 97f, charge = 0, polarity = 1, func_grp = 1 } },
+            { 19, new AAProps { volume = 7f, hydrophobicity = 63f, charge = 0, polarity = 1, func_grp = 1 } },
+            { 17, new AAProps { volume = 4f, hydrophobicity = 76f, charge = 0, polarity = 0, func_grp = 2 } },
+        };
+
+        private struct AAProps
+        {
+            public float volume;
+            public float hydrophobicity;
+            public int charge;
+            public int polarity;
+            public int func_grp;
+        }
+
+        private int GetAaIndex(string resName)
+        {
+            if (string.IsNullOrWhiteSpace(resName))
+                return -1;
+
+            string n = resName.Trim().ToUpperInvariant();
+            if (n.Length < 3)
+                return -1;
+
+            char l1 = n[0];
+            char l2 = n[1];
+            char l3 = n[2];
+
+            switch (l1)
+            {
+                case 'A':
+                    if (l2 == 'L') return 0;
+                    if (l2 == 'R') return 14;
+                    if (l2 == 'S' && l3 == 'P') return 2;
+                    return 11;
+                case 'C': return 1;
+                case 'G':
+                    if (l3 == 'U') return 3;
+                    if (l3 == 'Y') return 5;
+                    return 13;
+                case 'H': return 6;
+                case 'I': return 7;
+                case 'L':
+                    if (l2 == 'Y') return 8;
+                    return 9;
+                case 'M': return 10;
+                case 'P':
+                    if (l2 == 'H') return 4;
+                    return 12;
+                case 'S': return 15;
+                case 'T':
+                    if (l2 == 'H') return 16;
+                    if (l2 == 'R') return 18;
+                    return 19;
+                case 'V': return 17;
+            }
+
+            return -1;
+        }
+
+        private float GetElectronegativity(string atomSymbol)
+        {
+            if (string.IsNullOrEmpty(atomSymbol))
+                return 10f;
+
+            switch (atomSymbol.ToUpperInvariant())
+            {
+                case "H": return 2.20f;
+                case "C": return 2.55f;
+                case "N": return 3.04f;
+                case "O": return 3.44f;
+                case "F": return 3.98f;
+                case "P": return 2.19f;
+                case "S": return 2.58f;
+                case "CL": return 3.16f;
+                case "BR": return 2.96f;
+                case "I": return 2.66f;
+                default: return 10f;
+            }
         }
 
         private int CountNearbyAtoms(Vector3 center, float cutoff, List<FPocketAtom> sourceAtoms)
@@ -1409,6 +2078,8 @@ namespace AIDrugDiscovery
                         float z = float.Parse(line.Substring(46, 8).Trim());
                         string atomNameRaw = line.Substring(12, 2).Trim().ToUpper();
                         string atomSymbol = ExtractAtomSymbol(atomNameRaw);
+                        string resName = line.Length >= 20 ? line.Substring(17, 3).Trim().ToUpperInvariant() : "";
+                        int aaIndex = GetAaIndex(resName);
 
                         
                         float vdwRadius = FPocketConstants.VdwRadii.ContainsKey(atomSymbol)
@@ -1428,6 +2099,9 @@ namespace AIDrugDiscovery
                             vdw_radius = vdwRadius,
                             hydrophobicity = hydro,
                             res_id = 0
+                            ,
+                            aaIndex = aaIndex,
+                            electroneg = GetElectronegativity(atomSymbol)
                         });
                     }
                     catch (Exception e)
@@ -1487,6 +2161,27 @@ namespace AIDrugDiscovery
             
             cs.SetInt("THREAD_GROUP_SIZE_X", FPocketConstants.THREAD_GROUP_SIZE_X);
             cs.SetInt("THREAD_GROUP_SIZE_Y", FPocketConstants.THREAD_GROUP_SIZE_Y);
+            cs.SetInt("MIN_APOL_NEIGH", FPocketDirDefaults.MinApolNeigh);
+            cs.SetInt("MAX_NEIGHBORS", FPocketDirDefaults.MaxNeighbors);
+        }
+
+        private void SetShaderConstantsFPocketDir(ComputeShader cs, int atomCount, int generatedSphereCount)
+        {
+            cs.SetFloat("PROBE_RADIUS", 0f);
+            cs.SetFloat("MIN_ALPHA_SPHERE_RADIUS", FPocketDirDefaults.MinAsphereRadius);
+            cs.SetFloat("MAX_ALPHA_SPHERE_RADIUS", FPocketDirDefaults.MaxAsphereRadius);
+            cs.SetFloat("SPHERE_ATOM_EPS", FPocketConstants.SPHERE_ATOM_EPS);
+            cs.SetInt("DBSCAN_MIN_POINTS", 0);
+            cs.SetFloat("DBSCAN_EPS", 0f);
+            cs.SetFloat("MIN_POCKET_VOLUME", 0f);
+            cs.SetInt("atomCount", atomCount);
+            cs.SetInt("generatedSphereCount", generatedSphereCount);
+            cs.SetInt("maxAlphaSpheres", FPocketConstants.MAX_ALPHA_SPHERES);
+            cs.SetInt("maxPockets", FPocketConstants.MAX_POCKETS);
+            cs.SetInt("THREAD_GROUP_SIZE_X", FPocketConstants.THREAD_GROUP_SIZE_X);
+            cs.SetInt("THREAD_GROUP_SIZE_Y", FPocketConstants.THREAD_GROUP_SIZE_Y);
+            cs.SetInt("MIN_APOL_NEIGH", FPocketDirDefaults.MinApolNeigh);
+            cs.SetInt("MAX_NEIGHBORS", FPocketDirDefaults.MaxNeighbors);
         }
         private ComputeBuffer InitAtomBuffer(List<FPocketAtom> atoms)
         {
@@ -1497,7 +2192,8 @@ namespace AIDrugDiscovery
                 id = a.id,
                 pos = a.pos,
                 vdw_radius = a.vdw_radius,
-                hydrophobicity = a.hydrophobicity
+                hydrophobicity = a.hydrophobicity,
+                electroneg = a.electroneg
             }).ToArray();
             buffer.SetData(atomCS);
             return buffer;
@@ -1511,7 +2207,7 @@ namespace AIDrugDiscovery
             {
                 empty[i].radius = -1.0f;
                 empty[i].visited = 0;
-                empty[i].parent_atom1 = empty[i].parent_atom2 = empty[i].parent_atom3 = -1;
+                empty[i].parent_atom1 = empty[i].parent_atom2 = empty[i].parent_atom3 = empty[i].parent_atom4 = -1;
             }
             buffer.SetData(empty);
             return buffer;
