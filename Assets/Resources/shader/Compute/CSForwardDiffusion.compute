@@ -433,6 +433,45 @@ void ShiftCharsRight(int startIdx, int shiftCount, inout int chars[SMILES_MAX_LE
     }
 }
 
+void WriteRingLabel(int ringNum, out int labelChars[3], out int labelLen)
+{
+    labelChars[0] = 0;
+    labelChars[1] = 0;
+    labelChars[2] = 0;
+    labelLen = 0;
+    if (ringNum < 0)
+        return;
+    if (ringNum < 10)
+    {
+        labelChars[0] = '0' + ringNum;
+        labelLen = 1;
+        return;
+    }
+    int tens = ringNum / 10;
+    int ones = ringNum - tens * 10;
+    labelChars[0] = '%';
+    labelChars[1] = '0' + tens;
+    labelChars[2] = '0' + ones;
+    labelLen = 3;
+}
+
+bool AppendRingLabel(int ringNum, inout int chars[SMILES_MAX_LENGTH], inout int charIdx, inout bool isBufferFull)
+{
+    int labelChars[3];
+    int labelLen;
+    WriteRingLabel(ringNum, labelChars, labelLen);
+    if (labelLen <= 0)
+        return false;
+    if (charIdx + labelLen >= SMILES_MAX_LENGTH - 1)
+    {
+        isBufferFull = true;
+        return false;
+    }
+    for (int k = 0; k < labelLen; k++)
+        chars[charIdx++] = labelChars[k];
+    return true;
+}
+
 
 void EncodeSMILES(int molIdx, int atomCount, in int atomTypes[MAX_ATOM_COUNT],
                  in float3 atomPositions[MAX_ATOM_COUNT], in int bondTypes[MAX_ATOM_COUNT],
@@ -451,6 +490,19 @@ void EncodeSMILES(int molIdx, int atomCount, in int atomTypes[MAX_ATOM_COUNT],
     bool ringNumberUsed[MAX_RING_COUNT + 1];
     bool isAromaticRing[MAX_ATOM_COUNT];
     bool isBufferFull = false;
+
+    for (int a = 0; a < MAX_ATOM_COUNT; a++)
+    {
+        currentValence[a] = 0.0f;
+        isAromaticRing[a] = false;
+    }
+    for (int r = 0; r <= MAX_RING_COUNT; r++)
+        ringNumberUsed[r] = false;
+    for (int r = 0; r < MAX_RING_COUNT; r++)
+    {
+        ringMarkers[r].atomIndex = -1;
+        ringMarkers[r].ringNumber = 0;
+    }
     
     
     if (atomCount == 0 || atomCount > MAX_ATOM_COUNT)
@@ -566,14 +618,6 @@ void EncodeSMILES(int molIdx, int atomCount, in int atomTypes[MAX_ATOM_COUNT],
             
             nextIsBracket = (branchDepth > 0 || ringFormed || (i + 1 < atomCount && branchStack[branchDepth] == i + 1));
             nextIsRingNumber = false;
-            for (int k = 0; k < ringCount; k++)
-            {
-                if (ringMarkers[k].atomIndex == i)
-                {
-                    nextIsRingNumber = true;
-                    break;
-                }
-            }
             
             
             if (!nextIsBracket && !nextIsRingNumber)
@@ -648,94 +692,58 @@ void EncodeSMILES(int molIdx, int atomCount, in int atomTypes[MAX_ATOM_COUNT],
                 break;
             }
         }
-        
-        
-        
-        
-        for (int j = (isCurrentHetero || isPrevHetero) ? 0 : i - 1; j < i && j >= 0 && !ringFormed; j++)
+
+        for (int k = 0; k < ringCount; k++)
         {
-            if (CheckRingFormation(atomPositions[i], atomPositions[j], 1.8f) &&
-                ringCount < MAX_RING_COUNT && charIdx < SMILES_MAX_LENGTH - 2)
+            if (ringMarkers[k].atomIndex == i)
             {
-                int existingRingNum = -1;
-                
+                AppendRingLabel(ringMarkers[k].ringNumber, smilesChars, charIdx, isBufferFull);
+                ringMarkers[k].atomIndex = -1;
+                ringFormed = true;
+                if (isBufferFull)
+                    break;
+            }
+        }
+
+        if (!isBufferFull && ringCount < MAX_RING_COUNT && Random(uint2(molIdx, i * 17)) < 0.55f)
+        {
+            int lookAhead = 12;
+            int maxTarget = min(atomCount - 1, i + lookAhead);
+            for (int target = i + 2; target <= maxTarget && ringCount < MAX_RING_COUNT; target++)
+            {
+                if (!CheckRingFormation(atomPositions[i], atomPositions[target], 1.8f))
+                    continue;
+
+                bool alreadyTargeted = false;
                 for (int k = 0; k < ringCount; k++)
                 {
-                    bool isHeteroRing = (atomTypes[ringMarkers[k].atomIndex] == ATOM_N ||
-                                         atomTypes[ringMarkers[k].atomIndex] == ATOM_O ||
-                                         atomTypes[ringMarkers[k].atomIndex] == ATOM_S);
-                    if (ringMarkers[k].atomIndex == j && IsRingNumberAvailable(ringMarkers[k].ringNumber, ringMarkers, ringCount) &&
-                        (isHeteroRing || !isCurrentHetero))
+                    if (ringMarkers[k].atomIndex == target) { alreadyTargeted = true; break; }
+                }
+                if (alreadyTargeted)
+                    continue;
+
+                int newRingNum = -1;
+                for (int r = 1; r <= MAX_RING_COUNT; r++)
+                {
+                    if (!ringNumberUsed[r] && IsRingNumberAvailable(r, ringMarkers, ringCount))
                     {
-                        existingRingNum = ringMarkers[k].ringNumber;
+                        newRingNum = r;
                         break;
                     }
                 }
-                
-                if (existingRingNum != -1)
-                {
-                    
-                    smilesChars[charIdx++] = '0' + existingRingNum;
-                    float ringBondOrder = 1.0f;
-                    
-                    if (currentValence[j] + ringBondOrder <= GetMaxValence(atomTypes[j]) &&
-                        currentValence[i] + ringBondOrder <= currentMaxValence)
-                    {
-                        currentValence[j] += ringBondOrder;
-                        currentValence[i] += ringBondOrder;
-                    }
-                    
-                    if ((atomTypes[j] == ATOM_n || atomTypes[j] == ATOM_o || atomTypes[j] == ATOM_s) &&
-                        (currentAtomType == ATOM_n || currentAtomType == ATOM_o || currentAtomType == ATOM_s))
-                    {
-                        isAromaticRing[j] = true;
-                        isAromaticRing[i] = true;
-                    }
-                    ringFormed = true;
+                if (newRingNum < 0)
                     break;
-                }
-                else
-                {
-                    
-                    int newRingNum = -1;
-                    if (isCurrentHetero || (atomTypes[j] == ATOM_N || atomTypes[j] == ATOM_O || atomTypes[j] == ATOM_S))
-                    {
-                        
-                        for (int k = 1; k <= 2 && k <= MAX_RING_COUNT; k++)
-                        {
-                            if (!ringNumberUsed[k] && IsRingNumberAvailable(k, ringMarkers, ringCount))
-                            {
-                                newRingNum = k;
-                                ringNumberUsed[k] = true;
-                                break;
-                            }
-                        }
-                    }
-                    
-                    
-                    if (newRingNum == -1)
-                    {
-                        for (int k = 3; k <= MAX_RING_COUNT; k++)
-                        {
-                            if (!ringNumberUsed[k] && IsRingNumberAvailable(k, ringMarkers, ringCount))
-                            {
-                                newRingNum = k;
-                                ringNumberUsed[k] = true;
-                                break;
-                            }
-                        }
-                    }
-                    
-                    if (newRingNum != -1)
-                    {
-                        smilesChars[charIdx++] = '0' + newRingNum;
-                        ringMarkers[ringCount].atomIndex = i;
-                        ringMarkers[ringCount].ringNumber = newRingNum;
-                        ringCount++;
-                        ringFormed = true;
-                        break;
-                    }
-                }
+
+                AppendRingLabel(newRingNum, smilesChars, charIdx, isBufferFull);
+                if (isBufferFull)
+                    break;
+
+                ringMarkers[ringCount].atomIndex = target;
+                ringMarkers[ringCount].ringNumber = newRingNum;
+                ringCount++;
+                ringNumberUsed[newRingNum] = true;
+                ringFormed = true;
+                break;
             }
         }
         

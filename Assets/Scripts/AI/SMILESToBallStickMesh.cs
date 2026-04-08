@@ -5,6 +5,7 @@ using System;
 using System.Runtime.InteropServices;
 using Unity.Collections.LowLevel.Unsafe;
 using UnityEngine.Rendering;
+using System.Text;
 
 namespace AIDrugDiscovery
 {
@@ -33,6 +34,8 @@ namespace AIDrugDiscovery
         public int maxExtraBondCount = 12;
         public bool useSelectedSubsetDispatch = true;
         public bool useLegacySmilesTextureInput = false;
+        public bool enableGraphDebugProbe = false;
+        public int debugProbeMeshCount = 4;
 
         private ComputeBuffer vertexBufferPosition;
         private ComputeBuffer vertexBufferColor;
@@ -47,12 +50,15 @@ namespace AIDrugDiscovery
         private ComputeBuffer atomTypeInputBuffer;
         private ComputeBuffer atomPositionInputBuffer;
         private ComputeBuffer bondInputBuffer;
+        private ComputeBuffer graphDebugBuffer;
         private ComputeBuffer dummySmilesInputBuffer;
+        private ComputeBuffer dummyGraphDebugBuffer;
         private Texture2D dummySmilesInputTexture;
         private int maxVertexCount;
         private int maxIndexCount;
         private int allocatedBatchSize;
         private int maxBondLimit;
+        private const int GraphDebugStride = 16;
 
         private int[] BuildSmilesData(string smiles)
         {
@@ -71,6 +77,8 @@ namespace AIDrugDiscovery
             EnsureBuffers(batchSize);
             dummySmilesInputBuffer = new ComputeBuffer(1, sizeof(int));
             dummySmilesInputBuffer.SetData(new[] { 0 });
+            dummyGraphDebugBuffer = new ComputeBuffer(1, sizeof(int));
+            dummyGraphDebugBuffer.SetData(new[] { 0 });
             dummySmilesInputTexture = new Texture2D(1, 1, TextureFormat.RGBA32, false);
             dummySmilesInputTexture.SetPixel(0, 0, Color.clear);
             dummySmilesInputTexture.Apply();
@@ -119,6 +127,7 @@ namespace AIDrugDiscovery
             atomTypeInputBuffer?.Release();
             atomPositionInputBuffer?.Release();
             bondInputBuffer?.Release();
+            graphDebugBuffer?.Release();
         }
 
         private void AllocateBatchGraphBuffers(int meshCount)
@@ -140,6 +149,7 @@ namespace AIDrugDiscovery
             atomTypeInputBuffer = new ComputeBuffer(Mathf.Max(1, meshCount * maxAtomLimit), sizeof(int));
             atomPositionInputBuffer = new ComputeBuffer(Mathf.Max(1, meshCount * maxAtomLimit), Marshal.SizeOf(typeof(Vector3)));
             bondInputBuffer = new ComputeBuffer(Mathf.Max(1, meshCount * maxBondLimit), sizeof(int) * 2);
+            graphDebugBuffer = new ComputeBuffer(Mathf.Max(1, meshCount * GraphDebugStride), sizeof(int));
 
             meshAtomStartBuffer.SetData(atomStarts);
             meshAtomCountInputBuffer.SetData(new int[meshCount]);
@@ -148,6 +158,7 @@ namespace AIDrugDiscovery
             atomTypeInputBuffer.SetData(new int[Mathf.Max(1, meshCount * maxAtomLimit)]);
             atomPositionInputBuffer.SetData(new Vector3[Mathf.Max(1, meshCount * maxAtomLimit)]);
             bondInputBuffer.SetData(new SmilesMeshBondIndex[Mathf.Max(1, meshCount * maxBondLimit)]);
+            graphDebugBuffer.SetData(new int[Mathf.Max(1, meshCount * GraphDebugStride)]);
         }
 
         public bool test = true;
@@ -186,13 +197,14 @@ namespace AIDrugDiscovery
             int kernelGraph = ballStickCS.FindKernel("CSBuildBallStickGraphBatch");
             int kernelLayout = ballStickCS.FindKernel("CSBuildBallStickLayoutBatch");
             int kernelMesh = ballStickCS.FindKernel("CSGenerateBallStickMesh");
+            bool useTextureInputForDispatch = (smilesBuffer == null) && useLegacySmilesTextureInput && legacySmilesTexture != null;
 
             foreach (int kernelId in new[] { kernelGraph, kernelLayout, kernelMesh })
             {
                 int shaderSmilesLength = DiffusionGenerator.SMILES_MAX_LENGTH;
                 ballStickCS.SetInt("batchSize", runtimeBatchSize);
                 ballStickCS.SetInt("selectedCount", generatedMeshCount);
-                ballStickCS.SetInt("useSmilesTextureInput", useLegacySmilesTextureInput && legacySmilesTexture != null ? 1 : 0);
+                ballStickCS.SetInt("useSmilesTextureInput", useTextureInputForDispatch ? 1 : 0);
                 ballStickCS.SetInt("smilesMaxLength", shaderSmilesLength);
                 ballStickCS.SetInt("sphereSegments", config.sphereSegments);
                 ballStickCS.SetInt("cylinderSegments", config.cylinderSegments);
@@ -201,6 +213,7 @@ namespace AIDrugDiscovery
                 ballStickCS.SetFloat("bondRadius", config.bondRadius);
                 ballStickCS.SetInt("maxBondCount", maxBondLimit);
                 ballStickCS.SetInt("vertexCapacity", maxVertexCount);
+                ballStickCS.SetInt("enableGraphDebug", enableGraphDebugProbe ? 1 : 0);
                 ballStickCS.SetBuffer(kernelId, "smilesInputBuffer", smilesBuffer ?? dummySmilesInputBuffer);
                 ballStickCS.SetTexture(kernelId, "smilesInputTexture", legacySmilesTexture ?? dummySmilesInputTexture);
                 ballStickCS.SetBuffer(kernelId, "selectedMolIndexBuffer", selectedIndexBuffer);
@@ -211,6 +224,7 @@ namespace AIDrugDiscovery
                 ballStickCS.SetBuffer(kernelId, "atomTypeInputBuffer", atomTypeInputBuffer);
                 ballStickCS.SetBuffer(kernelId, "atomPositionInputBuffer", atomPositionInputBuffer);
                 ballStickCS.SetBuffer(kernelId, "bondInputBuffer", bondInputBuffer);
+                ballStickCS.SetBuffer(kernelId, "graphDebugBuffer", graphDebugBuffer ?? dummyGraphDebugBuffer);
             }
 
             ballStickCS.SetBuffer(kernelMesh, "vertexPosNormalBuffer", vertexBufferPosition);
@@ -218,6 +232,386 @@ namespace AIDrugDiscovery
             ballStickCS.SetBuffer(kernelMesh, "indexOutputBuffer", indexBuffer);
 
             ballStickCS.Dispatch(kernelGraph, threadGroupX, 1, 1);
+
+            if (enableGraphDebugProbe)
+            {
+                List<string> decodedSmiles = null;
+                try
+                {
+                    decodedSmiles = await SmilesMeshPreprocessor.ReadSmilesBatchAsync(
+                        smilesBuffer,
+                        runtimeBatchSize,
+                        DiffusionGenerator.SMILES_MAX_LENGTH,
+                        legacySmilesTexture);
+                }
+                catch
+                {
+                    decodedSmiles = null;
+                }
+
+                int[] probeAtomCounts = (await AsyncGPUReadback.RequestAsync(meshAtomCountInputBuffer)).GetData<int>().ToArray();
+                int[] probeBondCounts = (await AsyncGPUReadback.RequestAsync(meshBondCountInputBuffer)).GetData<int>().ToArray();
+                SmilesMeshBondIndex[] probeBonds = (await AsyncGPUReadback.RequestAsync(bondInputBuffer)).GetData<SmilesMeshBondIndex>().ToArray();
+                int[] probeAtomTypes = (await AsyncGPUReadback.RequestAsync(atomTypeInputBuffer)).GetData<int>().ToArray();
+                int[] probeGraphDbg = (graphDebugBuffer != null)
+                    ? (await AsyncGPUReadback.RequestAsync(graphDebugBuffer)).GetData<int>().ToArray()
+                    : Array.Empty<int>();
+                int probeCount = Mathf.Min(generatedMeshCount, Mathf.Max(1, debugProbeMeshCount));
+                for (int m = 0; m < probeCount; m++)
+                {
+                    int molIdxDbg = (selectedIndices != null && m < selectedIndices.Length) ? selectedIndices[m] : m;
+                    string smilesDbg = (decodedSmiles != null && molIdxDbg >= 0 && molIdxDbg < decodedSmiles.Count) ? decodedSmiles[molIdxDbg] : string.Empty;
+                    string smilesHead = smilesDbg;
+                    if (!string.IsNullOrEmpty(smilesHead) && smilesHead.Length > 80)
+                        smilesHead = smilesHead.Substring(0, 80) + "...";
+                    bool hasDigit = false;
+                    for (int si = 0; si < smilesDbg.Length; si++)
+                    {
+                        char ch = smilesDbg[si];
+                        if (ch >= '0' && ch <= '9') { hasDigit = true; break; }
+                    }
+                    bool hasBranch = !string.IsNullOrEmpty(smilesDbg) && (smilesDbg.IndexOf('(') >= 0 || smilesDbg.IndexOf(')') >= 0);
+                    bool hasPercentRing = !string.IsNullOrEmpty(smilesDbg) && smilesDbg.IndexOf('%') >= 0;
+                    int ringTokenCount = 0;
+                    int ringPairedCount = 0;
+                    int ringUnpairedLabels = 0;
+                    int cpuAtomCount = 0;
+                    int cpuBondCount = 0;
+                    int cpuCycleEdge = 0;
+                    int cpuRingClose = 0;
+                    int cpuRingCloseUnique = 0;
+                    if (!string.IsNullOrEmpty(smilesDbg))
+                    {
+                        Dictionary<int, int> ringCounts = new Dictionary<int, int>();
+                        for (int si = 0; si < smilesDbg.Length; si++)
+                        {
+                            char ch = smilesDbg[si];
+                            if (ch == '%' && si + 2 < smilesDbg.Length)
+                            {
+                                char d1 = smilesDbg[si + 1];
+                                char d2 = smilesDbg[si + 2];
+                                if (d1 >= '0' && d1 <= '9' && d2 >= '0' && d2 <= '9')
+                                {
+                                    int label = (d1 - '0') * 10 + (d2 - '0');
+                                    ringTokenCount++;
+                                    ringCounts.TryGetValue(label, out int cur);
+                                    ringCounts[label] = cur + 1;
+                                    si += 2;
+                                    continue;
+                                }
+                            }
+                            if (ch >= '0' && ch <= '9')
+                            {
+                                int label = ch - '0';
+                                ringTokenCount++;
+                                ringCounts.TryGetValue(label, out int cur);
+                                ringCounts[label] = cur + 1;
+                            }
+                        }
+                        foreach (var kv in ringCounts)
+                        {
+                            ringPairedCount += kv.Value / 2;
+                            if ((kv.Value & 1) != 0)
+                                ringUnpairedLabels++;
+                        }
+
+                        List<(int a, int b)> cpuBonds = new List<(int a, int b)>(64);
+                        HashSet<long> cpuEdgeSeen = new HashSet<long>();
+                        int[] ringAtom = new int[128];
+                        for (int ri = 0; ri < ringAtom.Length; ri++) ringAtom[ri] = -1;
+                        int[] branchStack = new int[64];
+                        int branchTop = 0;
+                        int currentAtomCpu = -1;
+                        int pendingBondCpu = 0;
+                        bool TryMapAtomCpu(char a0, char a1, out int consumedCpu)
+                        {
+                            consumedCpu = 0;
+                            if (a0 == '\0') return false;
+                            if (a0 == 'C' && a1 == 'l') { consumedCpu = 2; return true; }
+                            if (a0 == 'B' && a1 == 'r') { consumedCpu = 2; return true; }
+                            if (a0 == 'S' && a1 == 'i') { consumedCpu = 2; return true; }
+                            if (a0 == 'A' && a1 == 's') { consumedCpu = 2; return true; }
+                            if (a0 == 'S' && a1 == 'e') { consumedCpu = 2; return true; }
+                            switch (a0)
+                            {
+                                case 'H':
+                                case 'B':
+                                case 'C':
+                                case 'N':
+                                case 'O':
+                                case 'F':
+                                case 'P':
+                                case 'S':
+                                case 'I':
+                                case 'c':
+                                case 'n':
+                                case 'o':
+                                case 's':
+                                case 'p':
+                                    consumedCpu = 1;
+                                    return true;
+                                default:
+                                    return false;
+                            }
+                        }
+
+                        for (int si = 0; si < smilesDbg.Length;)
+                        {
+                            char c0 = smilesDbg[si];
+                            char c1 = (si + 1 < smilesDbg.Length) ? smilesDbg[si + 1] : '\0';
+                            if (c0 == '=') { pendingBondCpu = 1; si++; continue; }
+                            if (c0 == '#') { pendingBondCpu = 2; si++; continue; }
+                            if (c0 == ':') { pendingBondCpu = 3; si++; continue; }
+                            if (c0 == '-') { pendingBondCpu = 0; si++; continue; }
+                            if (c0 == '.') { currentAtomCpu = -1; pendingBondCpu = 0; si++; continue; }
+                            if (c0 == '/' || c0 == '\\' || c0 == '@') { si++; continue; }
+                            if (c0 == '(') { if (branchTop < branchStack.Length) branchStack[branchTop++] = currentAtomCpu; si++; continue; }
+                            if (c0 == ')') { if (branchTop > 0) currentAtomCpu = branchStack[--branchTop]; si++; continue; }
+                            if (c0 == '%')
+                            {
+                                if (si + 2 < smilesDbg.Length)
+                                {
+                                    char d1 = smilesDbg[si + 1];
+                                    char d2 = smilesDbg[si + 2];
+                                    if (d1 >= '0' && d1 <= '9' && d2 >= '0' && d2 <= '9')
+                                    {
+                                        int ringNumber = (d1 - '0') * 10 + (d2 - '0');
+                                        if (currentAtomCpu >= 0)
+                                        {
+                                            if (ringNumber >= 0 && ringNumber < ringAtom.Length)
+                                            {
+                                                if (ringAtom[ringNumber] >= 0)
+                                                {
+                                                    int a = ringAtom[ringNumber];
+                                                    int b = currentAtomCpu;
+                                                    if (a != b)
+                                                    {
+                                                        int lo = a < b ? a : b;
+                                                        int hi = a < b ? b : a;
+                                                        long key = ((long)lo << 32) | (uint)hi;
+                                                        cpuRingClose++;
+                                                        if (cpuEdgeSeen.Add(key))
+                                                        {
+                                                            cpuRingCloseUnique++;
+                                                            cpuBonds.Add((a, b));
+                                                        }
+                                                    }
+                                                    ringAtom[ringNumber] = -1;
+                                                }
+                                                else
+                                                {
+                                                    ringAtom[ringNumber] = currentAtomCpu;
+                                                }
+                                            }
+                                        }
+                                        pendingBondCpu = 0;
+                                        si += 3;
+                                        continue;
+                                    }
+                                }
+                            }
+                            if (c0 >= '0' && c0 <= '9')
+                            {
+                                int ringNumber = c0 - '0';
+                                if (currentAtomCpu >= 0)
+                                {
+                                    if (ringNumber >= 0 && ringNumber < ringAtom.Length)
+                                    {
+                                        if (ringAtom[ringNumber] >= 0)
+                                        {
+                                            int a = ringAtom[ringNumber];
+                                            int b = currentAtomCpu;
+                                            if (a != b)
+                                            {
+                                                int lo = a < b ? a : b;
+                                                int hi = a < b ? b : a;
+                                                long key = ((long)lo << 32) | (uint)hi;
+                                                cpuRingClose++;
+                                                if (cpuEdgeSeen.Add(key))
+                                                {
+                                                    cpuRingCloseUnique++;
+                                                    cpuBonds.Add((a, b));
+                                                }
+                                            }
+                                            ringAtom[ringNumber] = -1;
+                                        }
+                                        else
+                                        {
+                                            ringAtom[ringNumber] = currentAtomCpu;
+                                        }
+                                    }
+                                }
+                                pendingBondCpu = 0;
+                                si++;
+                                continue;
+                            }
+                            if (TryMapAtomCpu(c0, c1, out int consumedCpu))
+                            {
+                                int newAtom = cpuAtomCount;
+                                cpuAtomCount++;
+                                if (currentAtomCpu >= 0)
+                                {
+                                    int a = currentAtomCpu;
+                                    int b = newAtom;
+                                    int lo = a < b ? a : b;
+                                    int hi = a < b ? b : a;
+                                    long key = ((long)lo << 32) | (uint)hi;
+                                    if (cpuEdgeSeen.Add(key))
+                                        cpuBonds.Add((a, b));
+                                }
+                                currentAtomCpu = newAtom;
+                                pendingBondCpu = 0;
+                                si += consumedCpu;
+                                continue;
+                            }
+                            si++;
+                        }
+
+                        if (cpuBonds.Count > 0)
+                        {
+                            HashSet<long> uniq = new HashSet<long>();
+                            List<(int a, int b)> compact = new List<(int a, int b)>(cpuBonds.Count);
+                            for (int bi = 0; bi < cpuBonds.Count; bi++)
+                            {
+                                var b = cpuBonds[bi];
+                                if (b.a == b.b) continue;
+                                int lo = b.a < b.b ? b.a : b.b;
+                                int hi = b.a < b.b ? b.b : b.a;
+                                long key = ((long)lo << 32) | (uint)hi;
+                                if (uniq.Add(key))
+                                    compact.Add((lo, hi));
+                            }
+                            cpuBonds = compact;
+                        }
+                        cpuBondCount = cpuBonds.Count;
+                        if (cpuAtomCount > 0 && cpuBondCount > 0)
+                        {
+                            int[] ufCpu = new int[cpuAtomCount];
+                            for (int ui = 0; ui < ufCpu.Length; ui++) ufCpu[ui] = ui;
+                            int FindCpu(int x)
+                            {
+                                while (ufCpu[x] != x)
+                                {
+                                    ufCpu[x] = ufCpu[ufCpu[x]];
+                                    x = ufCpu[x];
+                                }
+                                return x;
+                            }
+                            void UnionCpu(int a, int b)
+                            {
+                                int ra = FindCpu(a);
+                                int rb = FindCpu(b);
+                                if (ra == rb) { cpuCycleEdge++; return; }
+                                ufCpu[rb] = ra;
+                            }
+                            for (int bi = 0; bi < cpuBonds.Count; bi++)
+                            {
+                                var b = cpuBonds[bi];
+                                if (b.a >= 0 && b.a < cpuAtomCount && b.b >= 0 && b.b < cpuAtomCount && b.a != b.b)
+                                    UnionCpu(b.a, b.b);
+                            }
+                        }
+                    }
+
+                    int atomCountDbg = m < probeAtomCounts.Length ? probeAtomCounts[m] : 0;
+                    int bondCountDbg = m < probeBondCounts.Length ? probeBondCounts[m] : 0;
+                    int atomStartDbg = m * maxAtomLimit;
+                    int bondStartDbg = m * maxBondLimit;
+                    int reachable = 0;
+                    if (atomCountDbg > 0)
+                    {
+                        bool[] seen = new bool[atomCountDbg];
+                        Queue<int> q = new Queue<int>();
+                        seen[0] = true;
+                        q.Enqueue(0);
+                        while (q.Count > 0)
+                        {
+                            int cur = q.Dequeue();
+                            reachable++;
+                            for (int bi = 0; bi < bondCountDbg; bi++)
+                            {
+                                int idx = bondStartDbg + bi;
+                                if (idx < 0 || idx >= probeBonds.Length) continue;
+                                var b = probeBonds[idx];
+                                int n = -1;
+                                if (b.AtomA == cur) n = b.AtomB;
+                                else if (b.AtomB == cur) n = b.AtomA;
+                                if (n < 0 || n >= atomCountDbg || seen[n]) continue;
+                                seen[n] = true;
+                                q.Enqueue(n);
+                            }
+                        }
+                    }
+                    int t0 = (atomStartDbg + 0 < probeAtomTypes.Length) ? probeAtomTypes[atomStartDbg] : -1;
+                    int t1 = (atomStartDbg + 1 < probeAtomTypes.Length) ? probeAtomTypes[atomStartDbg + 1] : -1;
+                    int t2 = (atomStartDbg + 2 < probeAtomTypes.Length) ? probeAtomTypes[atomStartDbg + 2] : -1;
+                    int dbgBase = m * GraphDebugStride;
+                    int dbgDigitToken = (dbgBase + 0 < probeGraphDbg.Length) ? probeGraphDbg[dbgBase + 0] : -1;
+                    int dbgPercentToken = (dbgBase + 1 < probeGraphDbg.Length) ? probeGraphDbg[dbgBase + 1] : -1;
+                    int dbgRingOpen = (dbgBase + 2 < probeGraphDbg.Length) ? probeGraphDbg[dbgBase + 2] : -1;
+                    int dbgRingClose = (dbgBase + 3 < probeGraphDbg.Length) ? probeGraphDbg[dbgBase + 3] : -1;
+                    int dbgBondPreCompact = (dbgBase + 4 < probeGraphDbg.Length) ? probeGraphDbg[dbgBase + 4] : -1;
+                    int dbgBondPostCompact = (dbgBase + 5 < probeGraphDbg.Length) ? probeGraphDbg[dbgBase + 5] : -1;
+                    int dbgBondPostConn = (dbgBase + 6 < probeGraphDbg.Length) ? probeGraphDbg[dbgBase + 6] : -1;
+                    int dbgSkipSelf = (dbgBase + 8 < probeGraphDbg.Length) ? probeGraphDbg[dbgBase + 8] : -1;
+                    int dbgSkipRange = (dbgBase + 9 < probeGraphDbg.Length) ? probeGraphDbg[dbgBase + 9] : -1;
+                    int dbgSkipDup = (dbgBase + 10 < probeGraphDbg.Length) ? probeGraphDbg[dbgBase + 10] : -1;
+                    int dbgMinEnd = (dbgBase + 11 < probeGraphDbg.Length) ? probeGraphDbg[dbgBase + 11] : -1;
+                    int dbgMaxEnd = (dbgBase + 12 < probeGraphDbg.Length) ? probeGraphDbg[dbgBase + 12] : -1;
+                    int dbgAtomStart = (dbgBase + 13 < probeGraphDbg.Length) ? probeGraphDbg[dbgBase + 13] : -1;
+                    int dbgBondStart = (dbgBase + 14 < probeGraphDbg.Length) ? probeGraphDbg[dbgBase + 14] : -1;
+                    int dbgMaxBondCount = (dbgBase + 15 < probeGraphDbg.Length) ? probeGraphDbg[dbgBase + 15] : -1;
+                    int validBond = 0;
+                    int selfBond = 0;
+                    StringBuilder firstBonds = new StringBuilder(160);
+                    int showBond = Mathf.Min(bondCountDbg, 12);
+                    int cycleEdge = 0;
+                    if (atomCountDbg > 0 && bondCountDbg > 0)
+                    {
+                        int[] uf = new int[atomCountDbg];
+                        for (int ui = 0; ui < atomCountDbg; ui++) uf[ui] = ui;
+                        int Find(int x)
+                        {
+                            while (uf[x] != x)
+                            {
+                                uf[x] = uf[uf[x]];
+                                x = uf[x];
+                            }
+                            return x;
+                        }
+                        void Union(int a, int b)
+                        {
+                            int ra = Find(a);
+                            int rb = Find(b);
+                            if (ra == rb) { cycleEdge++; return; }
+                            uf[rb] = ra;
+                        }
+                        for (int bi = 0; bi < bondCountDbg; bi++)
+                        {
+                            int idx = bondStartDbg + bi;
+                            if (idx < 0 || idx >= probeBonds.Length) continue;
+                            var b = probeBonds[idx];
+                            if (b.AtomA >= 0 && b.AtomA < atomCountDbg && b.AtomB >= 0 && b.AtomB < atomCountDbg && b.AtomA != b.AtomB)
+                                Union(b.AtomA, b.AtomB);
+                        }
+                    }
+                    for (int bi = 0; bi < bondCountDbg; bi++)
+                    {
+                        int idx = bondStartDbg + bi;
+                        if (idx < 0 || idx >= probeBonds.Length) continue;
+                        var b = probeBonds[idx];
+                        if (b.AtomA == b.AtomB) selfBond++;
+                        else if (b.AtomA >= 0 && b.AtomA < atomCountDbg && b.AtomB >= 0 && b.AtomB < atomCountDbg) validBond++;
+                        if (bi < showBond)
+                        {
+                            if (bi > 0) firstBonds.Append(' ');
+                            firstBonds.Append('(').Append(b.AtomA).Append('-').Append(b.AtomB).Append(')');
+                        }
+                    }
+                    Debug.Log($"[BallStickGraphProbe] mesh={m} molIdx={molIdxDbg} atomCount={atomCountDbg} bondCount={bondCountDbg} validBond={validBond} selfBond={selfBond} reachableFrom0={reachable}/{atomCountDbg} cycleEdge={cycleEdge} headTypes={t0},{t1},{t2} hasDigit={hasDigit} hasPercentRing={hasPercentRing} hasBranch={hasBranch} ringTokenCount={ringTokenCount} ringPairedCount={ringPairedCount} ringUnpairedLabels={ringUnpairedLabels} cpuAtomCount={cpuAtomCount} cpuBondCount={cpuBondCount} cpuCycleEdge={cpuCycleEdge} cpuRingClose={cpuRingClose} cpuRingCloseUnique={cpuRingCloseUnique} gpuDigitToken={dbgDigitToken} gpuPercentToken={dbgPercentToken} gpuRingOpen={dbgRingOpen} gpuRingClose={dbgRingClose} gpuBondPreCompact={dbgBondPreCompact} gpuBondPostCompact={dbgBondPostCompact} gpuBondPostConn={dbgBondPostConn} gpuSkipSelf={dbgSkipSelf} gpuSkipRange={dbgSkipRange} gpuSkipDup={dbgSkipDup} gpuMinEnd={dbgMinEnd} gpuMaxEnd={dbgMaxEnd} gpuAtomStart={dbgAtomStart} gpuBondStart={dbgBondStart} gpuMaxBondCount={dbgMaxBondCount} smilesHead={smilesHead} firstBonds={firstBonds}");
+                }
+            }
+
             ballStickCS.Dispatch(kernelLayout, threadGroupX, 1, 1);
             ballStickCS.Dispatch(kernelMesh, threadGroupX, 1, 1);
 
@@ -424,6 +818,7 @@ namespace AIDrugDiscovery
             bondCountBuffer?.Release();
             ReleaseInputBuffers();
             dummySmilesInputBuffer?.Release();
+            dummyGraphDebugBuffer?.Release();
             if (dummySmilesInputTexture != null)
                 Destroy(dummySmilesInputTexture);
         }

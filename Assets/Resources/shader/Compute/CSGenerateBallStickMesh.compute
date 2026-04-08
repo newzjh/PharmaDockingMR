@@ -1,3 +1,4 @@
+#pragma optimize("", off)
 #pragma kernel CSBuildBallStickGraphBatch
 #pragma kernel CSBuildBallStickLayoutBatch
 #pragma kernel CSGenerateBallStickMesh
@@ -17,6 +18,7 @@ float atomRadius;
 float bondRadius;
 int maxBondCount;
 int vertexCapacity;
+int enableGraphDebug;
 
 StructuredBuffer<int> smilesInputBuffer;
 Texture2D<float4> smilesInputTexture;
@@ -31,6 +33,7 @@ RWStructuredBuffer<int2> bondInputBuffer;
 RWStructuredBuffer<float3> vertexPosNormalBuffer;
 RWStructuredBuffer<float4> vertexOutputBuffer_color;
 RWStructuredBuffer<int> indexOutputBuffer;
+RWStructuredBuffer<int> graphDebugBuffer;
 
 bool TryMapSimpleAtom(int c0, int c1, out int atomType, out int consumed)
 {
@@ -130,6 +133,24 @@ bool TryParseBracketAtomToken(int molIdx, int startIdx, out int mappedType, out 
     return true;
 }
 
+bool TryAppendBracketAtom(int molIdx, int startIdx, int atomStart, inout int2 localBonds[128], int localBondCap, inout int atomCount, inout int currentAtom, inout int pendingBond, inout int writeBondCount, out int nextIdx)
+{
+    nextIdx = startIdx + 1;
+    int mappedType;
+    if (!TryParseBracketAtomToken(molIdx, startIdx, mappedType, nextIdx))
+        return false;
+
+    int newAtom = atomCount;
+    atomTypeInputBuffer[atomStart + newAtom] = mappedType;
+    atomPositionInputBuffer[atomStart + newAtom] = float3(0, 0, 0);
+    if (currentAtom >= 0 && writeBondCount < localBondCap)
+        localBonds[writeBondCount++] = int2(currentAtom, newAtom);
+    currentAtom = newAtom;
+    atomCount++;
+    pendingBond = 0;
+    return true;
+}
+
 float Hash01(uint seed)
 {
     return frac(sin(seed * 12.9898f + 78.233f) * 43758.5453f);
@@ -138,6 +159,9 @@ float Hash01(uint seed)
 static const int PACKED_ATOM_WORDS = (MAX_ATOM_COUNT + 3) / 4;
 static const int PACKED_PLACED_WORDS = (MAX_ATOM_COUNT + 31) / 32;
 static const int PACKED_CHILD_WORDS = (MAX_GRAPH_NEIGHBORS + 3) / 4;
+static const int RING_SLOT_COUNT = 16;
+static const int MAX_RING_ID = 100;
+static const int GRAPH_DEBUG_STRIDE = 16;
 
 int PackedByteGet(int packed[PACKED_ATOM_WORDS], int idx)
 {
@@ -197,15 +221,20 @@ void CSBuildBallStickGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
     int atomStart = meshAtomStartBuffer[meshIdx];
     int bondStart = meshBondStartBuffer[meshIdx];
 
-    int ringAtom[10];
-    int ringBond[10];
+    int ringAtomById[MAX_RING_ID];
     int branchStack[16];
-    for (int r = 0; r < 10; r++) { ringAtom[r] = -1; ringBond[r] = 0; }
+    for (int r = 0; r < MAX_RING_ID; r++) { ringAtomById[r] = -1; }
+    int2 localBonds[128];
+    int localBondCap = min(maxBondCount, 128);
     int branchTop = 0;
     int atomCount = 0;
     int writeBondCount = 0;
     int currentAtom = -1;
     int pendingBond = 0;
+    int dbgDigitToken = 0;
+    int dbgPercentToken = 0;
+    int dbgRingOpen = 0;
+    int dbgRingClose = 0;
     int molIdx = selectedMolIndexBuffer[meshIdx];
     if (molIdx < 0 || molIdx >= batchSize)
     {
@@ -229,24 +258,29 @@ void CSBuildBallStickGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
         else if (c0 == 47 || c0 == 92 || c0 == 64) { i++; continue; } // '/', '\\', '@'
         else if (c0 == '%')
         {
+            dbgPercentToken++;
             int d1 = ReadSmilesChar(molIdx, i + 1);
             int d2 = ReadSmilesChar(molIdx, i + 2);
             if (d1 >= '0' && d1 <= '9' && d2 >= '0' && d2 <= '9')
             {
-                int ring = ((d1 - '0') * 10 + (d2 - '0')) % 10;
+                int ringNumber = (d1 - '0') * 10 + (d2 - '0');
                 if (currentAtom >= 0)
                 {
-                    if (ringAtom[ring] >= 0)
+                    if (ringNumber >= 0 && ringNumber < MAX_RING_ID)
                     {
-                        if (writeBondCount < maxBondCount)
-                            bondInputBuffer[bondStart + writeBondCount++] = int2(ringAtom[ring], currentAtom);
-                        ringAtom[ring] = -1;
-                        ringBond[ring] = 0;
-                    }
-                    else
-                    {
-                        ringAtom[ring] = currentAtom;
-                        ringBond[ring] = pendingBond;
+                        int a = ringAtomById[ringNumber];
+                        if (a >= 0)
+                        {
+                            if (a != currentAtom && writeBondCount < maxBondCount)
+                                bondInputBuffer[bondStart + writeBondCount++] = int2(a, currentAtom);
+                            ringAtomById[ringNumber] = -1;
+                            dbgRingClose++;
+                        }
+                        else
+                        {
+                            ringAtomById[ringNumber] = currentAtom;
+                            dbgRingOpen++;
+                        }
                     }
                 }
                 pendingBond = 0;
@@ -271,18 +305,9 @@ void CSBuildBallStickGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
 #if ALLOW_C0_91        
         else if (c0 == 91) // '['
         {
-            int mappedType;
             int nextIdx;
-            if (TryParseBracketAtomToken(molIdx, i, mappedType, nextIdx))
+            if (TryAppendBracketAtom(molIdx, i, atomStart, localBonds, localBondCap, atomCount, currentAtom, pendingBond, writeBondCount, nextIdx))
             {
-                int newAtom = atomCount;
-                atomTypeInputBuffer[atomStart + newAtom] = mappedType;
-                atomPositionInputBuffer[atomStart + newAtom] = float3(0, 0, 0);
-                if (currentAtom >= 0 && writeBondCount < maxBondCount)
-                    bondInputBuffer[bondStart + writeBondCount++] = int2(currentAtom, newAtom);
-                currentAtom = newAtom;
-                atomCount++;
-                pendingBond = 0;
                 i = nextIdx;
                 continue;
             }
@@ -292,20 +317,25 @@ void CSBuildBallStickGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
 #endif
         else if (c0 >= '0' && c0 <= '9')
         {
-            int ring = c0 - '0';
-            if (ring >= 0 && ring < 10 && currentAtom >= 0)
+            dbgDigitToken++;
+            int ringNumber = c0 - '0';
+            if (currentAtom >= 0)
             {
-                if (ringAtom[ring] >= 0)
+                if (ringNumber >= 0 && ringNumber < MAX_RING_ID)
                 {
-                    if (writeBondCount < maxBondCount)
-                        bondInputBuffer[bondStart + writeBondCount++] = int2(ringAtom[ring], currentAtom);
-                    ringAtom[ring] = -1;
-                    ringBond[ring] = 0;
-                }
-                else
-                {
-                    ringAtom[ring] = currentAtom;
-                    ringBond[ring] = pendingBond;
+                    int a = ringAtomById[ringNumber];
+                    if (a >= 0)
+                    {
+                                if (a != currentAtom && writeBondCount < localBondCap)
+                                    localBonds[writeBondCount++] = int2(a, currentAtom);
+                        ringAtomById[ringNumber] = -1;
+                        dbgRingClose++;
+                    }
+                    else
+                    {
+                        ringAtomById[ringNumber] = currentAtom;
+                        dbgRingOpen++;
+                    }
                 }
             }
             pendingBond = 0;
@@ -320,8 +350,8 @@ void CSBuildBallStickGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
             int newAtom = atomCount;
             atomTypeInputBuffer[atomStart + newAtom] = atomType;
             atomPositionInputBuffer[atomStart + newAtom] = float3(0, 0, 0);
-            if (currentAtom >= 0 && writeBondCount < maxBondCount)
-                bondInputBuffer[bondStart + writeBondCount++] = int2(currentAtom, newAtom);
+            if (currentAtom >= 0 && writeBondCount < localBondCap)
+                localBonds[writeBondCount++] = int2(currentAtom, newAtom);
             currentAtom = newAtom;
             atomCount++;
             pendingBond = 0;
@@ -338,19 +368,153 @@ void CSBuildBallStickGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
         atomPositionInputBuffer[atomStart + atomIdx] = float3(0, 0, 0);
     }
 
-    for (int bondIdx = writeBondCount; bondIdx < maxBondCount; bondIdx++)
-        bondInputBuffer[bondStart + bondIdx] = int2(0, 0);
+    int dbgBondPreCompact = writeBondCount;
+    int dbgSkipSelf = 0;
+    int dbgSkipRange = 0;
+    int dbgSkipDup = 0;
+    int dbgMinEnd = 2147483647;
+    int dbgMaxEnd = -2147483647;
+    int compactBondCount = 0;
+    for (int bi = 0; bi < writeBondCount; bi++)
+    {
+        int2 b = localBonds[bi];
+        int a = b.x;
+        int c = b.y;
+        dbgMinEnd = min(dbgMinEnd, min(a, c));
+        dbgMaxEnd = max(dbgMaxEnd, max(a, c));
+        if (a == c) { dbgSkipSelf++; continue; }
+        if (a < 0 || c < 0 || a >= atomCount || c >= atomCount) { dbgSkipRange++; continue; }
+        int lo = min(a, c);
+        int hi = max(a, c);
+
+        bool dup = false;
+        for (int pj = 0; pj < compactBondCount; pj++)
+        {
+            int2 p = localBonds[pj];
+            int plo = min(p.x, p.y);
+            int phi = max(p.x, p.y);
+            if (plo == lo && phi == hi) { dup = true; break; }
+        }
+        if (dup) { dbgSkipDup++; continue; }
+
+        if (compactBondCount < localBondCap)
+            localBonds[compactBondCount++] = int2(lo, hi);
+    }
+    writeBondCount = compactBondCount;
+    int dbgBondPostCompact = writeBondCount;
 
     if (atomCount > 1 && writeBondCount == 0)
     {
-        int fallback = min(atomCount - 1, maxBondCount);
+        int fallback = min(atomCount - 1, localBondCap);
         for (int i = 1; i <= fallback; i++)
-            bondInputBuffer[bondStart + (i - 1)] = int2(i - 1, i);
+            localBonds[i - 1] = int2(i - 1, i);
         writeBondCount = fallback;
     }
 
+    // Ensure graph connectivity from atom 0 to avoid disconnected-component-only layouts in batch mode.
+    if (atomCount > 1 && writeBondCount > 0)
+    {
+        bool visited[MAX_ATOM_COUNT];
+        int bfsQueue[MAX_ATOM_COUNT];
+        for (int a = 0; a < atomCount; a++) visited[a] = false;
+
+        int qHead = 0;
+        int qTail = 0;
+        visited[0] = true;
+        bfsQueue[qTail++] = 0;
+        while (qHead < qTail)
+        {
+            int cur = bfsQueue[qHead++];
+            for (int bi = 0; bi < writeBondCount; bi++)
+            {
+                int2 b = localBonds[bi];
+                int n = -1;
+                if (b.x == cur) n = b.y;
+                else if (b.y == cur) n = b.x;
+                if (n < 0 || n >= atomCount || visited[n]) continue;
+                visited[n] = true;
+                bfsQueue[qTail++] = n;
+            }
+        }
+
+        for (int seed = 0; seed < atomCount; seed++)
+        {
+            if (visited[seed]) continue;
+
+            int anchor = seed - 1;
+            while (anchor >= 0 && !visited[anchor]) anchor--;
+            if (anchor < 0) anchor = 0;
+
+            bool exists = false;
+            for (int bi = 0; bi < writeBondCount; bi++)
+            {
+                int2 b = localBonds[bi];
+                if ((b.x == anchor && b.y == seed) || (b.x == seed && b.y == anchor))
+                {
+                    exists = true;
+                    break;
+                }
+            }
+            if (!exists && writeBondCount < localBondCap)
+                localBonds[writeBondCount++] = int2(anchor, seed);
+
+            // Flood-fill this component as reachable now.
+            qHead = 0;
+            qTail = 0;
+            if (!visited[seed])
+            {
+                visited[seed] = true;
+                bfsQueue[qTail++] = seed;
+            }
+            while (qHead < qTail)
+            {
+                int cur = bfsQueue[qHead++];
+                for (int bi = 0; bi < writeBondCount; bi++)
+                {
+                    int2 b = localBonds[bi];
+                    int n = -1;
+                    if (b.x == cur) n = b.y;
+                    else if (b.y == cur) n = b.x;
+                    if (n < 0 || n >= atomCount || visited[n]) continue;
+                    visited[n] = true;
+                    bfsQueue[qTail++] = n;
+                }
+            }
+        }
+    }
+    int dbgBondPostConnectivity = writeBondCount;
+
+    int outCount = min(writeBondCount, maxBondCount);
+    for (int bondIdx = 0; bondIdx < maxBondCount; bondIdx++)
+    {
+        if (bondIdx < outCount && bondIdx < localBondCap)
+            bondInputBuffer[bondStart + bondIdx] = localBonds[bondIdx];
+        else
+            bondInputBuffer[bondStart + bondIdx] = int2(0, 0);
+    }
+
     meshAtomCountInputBuffer[meshIdx] = atomCount;
-    meshBondCountInputBuffer[meshIdx] = writeBondCount;
+    meshBondCountInputBuffer[meshIdx] = outCount;
+    if (enableGraphDebug != 0)
+    {
+        int baseIdx = meshIdx * GRAPH_DEBUG_STRIDE;
+        graphDebugBuffer[baseIdx + 0] = dbgDigitToken;
+        graphDebugBuffer[baseIdx + 1] = dbgPercentToken;
+        graphDebugBuffer[baseIdx + 2] = dbgRingOpen;
+        graphDebugBuffer[baseIdx + 3] = dbgRingClose;
+        graphDebugBuffer[baseIdx + 4] = dbgBondPreCompact;
+        graphDebugBuffer[baseIdx + 5] = dbgBondPostCompact;
+        graphDebugBuffer[baseIdx + 6] = dbgBondPostConnectivity;
+        graphDebugBuffer[baseIdx + 7] = atomCount;
+        graphDebugBuffer[baseIdx + 8] = dbgSkipSelf;
+        graphDebugBuffer[baseIdx + 9] = dbgSkipRange;
+        graphDebugBuffer[baseIdx + 10] = dbgSkipDup;
+        graphDebugBuffer[baseIdx + 11] = dbgMinEnd;
+        graphDebugBuffer[baseIdx + 12] = dbgMaxEnd;
+        graphDebugBuffer[baseIdx + 13] = atomStart;
+        graphDebugBuffer[baseIdx + 14] = bondStart;
+        graphDebugBuffer[baseIdx + 15] = maxBondCount;
+    }
 }
 
 [numthreads(32, 1, 1)]
@@ -380,40 +544,52 @@ void CSBuildBallStickLayoutBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
         placed[i] = false;
     }
 
-    int qHead = 0;
-    int qTail = 0;
-    placed[0] = true;
-    queue[qTail++] = 0;
-    while (qHead < qTail)
+    int componentCount = 0;
+    for (int seed = 0; seed < atomCount; seed++)
     {
-        int current = queue[qHead++];
-        int children[MAX_GRAPH_NEIGHBORS];
-        int childCount = 0;
-        for (int b = 0; b < bondCount; b++)
-        {
-            int2 bond = bondInputBuffer[bondStart + b];
-            int n = -1;
-            if (bond.x == current) n = bond.y;
-            else if (bond.y == current) n = bond.x;
-            if (n < 0 || n >= atomCount || placed[n])
-                continue;
+        if (placed[seed])
+            continue;
 
-            bool exists = false;
-            for (int c = 0; c < childCount; c++)
+        float3 componentAnchor = float3(
+            ((componentCount % 3) - 1) * bondLength * 2.2f,
+            (componentCount / 3) * bondLength * 1.8f,
+            ((componentCount & 1) == 0 ? 0.7f : -0.7f) * bondLength);
+        positions[seed] = componentAnchor;
+        placed[seed] = true;
+        int qHead = 0;
+        int qTail = 0;
+        queue[qTail++] = seed;
+
+        while (qHead < qTail)
+        {
+            int current = queue[qHead++];
+            int children[MAX_GRAPH_NEIGHBORS];
+            int childCount = 0;
+            for (int b = 0; b < bondCount; b++)
             {
-                if (children[c] == n) { exists = true; break; }
-            }
-            if (!exists && childCount < MAX_GRAPH_NEIGHBORS)
-                children[childCount++] = n;
-        }
+                int2 bond = bondInputBuffer[bondStart + b];
+                int n = -1;
+                if (bond.x == current) n = bond.y;
+                else if (bond.y == current) n = bond.x;
+                if (n < 0 || n >= atomCount || placed[n])
+                    continue;
 
-        float3 parentDir = float3(1, 0, 0);
-        if (parent[current] >= 0)
-        {
-            parentDir = positions[current] - positions[parent[current]];
-            float d = length(parentDir);
-            parentDir = d < 1e-6f ? float3(1, 0, 0) : parentDir / d;
-        }
+                bool exists = false;
+                for (int c = 0; c < childCount; c++)
+                {
+                    if (children[c] == n) { exists = true; break; }
+                }
+                if (!exists && childCount < MAX_GRAPH_NEIGHBORS)
+                    children[childCount++] = n;
+            }
+
+            float3 parentDir = float3(1, 0, 0);
+            if (parent[current] >= 0)
+            {
+                parentDir = positions[current] - positions[parent[current]];
+                float d = length(parentDir);
+                parentDir = d < 1e-6f ? float3(1, 0, 0) : parentDir / d;
+            }
             float3 refUp = abs(parentDir.y) < 0.9f ? float3(0, 1, 0) : float3(1, 0, 0);
             float3 tangent = normalize(cross(parentDir, refUp));
             float3 bitangent = normalize(cross(parentDir, tangent));
@@ -432,16 +608,8 @@ void CSBuildBallStickLayoutBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
             placed[child] = true;
             queue[qTail++] = child;
         }
-    }
-
-    // Handle disconnected components by placing them around origin.
-    for (int i = 0; i < atomCount; i++)
-    {
-        if (!placed[i])
-        {
-            float a = Hash01((uint)(meshIdx * 193 + i * 17 + 7)) * 6.2831853f;
-            positions[i] = float3(cos(a), sin(a), sin(a * 0.5f)) * bondLength * 0.7f;
         }
+        componentCount++;
     }
 
     for (int iter = 0; iter < 4; iter++)

@@ -135,6 +135,24 @@ bool TryParseBracketAtomToken(int molIdx, int startIdx, out int mappedType, out 
     return true;
 }
 
+bool TryAppendBracketAtom(int molIdx, int startIdx, int atomStart, inout int2 localBonds[128], int localBondCap, inout int atomCount, inout int currentAtom, inout int pendingBond, inout int writeBondCount, out int nextIdx)
+{
+    nextIdx = startIdx + 1;
+    int mappedType;
+    if (!TryParseBracketAtomToken(molIdx, startIdx, mappedType, nextIdx))
+        return false;
+
+    int newAtom = atomCount;
+    atomTypeInputBuffer[atomStart + newAtom] = mappedType;
+    atomPositionInputBuffer[atomStart + newAtom] = float3(0, 0, 0);
+    if (currentAtom >= 0 && writeBondCount < localBondCap)
+        localBonds[writeBondCount++] = int2(currentAtom, newAtom);
+    currentAtom = newAtom;
+    atomCount++;
+    pendingBond = 0;
+    return true;
+}
+
 float Hash01(uint seed)
 {
     return frac(sin(seed * 12.9898f + 78.233f) * 43758.5453f);
@@ -143,6 +161,8 @@ float Hash01(uint seed)
 static const int PACKED_ATOM_WORDS = (MAX_ATOM_COUNT + 3) / 4;
 static const int PACKED_PLACED_WORDS = (MAX_ATOM_COUNT + 31) / 32;
 static const int PACKED_CHILD_WORDS = (MAX_GRAPH_NEIGHBORS + 3) / 4;
+static const int RING_SLOT_COUNT = 16;
+static const int MAX_RING_ID = 100;
 
 int PackedByteGet(int packed[PACKED_ATOM_WORDS], int idx)
 {
@@ -202,10 +222,11 @@ void CSBuildCartoonGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
     int atomStart = meshAtomStartBuffer[meshIdx];
     int bondStart = meshBondStartBuffer[meshIdx];
 
-    int ringAtom[10];
-    int ringBond[10];
+    int ringAtomById[MAX_RING_ID];
     int branchStack[16];
-    for (int r = 0; r < 10; r++) { ringAtom[r] = -1; ringBond[r] = 0; }
+    for (int r = 0; r < MAX_RING_ID; r++) { ringAtomById[r] = -1; }
+    int2 localBonds[128];
+    int localBondCap = min(maxBondCount, 128);
     int branchTop = 0;
     int atomCount = 0;
     int writeBondCount = 0;
@@ -242,20 +263,22 @@ void CSBuildCartoonGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
                 : smilesInputBuffer[molIdx * smilesMaxLength + i + 2]) : 0;
             if (d1 >= '0' && d1 <= '9' && d2 >= '0' && d2 <= '9')
             {
-                int ring = ((d1 - '0') * 10 + (d2 - '0')) % 10;
+                int ringNumber = (d1 - '0') * 10 + (d2 - '0');
                 if (currentAtom >= 0)
                 {
-                    if (ringAtom[ring] >= 0)
+                    if (ringNumber >= 0 && ringNumber < MAX_RING_ID)
                     {
-                        if (writeBondCount < maxBondCount)
-                            bondInputBuffer[bondStart + writeBondCount++] = int2(ringAtom[ring], currentAtom);
-                        ringAtom[ring] = -1;
-                        ringBond[ring] = 0;
-                    }
-                    else
-                    {
-                        ringAtom[ring] = currentAtom;
-                        ringBond[ring] = pendingBond;
+                        int a = ringAtomById[ringNumber];
+                        if (a >= 0)
+                        {
+                            if (a != currentAtom && writeBondCount < localBondCap)
+                                localBonds[writeBondCount++] = int2(a, currentAtom);
+                            ringAtomById[ringNumber] = -1;
+                        }
+                        else
+                        {
+                            ringAtomById[ringNumber] = currentAtom;
+                        }
                     }
                 }
                 pendingBond = 0;
@@ -268,18 +291,9 @@ void CSBuildCartoonGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
 #if ALLOW_C0_91   
         if (c0 == 91) // '['
         {
-            int mappedType;
             int nextIdx;
-            if (TryParseBracketAtomToken(molIdx, i, mappedType, nextIdx))
+            if (TryAppendBracketAtom(molIdx, i, atomStart, localBonds, localBondCap, atomCount, currentAtom, pendingBond, writeBondCount, nextIdx))
             {
-                int newAtom = atomCount;
-                atomTypeInputBuffer[atomStart + newAtom] = mappedType;
-                atomPositionInputBuffer[atomStart + newAtom] = float3(0, 0, 0);
-                if (currentAtom >= 0 && writeBondCount < maxBondCount)
-                    bondInputBuffer[bondStart + writeBondCount++] = int2(currentAtom, newAtom);
-                currentAtom = newAtom;
-                atomCount++;
-                pendingBond = 0;
                 i = nextIdx;
                 continue;
             }
@@ -289,20 +303,22 @@ void CSBuildCartoonGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
 #endif
         if (c0 >= '0' && c0 <= '9')
         {
-            int ring = c0 - '0';
-            if (ring >= 0 && ring < 10 && currentAtom >= 0)
+            int ringNumber = c0 - '0';
+            if (currentAtom >= 0)
             {
-                if (ringAtom[ring] >= 0)
+                if (ringNumber >= 0 && ringNumber < MAX_RING_ID)
                 {
-                    if (writeBondCount < maxBondCount)
-                        bondInputBuffer[bondStart + writeBondCount++] = int2(ringAtom[ring], currentAtom);
-                    ringAtom[ring] = -1;
-                    ringBond[ring] = 0;
-                }
-                else
-                {
-                    ringAtom[ring] = currentAtom;
-                    ringBond[ring] = pendingBond;
+                    int a = ringAtomById[ringNumber];
+                    if (a >= 0)
+                    {
+                        if (a != currentAtom && writeBondCount < localBondCap)
+                            localBonds[writeBondCount++] = int2(a, currentAtom);
+                        ringAtomById[ringNumber] = -1;
+                    }
+                    else
+                    {
+                        ringAtomById[ringNumber] = currentAtom;
+                    }
                 }
             }
             pendingBond = 0;
@@ -317,8 +333,8 @@ void CSBuildCartoonGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
             int newAtom = atomCount;
             atomTypeInputBuffer[atomStart + newAtom] = atomType;
             atomPositionInputBuffer[atomStart + newAtom] = float3(0, 0, 0);
-            if (currentAtom >= 0 && writeBondCount < maxBondCount)
-                bondInputBuffer[bondStart + writeBondCount++] = int2(currentAtom, newAtom);
+            if (currentAtom >= 0 && writeBondCount < localBondCap)
+                localBonds[writeBondCount++] = int2(currentAtom, newAtom);
             currentAtom = newAtom;
             atomCount++;
             pendingBond = 0;
@@ -335,19 +351,119 @@ void CSBuildCartoonGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
         atomPositionInputBuffer[atomStart + atomIdx] = float3(0, 0, 0);
     }
 
-    for (int bondIdx = writeBondCount; bondIdx < maxBondCount; bondIdx++)
-        bondInputBuffer[bondStart + bondIdx] = int2(0, 0);
+    int compactBondCount = 0;
+    for (int bi = 0; bi < writeBondCount; bi++)
+    {
+        int2 b = localBonds[bi];
+        int a = b.x;
+        int c = b.y;
+        if (a == c) continue;
+        if (a < 0 || c < 0 || a >= atomCount || c >= atomCount) continue;
+        int lo = min(a, c);
+        int hi = max(a, c);
+
+        bool dup = false;
+        for (int pj = 0; pj < compactBondCount; pj++)
+        {
+            int2 p = localBonds[pj];
+            int plo = min(p.x, p.y);
+            int phi = max(p.x, p.y);
+            if (plo == lo && phi == hi) { dup = true; break; }
+        }
+        if (!dup && compactBondCount < localBondCap)
+            localBonds[compactBondCount++] = int2(lo, hi);
+    }
+    writeBondCount = compactBondCount;
 
     if (atomCount > 1 && writeBondCount == 0)
     {
-        int fallback = min(atomCount - 1, maxBondCount);
+        int fallback = min(atomCount - 1, localBondCap);
         for (int i = 1; i <= fallback; i++)
-            bondInputBuffer[bondStart + (i - 1)] = int2(i - 1, i);
+            localBonds[i - 1] = int2(i - 1, i);
         writeBondCount = fallback;
     }
 
+    if (atomCount > 1 && writeBondCount > 0)
+    {
+        bool visited[MAX_ATOM_COUNT];
+        int bfsQueue[MAX_ATOM_COUNT];
+        for (int a = 0; a < atomCount; a++) visited[a] = false;
+
+        int qHead = 0;
+        int qTail = 0;
+        visited[0] = true;
+        bfsQueue[qTail++] = 0;
+        while (qHead < qTail)
+        {
+            int cur = bfsQueue[qHead++];
+            for (int bi = 0; bi < writeBondCount; bi++)
+            {
+                int2 b = localBonds[bi];
+                int n = -1;
+                if (b.x == cur) n = b.y;
+                else if (b.y == cur) n = b.x;
+                if (n < 0 || n >= atomCount || visited[n]) continue;
+                visited[n] = true;
+                bfsQueue[qTail++] = n;
+            }
+        }
+
+        for (int seed = 0; seed < atomCount; seed++)
+        {
+            if (visited[seed]) continue;
+
+            int anchor = seed - 1;
+            while (anchor >= 0 && !visited[anchor]) anchor--;
+            if (anchor < 0) anchor = 0;
+
+            bool exists = false;
+            for (int bi = 0; bi < writeBondCount; bi++)
+            {
+                int2 b = localBonds[bi];
+                if ((b.x == anchor && b.y == seed) || (b.x == seed && b.y == anchor))
+                {
+                    exists = true;
+                    break;
+                }
+            }
+            if (!exists && writeBondCount < localBondCap)
+                localBonds[writeBondCount++] = int2(anchor, seed);
+
+            qHead = 0;
+            qTail = 0;
+            if (!visited[seed])
+            {
+                visited[seed] = true;
+                bfsQueue[qTail++] = seed;
+            }
+            while (qHead < qTail)
+            {
+                int cur = bfsQueue[qHead++];
+                for (int bi = 0; bi < writeBondCount; bi++)
+                {
+                    int2 b = localBonds[bi];
+                    int n = -1;
+                    if (b.x == cur) n = b.y;
+                    else if (b.y == cur) n = b.x;
+                    if (n < 0 || n >= atomCount || visited[n]) continue;
+                    visited[n] = true;
+                    bfsQueue[qTail++] = n;
+                }
+            }
+        }
+    }
+
+    int outCount = min(writeBondCount, maxBondCount);
+    for (int bondIdx = 0; bondIdx < maxBondCount; bondIdx++)
+    {
+        if (bondIdx < outCount && bondIdx < localBondCap)
+            bondInputBuffer[bondStart + bondIdx] = localBonds[bondIdx];
+        else
+            bondInputBuffer[bondStart + bondIdx] = int2(0, 0);
+    }
+
     meshAtomCountInputBuffer[meshIdx] = atomCount;
-    meshBondCountInputBuffer[meshIdx] = writeBondCount;
+    meshBondCountInputBuffer[meshIdx] = outCount;
 }
 
 [numthreads(32, 1, 1)]

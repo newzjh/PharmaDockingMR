@@ -119,6 +119,25 @@ bool TryParseBracketAtomToken(int molIdx, int startIdx, out int mappedType, out 
     return true;
 }
 
+static const int RING_SLOT_COUNT = 16;
+static const int MAX_RING_ID = 100;
+
+bool TryAppendBracketAtom(int molIdx, int startIdx, int atomStart, inout int atomCount, inout int currentAtom, inout int pendingBond, out int nextIdx)
+{
+    nextIdx = startIdx + 1;
+    int mappedType;
+    if (!TryParseBracketAtomToken(molIdx, startIdx, mappedType, nextIdx))
+        return false;
+
+    int newAtom = atomCount;
+    atomTypeInputBuffer[atomStart + newAtom] = mappedType;
+    atomPositionInputBuffer[atomStart + newAtom] = float3(0, 0, 0);
+    currentAtom = newAtom;
+    atomCount++;
+    pendingBond = 0;
+    return true;
+}
+
 [numthreads(32, 1, 1)]
 void CSBuildBallGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
@@ -126,10 +145,9 @@ void CSBuildBallGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
     if (meshIdx >= selectedCount)
         return;
 
-    int ringAtom[10];
-    int ringBond[10];
+    int ringAtomById[MAX_RING_ID];
     int branchStack[16];
-    for (int r = 0; r < 10; r++) { ringAtom[r] = -1; ringBond[r] = 0; }
+    for (int r = 0; r < MAX_RING_ID; r++) { ringAtomById[r] = -1; }
     int branchTop = 0;
     int atomCount = 0;
     int atomStart = meshAtomStartBuffer[meshIdx];
@@ -165,19 +183,22 @@ void CSBuildBallGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
                 : smilesInputBuffer[molIdx * smilesMaxLength + i + 2]) : 0;
             if (d1 >= '0' && d1 <= '9' && d2 >= '0' && d2 <= '9')
             {
-                int ring = ((d1 - '0') * 10 + (d2 - '0')) % 10;
+                int ringNumber = (d1 - '0') * 10 + (d2 - '0');
                 if (currentAtom >= 0)
                 {
-                    if (ringAtom[ring] >= 0)
+                    if (ringNumber >= 0 && ringNumber < MAX_RING_ID)
                     {
-                        currentAtom = ringAtom[ring];
-                        ringAtom[ring] = -1;
-                        ringBond[ring] = 0;
-                    }
-                    else
-                    {
-                        ringAtom[ring] = currentAtom;
-                        ringBond[ring] = pendingBond;
+                        int a = ringAtomById[ringNumber];
+                        if (a >= 0)
+                        {
+                            if (a != currentAtom)
+                                currentAtom = a;
+                            ringAtomById[ringNumber] = -1;
+                        }
+                        else
+                        {
+                            ringAtomById[ringNumber] = currentAtom;
+                        }
                     }
                 }
                 pendingBond = 0;
@@ -190,16 +211,9 @@ void CSBuildBallGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
 #if ALLOW_C0_91           
         if (c0 == 91) // '['
         {
-            int mappedType;
             int nextIdx;
-            if (TryParseBracketAtomToken(molIdx, i, mappedType, nextIdx))
+            if (TryAppendBracketAtom(molIdx, i, atomStart, atomCount, currentAtom, pendingBond, nextIdx))
             {
-                int newAtom = atomCount;
-                atomTypeInputBuffer[atomStart + newAtom] = mappedType;
-                atomPositionInputBuffer[atomStart + newAtom] = float3(0, 0, 0);
-                currentAtom = newAtom;
-                atomCount++;
-                pendingBond = 0;
                 i = nextIdx;
                 continue;
             }
@@ -209,19 +223,22 @@ void CSBuildBallGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
 #endif
         if (c0 >= '0' && c0 <= '9')
         {
-            int ring = c0 - '0';
-            if (ring >= 0 && ring < 10 && currentAtom >= 0)
+            int ringNumber = c0 - '0';
+            if (currentAtom >= 0)
             {
-                if (ringAtom[ring] >= 0)
+                if (ringNumber >= 0 && ringNumber < MAX_RING_ID)
                 {
-                    currentAtom = ringAtom[ring];
-                    ringAtom[ring] = -1;
-                    ringBond[ring] = 0;
-                }
-                else
-                {
-                    ringAtom[ring] = currentAtom;
-                    ringBond[ring] = pendingBond;
+                    int a = ringAtomById[ringNumber];
+                    if (a >= 0)
+                    {
+                        if (a != currentAtom)
+                            currentAtom = a;
+                        ringAtomById[ringNumber] = -1;
+                    }
+                    else
+                    {
+                        ringAtomById[ringNumber] = currentAtom;
+                    }
                 }
             }
             pendingBond = 0;
