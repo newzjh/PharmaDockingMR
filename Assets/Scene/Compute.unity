@@ -1060,7 +1060,7 @@ MonoBehaviour:
   isTerminated: 0
   currentBatch: 0
   templateMat: {fileID: 2100000, guid: 26695abc36ac7b141ad14c66a9c0a5eb, type: 2}
-  detectPocket: 0
+  detectPocket: 1
   generateMeshSingle: 0
   generateMeshBatch: 1
   renderMode: 1

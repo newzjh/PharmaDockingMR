@@ -83,8 +83,14 @@ namespace AIDrugDiscovery
             if (detectPocket)
             {
                 pocketdetector.pdbqtFilePath = pdbqtFullPath;
-                pocketdetector.RunFPocketGPU();
-                //pocketdetector.RunFPocketCSharpDetection();
+                if (pocketdetector.implementationMode == FPocketImplementationMode.OfficialStyleCPU)
+                    pocketdetector.RunFPocketOfficialCPU();
+                else if (pocketdetector.implementationMode == FPocketImplementationMode.OfficialStyleGPU)
+                    pocketdetector.RunFPocketOfficialGPU();
+                else if (pocketdetector.implementationMode == FPocketImplementationMode.LegacyCPU)
+                    pocketdetector.RunFPocketCPU();
+                else
+                    pocketdetector.RunFPocketGPU();
 
                 await UniTask.NextFrame();
             }

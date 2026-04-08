@@ -5,14 +5,18 @@ using System.Runtime.InteropServices;
 using UnityEngine;
 using System.Linq;
 using UnityEngine.Rendering;
+using Unity.Collections;
+using Unity.Jobs;
+using Unity.Mathematics;
 
 namespace AIDrugDiscovery
 {
     public enum FPocketImplementationMode
     {
-        LegacyApproximate = 0,
+        LegacyGPU = 0,
         OfficialStyleCPU = 1,
-        OfficialStyleGPU = 2
+        OfficialStyleGPU = 2,
+        LegacyCPU = 3,
     }
 
 
@@ -173,22 +177,16 @@ namespace AIDrugDiscovery
         public bool useGeneratedSphereCountDispatch = true;
         public bool onlyProcessGeneratedSphereRange = true;
         public bool useSpatialHashDbscan = true;
-        public FPocketImplementationMode implementationMode = FPocketImplementationMode.LegacyApproximate;
+        public FPocketImplementationMode implementationMode = FPocketImplementationMode.LegacyGPU;
         public float singleLinkageThreshold = 4.5f;
 
         
         private List<FPocketAtom> atoms;
         private List<FPocketAlphaSphere> alphaSpheres;
+        private int4[] fpocketDirVneigh;
         [ContextMenu("Run FPocket CPU Version")]
         public void RunFPocketCPU()
         {
-            if (implementationMode == FPocketImplementationMode.OfficialStyleCPU)
-            {
-                RunFPocketOfficialCPU();
-                return;
-            }
-
-            
             atoms = LoadAtomsFromPDBQT(pdbqtFilePath);
             if (atoms.Count < 3)
             {
@@ -226,12 +224,6 @@ namespace AIDrugDiscovery
         [ContextMenu("Run FPocket GPU Version (No Overflow)")]
         public async void RunFPocketGPU()
         {
-            if (implementationMode == FPocketImplementationMode.OfficialStyleGPU)
-            {
-                RunFPocketOfficialGPU();
-                return;
-            }
-
             if (fpocketComputeShader == null)
             {
                 Debug.LogError("FPocket compute shader is not assigned.");
@@ -368,7 +360,7 @@ namespace AIDrugDiscovery
         }
 
         #region Official-style CPU/GPU logic
-        private void RunFPocketOfficialCPU()
+        public void RunFPocketOfficialCPU()
         {
             atoms = LoadAtomsFromPDBQT(pdbqtFilePath);
             if (atoms.Count < 4)
@@ -378,11 +370,11 @@ namespace AIDrugDiscovery
             }
 
             alphaSpheres = GenerateAlphaSpheresFPocketDirCPU(atoms);
-            List<FPocketResult> pockets = DetectPocketsFPocketDir(alphaSpheres);
+            var pockets = DetectPocketsFPocketDir(alphaSpheres);
             PrintPocketResults(pockets);
         }
 
-        private async void RunFPocketOfficialGPU()
+        public async void RunFPocketOfficialGPU()
         {
             if (fpocketComputeShader == null)
             {
@@ -411,7 +403,7 @@ namespace AIDrugDiscovery
             try
             {
                 atomBuffer = InitAtomBuffer(atoms);
-                BuildNeighborBuffers(atoms, out int[] neighborCounts, out int[] neighborIndices, FPocketDirDefaults.MaxNeighbors);
+                BuildNeighborBuffers(atoms, out int[] neighborCounts, out int[] neighborIndices, FPocketDirDefaults.MaxAsphereRadius * 2f, FPocketDirDefaults.MaxNeighbors);
                 neighborCountsBuffer = new ComputeBuffer(atomCount, sizeof(int), ComputeBufferType.Structured);
                 neighborIndicesBuffer = new ComputeBuffer(atomCount * FPocketDirDefaults.MaxNeighbors, sizeof(int), ComputeBufferType.Structured);
                 neighborCountsBuffer.SetData(neighborCounts);
@@ -537,71 +529,745 @@ namespace AIDrugDiscovery
 
         private List<FPocketAlphaSphere> GenerateAlphaSpheresFPocketDirCPU(List<FPocketAtom> atoms)
         {
-            List<FPocketAlphaSphere> alphaSpheres = new List<FPocketAlphaSphere>();
-            Dictionary<Vector3Int, List<int>> spatialHash = BuildAtomSpatialHash(atoms, FPocketDirDefaults.MaxAsphereRadius);
+            fpocketDirVneigh = null;
+            if (atoms == null || atoms.Count < 4)
+                return new List<FPocketAlphaSphere>();
 
-            for (int atomIdx = 0; atomIdx < atoms.Count; atomIdx++)
+            List<FPocketAtom> heavyAtoms = new List<FPocketAtom>(atoms.Count);
+            List<int> heavyToAtom = new List<int>(atoms.Count);
+            for (int i = 0; i < atoms.Count; i++)
             {
-                List<int> nearbyAtoms = GetNearbyAtomIndices(atomIdx, atoms, spatialHash, FPocketDirDefaults.MaxAsphereRadius);
-                if (nearbyAtoms.Count < 3)
+                if (!string.Equals(atoms[i].name, "H", StringComparison.OrdinalIgnoreCase))
+                {
+                    heavyToAtom.Add(i);
+                    heavyAtoms.Add(atoms[i]);
+                }
+            }
+
+            if (heavyAtoms.Count < 4)
+                return new List<FPocketAlphaSphere>();
+
+            BuildDelaunayTetrahedra(heavyAtoms, out List<int4> tetVerts, out List<int4> tetNeigh);
+            if (tetVerts.Count == 0)
+                return new List<FPocketAlphaSphere>();
+
+            int atomCount = heavyAtoms.Count;
+            int tetCount = tetVerts.Count;
+
+            NativeArray<float3> positions = new NativeArray<float3>(atomCount, Allocator.TempJob);
+            NativeArray<float> electroneg = new NativeArray<float>(atomCount, Allocator.TempJob);
+            for (int i = 0; i < atomCount; i++)
+            {
+                Vector3 p = heavyAtoms[i].pos;
+                positions[i] = new float3(p.x, p.y, p.z);
+                electroneg[i] = heavyAtoms[i].electroneg;
+            }
+
+            NativeArray<int4> tetVertsNA = new NativeArray<int4>(tetVerts.ToArray(), Allocator.TempJob);
+            NativeArray<int4> tetNeighNA = new NativeArray<int4>(tetNeigh.ToArray(), Allocator.TempJob);
+            NativeArray<byte> validNA = new NativeArray<byte>(tetCount, Allocator.TempJob);
+
+            var markJob = new MarkValidVoronoiVerticesJob
+            {
+                positions = positions,
+                tetVerts = tetVertsNA,
+                minRadius = FPocketDirDefaults.MinAsphereRadius,
+                maxRadius = FPocketDirDefaults.MaxAsphereRadius,
+                valid = validNA
+            };
+            markJob.Schedule(tetCount, 64).Complete();
+
+            int[] tetToSphere = new int[tetCount];
+            int maxSpheres = FPocketConstants.MAX_ALPHA_SPHERES;
+            int sphereCount = 0;
+            for (int i = 0; i < tetCount; i++)
+            {
+                if (validNA[i] == 0 || sphereCount >= maxSpheres)
+                {
+                    tetToSphere[i] = -1;
+                    continue;
+                }
+
+                tetToSphere[i] = sphereCount;
+                sphereCount++;
+            }
+
+            NativeArray<int> tetToSphereNA = new NativeArray<int>(tetToSphere, Allocator.TempJob);
+            NativeArray<float3> sphereCentersNA = new NativeArray<float3>(sphereCount, Allocator.TempJob);
+            NativeArray<float> sphereRadiiNA = new NativeArray<float>(sphereCount, Allocator.TempJob);
+            NativeArray<byte> sphereApolarNA = new NativeArray<byte>(sphereCount, Allocator.TempJob);
+            NativeArray<int4> sphereParentsNA = new NativeArray<int4>(sphereCount, Allocator.TempJob);
+            NativeArray<int4> sphereVneighNA = new NativeArray<int4>(sphereCount, Allocator.TempJob);
+
+            var writeSpheresJob = new WriteVoronoiVerticesJob
+            {
+                positions = positions,
+                electroneg = electroneg,
+                tetVerts = tetVertsNA,
+                tetToSphere = tetToSphereNA,
+                minRadius = FPocketDirDefaults.MinAsphereRadius,
+                maxRadius = FPocketDirDefaults.MaxAsphereRadius,
+                minApolNeigh = FPocketDirDefaults.MinApolNeigh,
+                sphereCenters = sphereCentersNA,
+                sphereRadii = sphereRadiiNA,
+                sphereIsApolar = sphereApolarNA,
+                sphereParents = sphereParentsNA
+            };
+            writeSpheresJob.Schedule(tetCount, 64).Complete();
+
+            var writeVneighJob = new WriteVoronoiVneighJob
+            {
+                tetNeigh = tetNeighNA,
+                tetToSphere = tetToSphereNA,
+                outVneigh = sphereVneighNA
+            };
+            writeVneighJob.Schedule(tetCount, 64).Complete();
+
+            List<FPocketAlphaSphere> spheres = new List<FPocketAlphaSphere>(sphereCount);
+            for (int i = 0; i < sphereCount; i++)
+            {
+                float3 c = sphereCentersNA[i];
+                int4 parentsHeavy = sphereParentsNA[i];
+                spheres.Add(new FPocketAlphaSphere
+                {
+                    center = new Vector3(c.x, c.y, c.z),
+                    radius = sphereRadiiNA[i],
+                    nb_atoms = 4,
+                    hydrophobicity = sphereApolarNA[i] != 0 ? 1f : 0f,
+                    polarity = sphereApolarNA[i] != 0 ? 0f : 1f,
+                    visited = 0,
+                    parent_atoms = new[]
+                    {
+                        heavyToAtom[parentsHeavy.x],
+                        heavyToAtom[parentsHeavy.y],
+                        heavyToAtom[parentsHeavy.z],
+                        heavyToAtom[parentsHeavy.w]
+                    }
+                });
+            }
+
+            fpocketDirVneigh = sphereVneighNA.ToArray();
+
+            sphereVneighNA.Dispose();
+            sphereParentsNA.Dispose();
+            sphereApolarNA.Dispose();
+            sphereRadiiNA.Dispose();
+            sphereCentersNA.Dispose();
+            tetToSphereNA.Dispose();
+            validNA.Dispose();
+            tetNeighNA.Dispose();
+            tetVertsNA.Dispose();
+            electroneg.Dispose();
+            positions.Dispose();
+
+            return spheres;
+        }
+
+        private struct AlphaSphereOut
+        {
+            public float cx;
+            public float cy;
+            public float cz;
+            public float radius;
+            public int a;
+            public int b;
+            public int c;
+            public int d;
+            public byte isApolar;
+        }
+
+        private static bool TryCircumsphere4(float3 p1, float3 p2, float3 p3, float3 p4, out float3 center, out float radius)
+        {
+            float3 r1 = p2 - p1;
+            float3 r2 = p3 - p1;
+            float3 r3 = p4 - p1;
+
+            float a11 = 2f * r1.x;
+            float a12 = 2f * r1.y;
+            float a13 = 2f * r1.z;
+            float b1 = math.lengthsq(p2) - math.lengthsq(p1);
+
+            float a21 = 2f * r2.x;
+            float a22 = 2f * r2.y;
+            float a23 = 2f * r2.z;
+            float b2 = math.lengthsq(p3) - math.lengthsq(p1);
+
+            float a31 = 2f * r3.x;
+            float a32 = 2f * r3.y;
+            float a33 = 2f * r3.z;
+            float b3 = math.lengthsq(p4) - math.lengthsq(p1);
+
+            float det = a11 * (a22 * a33 - a23 * a32) - a12 * (a21 * a33 - a23 * a31) + a13 * (a21 * a32 - a22 * a31);
+            if (math.abs(det) < 1e-6f)
+            {
+                center = default;
+                radius = 0f;
+                return false;
+            }
+
+            float detX = b1 * (a22 * a33 - a23 * a32) - a12 * (b2 * a33 - a23 * b3) + a13 * (b2 * a32 - a22 * b3);
+            float detY = a11 * (b2 * a33 - a23 * b3) - b1 * (a21 * a33 - a23 * a31) + a13 * (a21 * b3 - b2 * a31);
+            float detZ = a11 * (a22 * b3 - b2 * a32) - a12 * (a21 * b3 - b2 * a31) + b1 * (a21 * a32 - a22 * a31);
+
+            center = new float3(detX / det, detY / det, detZ / det);
+            radius = math.distance(center, p1);
+            return true;
+        }
+
+        private struct FaceKey : IEquatable<FaceKey>
+        {
+            public int a;
+            public int b;
+            public int c;
+
+            public FaceKey(int x, int y, int z)
+            {
+                if (x > y) (x, y) = (y, x);
+                if (y > z) (y, z) = (z, y);
+                if (x > y) (x, y) = (y, x);
+                a = x;
+                b = y;
+                c = z;
+            }
+
+            public bool Equals(FaceKey other) => a == other.a && b == other.b && c == other.c;
+            public override bool Equals(object obj) => obj is FaceKey other && Equals(other);
+
+            public override int GetHashCode()
+            {
+                unchecked
+                {
+                    int h = a;
+                    h = (h * 397) ^ b;
+                    h = (h * 397) ^ c;
+                    return h;
+                }
+            }
+        }
+
+        private struct FaceInfo
+        {
+            public int v0;
+            public int v1;
+            public int v2;
+        }
+
+        private struct BowyerTetra
+        {
+            public int4 v;
+            public Vector3 center;
+            public double r2;
+        }
+
+        private void BuildDelaunayTetrahedra(List<FPocketAtom> atoms, out List<int4> tetVerts, out List<int4> tetNeigh)
+        {
+            tetVerts = new List<int4>();
+            tetNeigh = new List<int4>();
+
+            int n = atoms.Count;
+            if (n < 4)
+                return;
+
+            Vector3 min = atoms[0].pos;
+            Vector3 max = atoms[0].pos;
+            for (int i = 1; i < n; i++)
+            {
+                Vector3 p = atoms[i].pos;
+                min = Vector3.Min(min, p);
+                max = Vector3.Max(max, p);
+            }
+
+            Vector3 mid = (min + max) * 0.5f;
+            float dx = max.x - min.x;
+            float dy = max.y - min.y;
+            float dz = max.z - min.z;
+            float delta = Mathf.Max(dx, Mathf.Max(dy, dz));
+            if (delta <= 0f) delta = 1f;
+            float d = delta * 16f;
+
+            int s0 = n;
+            int s1 = n + 1;
+            int s2 = n + 2;
+            int s3 = n + 3;
+
+            Vector3[] pts = new Vector3[n + 4];
+            for (int i = 0; i < n; i++) pts[i] = atoms[i].pos;
+            pts[s0] = new Vector3(mid.x - d, mid.y - d, mid.z - d);
+            pts[s1] = new Vector3(mid.x + d, mid.y - d, mid.z + d);
+            pts[s2] = new Vector3(mid.x - d, mid.y + d, mid.z + d);
+            pts[s3] = new Vector3(mid.x + d, mid.y + d, mid.z - d);
+
+            List<BowyerTetra> tets = new List<BowyerTetra>(Mathf.Max(16, n * 4));
+            if (!TryCircumsphere4Double(pts[s0], pts[s1], pts[s2], pts[s3], out Vector3 sc, out double sr2))
+                return;
+            tets.Add(new BowyerTetra { v = new int4(s0, s1, s2, s3), center = sc, r2 = sr2 });
+
+            const double eps = 1e-10;
+
+            for (int pi = 0; pi < n; pi++)
+            {
+                Vector3 p = pts[pi];
+                bool[] bad = new bool[tets.Count];
+                int badCount = 0;
+
+                for (int ti = 0; ti < tets.Count; ti++)
+                {
+                    BowyerTetra t = tets[ti];
+                    Vector3 dc = p - t.center;
+                    double dist2 = (double)dc.x * dc.x + (double)dc.y * dc.y + (double)dc.z * dc.z;
+                    if (dist2 <= t.r2 * (1.0 + eps))
+                    {
+                        bad[ti] = true;
+                        badCount++;
+                    }
+                }
+
+                if (badCount == 0)
                     continue;
 
-                int nearbyLimit = Mathf.Min(nearbyAtoms.Count, FPocketDirDefaults.MaxNeighbors);
-                for (int j = 0; j < nearbyLimit - 2; j++)
+                Dictionary<FaceKey, FaceInfo> boundary = new Dictionary<FaceKey, FaceInfo>(badCount * 4);
+
+                void ToggleFace(int a, int b, int c)
                 {
-                    int atomJ = nearbyAtoms[j];
-                    if (atomJ <= atomIdx)
+                    FaceKey k = new FaceKey(a, b, c);
+                    if (boundary.ContainsKey(k))
+                        boundary.Remove(k);
+                    else
+                        boundary.Add(k, new FaceInfo { v0 = a, v1 = b, v2 = c });
+                }
+
+                for (int ti = 0; ti < tets.Count; ti++)
+                {
+                    if (!bad[ti]) continue;
+                    int4 v = tets[ti].v;
+                    ToggleFace(v.y, v.z, v.w);
+                    ToggleFace(v.x, v.z, v.w);
+                    ToggleFace(v.x, v.y, v.w);
+                    ToggleFace(v.x, v.y, v.z);
+                }
+
+                List<BowyerTetra> newTets = new List<BowyerTetra>(tets.Count - badCount + boundary.Count);
+                for (int ti = 0; ti < tets.Count; ti++)
+                {
+                    if (!bad[ti]) newTets.Add(tets[ti]);
+                }
+
+                foreach (FaceInfo f in boundary.Values)
+                {
+                    int4 tv = new int4(f.v0, f.v1, f.v2, pi);
+                    if (!TryCircumsphere4Double(pts[tv.x], pts[tv.y], pts[tv.z], pts[tv.w], out Vector3 cc, out double rr2))
                         continue;
+                    newTets.Add(new BowyerTetra { v = tv, center = cc, r2 = rr2 });
+                }
 
-                    for (int k = j + 1; k < nearbyLimit - 1; k++)
+                tets = newTets;
+            }
+
+            List<int4> finalVerts = new List<int4>(tets.Count);
+            for (int i = 0; i < tets.Count; i++)
+            {
+                int4 v = tets[i].v;
+                if (v.x >= n || v.y >= n || v.z >= n || v.w >= n)
+                    continue;
+                if (v.x < 0 || v.y < 0 || v.z < 0 || v.w < 0)
+                    continue;
+                finalVerts.Add(v);
+            }
+
+            if (finalVerts.Count == 0)
+                return;
+
+            int4[] neighArr = new int4[finalVerts.Count];
+            for (int i = 0; i < neighArr.Length; i++) neighArr[i] = new int4(-1, -1, -1, -1);
+            Dictionary<FaceKey, (int tet, int slot)> faceMap = new Dictionary<FaceKey, (int, int)>(finalVerts.Count * 2);
+
+            void SetNeighbor(int tetIdx, int slot, int neighborTet)
+            {
+                int4 n4 = neighArr[tetIdx];
+                if (slot == 0) n4.x = neighborTet;
+                else if (slot == 1) n4.y = neighborTet;
+                else if (slot == 2) n4.z = neighborTet;
+                else n4.w = neighborTet;
+                neighArr[tetIdx] = n4;
+            }
+
+            for (int ti = 0; ti < finalVerts.Count; ti++)
+            {
+                int4 v = finalVerts[ti];
+                int3 f0 = new int3(v.y, v.z, v.w);
+                int3 f1 = new int3(v.x, v.z, v.w);
+                int3 f2 = new int3(v.x, v.y, v.w);
+                int3 f3 = new int3(v.x, v.y, v.z);
+
+                void ProcessFace(int3 f, int slot)
+                {
+                    FaceKey k = new FaceKey(f.x, f.y, f.z);
+                    if (faceMap.TryGetValue(k, out var other))
                     {
-                        int atomK = nearbyAtoms[k];
-                        if (atomK <= atomJ)
+                        SetNeighbor(ti, slot, other.tet);
+                        SetNeighbor(other.tet, other.slot, ti);
+                        faceMap.Remove(k);
+                    }
+                    else
+                    {
+                        faceMap.Add(k, (ti, slot));
+                    }
+                }
+
+                ProcessFace(f0, 0);
+                ProcessFace(f1, 1);
+                ProcessFace(f2, 2);
+                ProcessFace(f3, 3);
+            }
+
+            tetVerts.AddRange(finalVerts);
+            tetNeigh.AddRange(neighArr);
+        }
+
+        private static bool TryCircumsphere4Double(Vector3 p1, Vector3 p2, Vector3 p3, Vector3 p4, out Vector3 center, out double r2)
+        {
+            double r1x = p2.x - p1.x;
+            double r1y = p2.y - p1.y;
+            double r1z = p2.z - p1.z;
+            double r2x = p3.x - p1.x;
+            double r2y = p3.y - p1.y;
+            double r2z = p3.z - p1.z;
+            double r3x = p4.x - p1.x;
+            double r3y = p4.y - p1.y;
+            double r3z = p4.z - p1.z;
+
+            double a11 = 2.0 * r1x;
+            double a12 = 2.0 * r1y;
+            double a13 = 2.0 * r1z;
+            double b1 = (double)p2.x * p2.x + (double)p2.y * p2.y + (double)p2.z * p2.z
+                        - ((double)p1.x * p1.x + (double)p1.y * p1.y + (double)p1.z * p1.z);
+
+            double a21 = 2.0 * r2x;
+            double a22 = 2.0 * r2y;
+            double a23 = 2.0 * r2z;
+            double b2 = (double)p3.x * p3.x + (double)p3.y * p3.y + (double)p3.z * p3.z
+                        - ((double)p1.x * p1.x + (double)p1.y * p1.y + (double)p1.z * p1.z);
+
+            double a31 = 2.0 * r3x;
+            double a32 = 2.0 * r3y;
+            double a33 = 2.0 * r3z;
+            double b3 = (double)p4.x * p4.x + (double)p4.y * p4.y + (double)p4.z * p4.z
+                        - ((double)p1.x * p1.x + (double)p1.y * p1.y + (double)p1.z * p1.z);
+
+            double det = a11 * (a22 * a33 - a23 * a32) - a12 * (a21 * a33 - a23 * a31) + a13 * (a21 * a32 - a22 * a31);
+            if (Math.Abs(det) < 1e-12)
+            {
+                center = default;
+                r2 = 0.0;
+                return false;
+            }
+
+            double detX = b1 * (a22 * a33 - a23 * a32) - a12 * (b2 * a33 - a23 * b3) + a13 * (b2 * a32 - a22 * b3);
+            double detY = a11 * (b2 * a33 - a23 * b3) - b1 * (a21 * a33 - a23 * a31) + a13 * (a21 * b3 - b2 * a31);
+            double detZ = a11 * (a22 * b3 - b2 * a32) - a12 * (a21 * b3 - b2 * a31) + b1 * (a21 * a32 - a22 * a31);
+
+            double cx = detX / det;
+            double cy = detY / det;
+            double cz = detZ / det;
+            center = new Vector3((float)cx, (float)cy, (float)cz);
+
+            double dx = cx - p1.x;
+            double dy = cy - p1.y;
+            double dz = cz - p1.z;
+            r2 = dx * dx + dy * dy + dz * dz;
+            return true;
+        }
+
+        private struct MarkValidVoronoiVerticesJob : IJobParallelFor
+        {
+            [ReadOnly] public NativeArray<float3> positions;
+            [ReadOnly] public NativeArray<int4> tetVerts;
+            public float minRadius;
+            public float maxRadius;
+            public NativeArray<byte> valid;
+
+            public void Execute(int i)
+            {
+                int4 t = tetVerts[i];
+                if (t.x < 0 || t.y < 0 || t.z < 0 || t.w < 0)
+                {
+                    valid[i] = 0;
+                    return;
+                }
+
+                float3 p1 = positions[t.x];
+                float3 p2 = positions[t.y];
+                float3 p3 = positions[t.z];
+                float3 p4 = positions[t.w];
+                if (!TryCircumsphere4(p1, p2, p3, p4, out float3 c, out float r))
+                {
+                    valid[i] = 0;
+                    return;
+                }
+
+                const float tol = 1e-5f;
+                if (r + tol < minRadius || r - tol > maxRadius)
+                {
+                    valid[i] = 0;
+                    return;
+                }
+
+                float d1 = math.distance(c, p1);
+                float d2 = math.distance(c, p2);
+                float d3 = math.distance(c, p3);
+                float d4 = math.distance(c, p4);
+                if (math.abs(d1 - d2) > tol || math.abs(d1 - d3) > tol || math.abs(d1 - d4) > tol)
+                {
+                    valid[i] = 0;
+                    return;
+                }
+
+                valid[i] = 1;
+            }
+        }
+
+        private struct WriteVoronoiVerticesJob : IJobParallelFor
+        {
+            [ReadOnly] public NativeArray<float3> positions;
+            [ReadOnly] public NativeArray<float> electroneg;
+            [ReadOnly] public NativeArray<int4> tetVerts;
+            [ReadOnly] public NativeArray<int> tetToSphere;
+            public float minRadius;
+            public float maxRadius;
+            public int minApolNeigh;
+            [NativeDisableParallelForRestriction] public NativeArray<float3> sphereCenters;
+            [NativeDisableParallelForRestriction] public NativeArray<float> sphereRadii;
+            [NativeDisableParallelForRestriction] public NativeArray<byte> sphereIsApolar;
+            [NativeDisableParallelForRestriction] public NativeArray<int4> sphereParents;
+
+            public void Execute(int i)
+            {
+                int sphereIdx = tetToSphere[i];
+                if (sphereIdx < 0)
+                    return;
+
+                int4 t = tetVerts[i];
+                float3 p1 = positions[t.x];
+                float3 p2 = positions[t.y];
+                float3 p3 = positions[t.z];
+                float3 p4 = positions[t.w];
+                if (!TryCircumsphere4(p1, p2, p3, p4, out float3 c, out float r))
+                    return;
+
+                const float tol = 1e-5f;
+                if (r + tol < minRadius || r - tol > maxRadius)
+                    return;
+
+                int apol = 0;
+                if (electroneg[t.x] < 2.8f) apol++;
+                if (electroneg[t.y] < 2.8f) apol++;
+                if (electroneg[t.z] < 2.8f) apol++;
+                if (electroneg[t.w] < 2.8f) apol++;
+
+                sphereCenters[sphereIdx] = c;
+                sphereRadii[sphereIdx] = r;
+                sphereIsApolar[sphereIdx] = (byte)(apol >= minApolNeigh ? 1 : 0);
+                sphereParents[sphereIdx] = t;
+            }
+        }
+
+        private struct WriteVoronoiVneighJob : IJobParallelFor
+        {
+            [ReadOnly] public NativeArray<int4> tetNeigh;
+            [ReadOnly] public NativeArray<int> tetToSphere;
+            [NativeDisableParallelForRestriction] public NativeArray<int4> outVneigh;
+
+            public void Execute(int i)
+            {
+                int sphereIdx = tetToSphere[i];
+                if (sphereIdx < 0)
+                    return;
+
+                int4 tn = tetNeigh[i];
+                int n0 = tn.x >= 0 ? tetToSphere[tn.x] : -1;
+                int n1 = tn.y >= 0 ? tetToSphere[tn.y] : -1;
+                int n2 = tn.z >= 0 ? tetToSphere[tn.z] : -1;
+                int n3 = tn.w >= 0 ? tetToSphere[tn.w] : -1;
+                outVneigh[sphereIdx] = new int4(n0, n1, n2, n3);
+            }
+        }
+
+        private struct CountAlphaSpheresFPocketDirJob : IJobParallelFor
+        {
+            [ReadOnly] public NativeArray<float3> positions;
+            [ReadOnly] public NativeArray<float> electroneg;
+            [ReadOnly] public NativeArray<int> neighborCounts;
+            [ReadOnly] public NativeArray<int> neighborIndices;
+            public int maxNeighbors;
+            public float minRadius;
+            public float maxRadius;
+            public float sphereAtomEps;
+            public int minApolNeigh;
+            public NativeArray<int> outCounts;
+
+            public void Execute(int atomIdx)
+            {
+                int neighborCount = neighborCounts[atomIdx];
+                if (neighborCount > maxNeighbors) neighborCount = maxNeighbors;
+                if (neighborCount < 3) { outCounts[atomIdx] = 0; return; }
+
+                int baseOffset = atomIdx * maxNeighbors;
+                float3 p1 = positions[atomIdx];
+                int localCount = 0;
+
+                for (int j = 0; j < neighborCount - 2; j++)
+                {
+                    int atomJ = neighborIndices[baseOffset + j];
+                    if (atomJ < 0 || atomJ <= atomIdx)
+                        continue;
+                    float3 p2 = positions[atomJ];
+
+                    for (int k = j + 1; k < neighborCount - 1; k++)
+                    {
+                        int atomK = neighborIndices[baseOffset + k];
+                        if (atomK < 0 || atomK <= atomJ)
                             continue;
+                        float3 p3 = positions[atomK];
 
-                        for (int l = k + 1; l < nearbyLimit; l++)
+                        for (int l = k + 1; l < neighborCount; l++)
                         {
-                            int atomL = nearbyAtoms[l];
-                            if (atomL <= atomK)
+                            int atomL = neighborIndices[baseOffset + l];
+                            if (atomL < 0 || atomL <= atomK)
+                                continue;
+                            float3 p4 = positions[atomL];
+
+                            if (!TryCircumsphere4(p1, p2, p3, p4, out float3 center, out float radius))
+                                continue;
+                            if (radius < minRadius || radius > maxRadius)
                                 continue;
 
-                            (Vector3 center, float radius) = ComputeCircumsphere(
-                                atoms[atomIdx].pos,
-                                atoms[atomJ].pos,
-                                atoms[atomK].pos,
-                                atoms[atomL].pos);
-                            if (radius < FPocketDirDefaults.MinAsphereRadius || radius > FPocketDirDefaults.MaxAsphereRadius)
-                                continue;
-
-                            if (!IsEmptySphere(center, radius, atoms, atomIdx, atomJ, atomK, atomL))
+                            float rr = radius - sphereAtomEps;
+                            float rrSq = rr * rr;
+                            bool empty = true;
+                            for (int t = 0; t < positions.Length; t++)
+                            {
+                                if (t == atomIdx || t == atomJ || t == atomK || t == atomL)
+                                    continue;
+                                float3 d = positions[t] - center;
+                                if (math.dot(d, d) < rrSq)
+                                {
+                                    empty = false;
+                                    break;
+                                }
+                            }
+                            if (!empty)
                                 continue;
 
                             int apol = 0;
-                            if (atoms[atomIdx].electroneg < 2.8f) apol++;
-                            if (atoms[atomJ].electroneg < 2.8f) apol++;
-                            if (atoms[atomK].electroneg < 2.8f) apol++;
-                            if (atoms[atomL].electroneg < 2.8f) apol++;
-                            float isApolar = apol >= FPocketDirDefaults.MinApolNeigh ? 1f : 0f;
+                            if (electroneg[atomIdx] < 2.8f) apol++;
+                            if (electroneg[atomJ] < 2.8f) apol++;
+                            if (electroneg[atomK] < 2.8f) apol++;
+                            if (electroneg[atomL] < 2.8f) apol++;
+                            localCount++;
+                        }
+                    }
+                }
 
-                            alphaSpheres.Add(new FPocketAlphaSphere
+                outCounts[atomIdx] = localCount;
+            }
+        }
+
+        private struct WriteAlphaSpheresFPocketDirJob : IJobParallelFor
+        {
+            [ReadOnly] public NativeArray<float3> positions;
+            [ReadOnly] public NativeArray<float> electroneg;
+            [ReadOnly] public NativeArray<int> neighborCounts;
+            [ReadOnly] public NativeArray<int> neighborIndices;
+            public int maxNeighbors;
+            public float minRadius;
+            public float maxRadius;
+            public float sphereAtomEps;
+            public int minApolNeigh;
+            [ReadOnly] public NativeArray<int> writeOffsets;
+            [ReadOnly] public NativeArray<int> writeCounts;
+            [NativeDisableParallelForRestriction] public NativeArray<AlphaSphereOut> outSpheres;
+
+            public void Execute(int atomIdx)
+            {
+                int toWrite = writeCounts[atomIdx];
+                if (toWrite <= 0)
+                    return;
+
+                int neighborCount = neighborCounts[atomIdx];
+                if (neighborCount > maxNeighbors) neighborCount = maxNeighbors;
+                if (neighborCount < 3)
+                    return;
+
+                int baseOffset = atomIdx * maxNeighbors;
+                float3 p1 = positions[atomIdx];
+                int dstOffset = writeOffsets[atomIdx];
+                int written = 0;
+
+                for (int j = 0; j < neighborCount - 2 && written < toWrite; j++)
+                {
+                    int atomJ = neighborIndices[baseOffset + j];
+                    if (atomJ < 0 || atomJ <= atomIdx)
+                        continue;
+                    float3 p2 = positions[atomJ];
+
+                    for (int k = j + 1; k < neighborCount - 1 && written < toWrite; k++)
+                    {
+                        int atomK = neighborIndices[baseOffset + k];
+                        if (atomK < 0 || atomK <= atomJ)
+                            continue;
+                        float3 p3 = positions[atomK];
+
+                        for (int l = k + 1; l < neighborCount && written < toWrite; l++)
+                        {
+                            int atomL = neighborIndices[baseOffset + l];
+                            if (atomL < 0 || atomL <= atomK)
+                                continue;
+                            float3 p4 = positions[atomL];
+
+                            if (!TryCircumsphere4(p1, p2, p3, p4, out float3 center, out float radius))
+                                continue;
+                            if (radius < minRadius || radius > maxRadius)
+                                continue;
+
+                            float rr = radius - sphereAtomEps;
+                            float rrSq = rr * rr;
+                            bool empty = true;
+                            for (int t = 0; t < positions.Length; t++)
                             {
-                                center = center,
-                                radius = radius,
-                                nb_atoms = 4,
-                                hydrophobicity = isApolar,
-                                polarity = 1f - isApolar,
-                                visited = 0,
-                                parent_atoms = new[] { atomIdx, atomJ, atomK, atomL }
-                            });
+                                if (t == atomIdx || t == atomJ || t == atomK || t == atomL)
+                                    continue;
+                                float3 d = positions[t] - center;
+                                if (math.dot(d, d) < rrSq)
+                                {
+                                    empty = false;
+                                    break;
+                                }
+                            }
+                            if (!empty)
+                                continue;
 
-                            if (alphaSpheres.Count >= FPocketConstants.MAX_ALPHA_SPHERES)
-                                return alphaSpheres;
+                            int apol = 0;
+                            if (electroneg[atomIdx] < 2.8f) apol++;
+                            if (electroneg[atomJ] < 2.8f) apol++;
+                            if (electroneg[atomK] < 2.8f) apol++;
+                            if (electroneg[atomL] < 2.8f) apol++;
+
+                            AlphaSphereOut s;
+                            s.cx = center.x;
+                            s.cy = center.y;
+                            s.cz = center.z;
+                            s.radius = radius;
+                            s.a = atomIdx;
+                            s.b = atomJ;
+                            s.c = atomK;
+                            s.d = atomL;
+                            s.isApolar = (byte)(apol >= minApolNeigh ? 1 : 0);
+                            outSpheres[dstOffset + written] = s;
+                            written++;
                         }
                     }
                 }
             }
-
-            return alphaSpheres;
         }
 
         private (Vector3 center, float radius) ComputeCircumsphere(Vector3 p1, Vector3 p2, Vector3 p3)
@@ -782,10 +1448,10 @@ namespace AIDrugDiscovery
             if (spheres == null || spheres.Count == 0)
                 return pockets;
 
-            List<List<int>> clusters = ClusterSpheresByDistance(spheres, FPocketDirDefaults.ClustMaxDist);
+            List<List<int>> clusters = ClusterSpheresByAdjacencyFPocketDir(spheres, FPocketDirDefaults.ClustMaxDist);
             clusters = RefineClustersByBarycenter(spheres, clusters, FPocketDirDefaults.RefineClustDist);
 
-            FPocketDesc[] preFinalDescs = clusters.Select(c => ComputeDescriptorsFPocketDir(spheres, c, true)).ToArray();
+            FPocketDesc[] preFinalDescs = clusters.Select(c => ComputeDescriptorsFPocketDir(spheres, c, false)).ToArray();
             clusters = FinalClusterFPocketDir(spheres, clusters, preFinalDescs);
 
             FPocketDesc[] finalDescs = clusters.Select(c => ComputeDescriptorsFPocketDir(spheres, c, true)).ToArray();
@@ -796,6 +1462,8 @@ namespace AIDrugDiscovery
             {
                 FPocketDesc d = finalDescs[i];
                 if (d.nb_asph < FPocketDirDefaults.MinPocketNbAsph)
+                    continue;
+                if (d.apolar_asphere_prop < FPocketDirDefaults.RefineMinApolarProp)
                     continue;
 
                 Vector3 center = ComputeClusterCenter(spheres, clusters[i]);
@@ -808,8 +1476,8 @@ namespace AIDrugDiscovery
                     center = center,
                     volume = d.volume,
                     score = score,
-                    hydrophobic_score = d.apolar_asphere_prop,
-                    polar_score = d.polarity_score_norm,
+                    hydrophobic_score = d.hydrophobicity_score,
+                    polar_score = d.polarity_score,
                     depth_score = d.masph_sacc,
                     nb_alpha_spheres = d.nb_asph,
                     nb_atoms = nbAtoms,
@@ -913,20 +1581,118 @@ namespace AIDrugDiscovery
             return groups.Values.ToList();
         }
 
-        private List<List<int>> RefineClustersByBarycenter(List<FPocketAlphaSphere> spheres, List<List<int>> clusters, float dist)
+        private List<List<int>> ClusterSpheresByAdjacencyFPocketDir(List<FPocketAlphaSphere> spheres, float dist)
         {
-            int m = clusters.Count;
-            if (m <= 1)
-                return clusters;
+            if (fpocketDirVneigh != null && fpocketDirVneigh.Length == spheres.Count)
+                return ClusterSpheresByVneighJobs(spheres, fpocketDirVneigh, dist);
+            return ClusterSpheresByAdjacencyFPocketDirJobs(spheres, dist);
+        }
+
+        private struct CountVneighEdgesJob : IJobParallelFor
+        {
+            [ReadOnly] public NativeArray<float3> centers;
+            [ReadOnly] public NativeArray<int4> vneigh;
+            public float distSqr;
+            public NativeArray<int> outCounts;
+
+            void MaybeCount(int j, ref int i, ref float3 ci, ref int count)
+            {
+                if (j <= i) return;
+                float3 d = ci - centers[j];
+                if (math.lengthsq(d) <= distSqr) count++;
+            }
+
+            public void Execute(int i)
+            {
+                float3 ci = centers[i];
+                int4 vn = vneigh[i];
+                int count = 0;
+
+                if (vn.x >= 0) MaybeCount(vn.x, ref i, ref ci, ref count);
+                if (vn.y >= 0) MaybeCount(vn.y, ref i, ref ci, ref count);
+                if (vn.z >= 0) MaybeCount(vn.z, ref i, ref ci, ref count);
+                if (vn.w >= 0) MaybeCount(vn.w, ref i, ref ci, ref count);
+
+                outCounts[i] = count;
+            }
+        }
+
+        private struct WriteVneighEdgesJob : IJobParallelFor
+        {
+            [ReadOnly] public NativeArray<float3> centers;
+            [ReadOnly] public NativeArray<int4> vneigh;
+            [ReadOnly] public NativeArray<int> offsets;
+            public float distSqr;
+            [NativeDisableParallelForRestriction] public NativeArray<int2> edges;
+
+            void MaybeWrite(int j, ref int i, ref float3 ci, ref int o, ref int w)
+            {
+                if (j <= i) return;
+                float3 d = ci - centers[j];
+                if (math.lengthsq(d) <= distSqr)
+                {
+                    edges[o + w] = new int2(i, j);
+                    w++;
+                }
+            }
+
+            public void Execute(int i)
+            {
+                float3 ci = centers[i];
+                int4 vn = vneigh[i];
+                int o = offsets[i];
+                int w = 0;
+
+                if (vn.x >= 0) MaybeWrite(vn.x, ref i, ref ci, ref o, ref w);
+                if (vn.y >= 0) MaybeWrite(vn.y, ref i, ref ci, ref o, ref w);
+                if (vn.z >= 0) MaybeWrite(vn.z, ref i, ref ci, ref o, ref w);
+                if (vn.w >= 0) MaybeWrite(vn.w, ref i, ref ci, ref o, ref w);
+            }
+        }
+
+        private List<List<int>> ClusterSpheresByVneighJobs(List<FPocketAlphaSphere> spheres, int4[] vneigh, float dist)
+        {
+            int n = spheres.Count;
+            if (n == 0)
+                return new List<List<int>>();
 
             float distSqr = dist * dist;
-            Vector3[] bary = new Vector3[m];
-            for (int i = 0; i < m; i++)
-                bary[i] = ComputeClusterCenter(spheres, clusters[i]);
 
-            int[] parent = new int[m];
-            int[] rank = new int[m];
-            for (int i = 0; i < m; i++) parent[i] = i;
+            NativeArray<float3> centersNA = new NativeArray<float3>(n, Allocator.TempJob);
+            NativeArray<int4> vneighNA = new NativeArray<int4>(vneigh, Allocator.TempJob);
+            for (int i = 0; i < n; i++)
+            {
+                Vector3 c = spheres[i].center;
+                centersNA[i] = new float3(c.x, c.y, c.z);
+            }
+
+            NativeArray<int> countsNA = new NativeArray<int>(n, Allocator.TempJob);
+            var countJob = new CountVneighEdgesJob { centers = centersNA, vneigh = vneighNA, distSqr = distSqr, outCounts = countsNA };
+            countJob.Schedule(n, 64).Complete();
+
+            NativeArray<int> offsetsNA = new NativeArray<int>(n, Allocator.TempJob);
+            int total = 0;
+            for (int i = 0; i < n; i++)
+            {
+                offsetsNA[i] = total;
+                total += countsNA[i];
+            }
+
+            NativeArray<int2> edgesNA = new NativeArray<int2>(total, Allocator.TempJob);
+            var writeJob = new WriteVneighEdgesJob { centers = centersNA, vneigh = vneighNA, offsets = offsetsNA, distSqr = distSqr, edges = edgesNA };
+            writeJob.Schedule(n, 64).Complete();
+
+            int2[] edges = edgesNA.ToArray();
+
+            edgesNA.Dispose();
+            offsetsNA.Dispose();
+            countsNA.Dispose();
+            vneighNA.Dispose();
+            centersNA.Dispose();
+
+            int[] parent = new int[n];
+            int[] rank = new int[n];
+            for (int i = 0; i < n; i++) parent[i] = i;
 
             int Find(int x)
             {
@@ -952,29 +1718,201 @@ namespace AIDrugDiscovery
                 }
             }
 
-            for (int i = 0; i < m - 1; i++)
+            for (int i = 0; i < edges.Length; i++)
             {
-                for (int j = i + 1; j < m; j++)
-                {
-                    Vector3 delta = bary[i] - bary[j];
-                    if (delta.sqrMagnitude <= distSqr)
-                        Union(i, j);
-                }
+                int2 e = edges[i];
+                Union(e.x, e.y);
             }
 
-            Dictionary<int, List<int>> merged = new Dictionary<int, List<int>>();
-            for (int i = 0; i < m; i++)
+            Dictionary<int, List<int>> groups = new Dictionary<int, List<int>>();
+            for (int i = 0; i < n; i++)
             {
                 int r = Find(i);
-                if (!merged.TryGetValue(r, out var lst))
+                if (!groups.TryGetValue(r, out var lst))
                 {
                     lst = new List<int>();
-                    merged[r] = lst;
+                    groups[r] = lst;
                 }
-                lst.AddRange(clusters[i]);
+                lst.Add(i);
             }
 
-            return merged.Values.ToList();
+            return groups.Values.ToList();
+        }
+
+        private struct TripleEntry
+        {
+            public uint key;
+            public int sphere;
+        }
+
+        private struct BuildTripleEntriesJob : IJobParallelFor
+        {
+            [ReadOnly] public NativeArray<int4> parents;
+            [NativeDisableParallelForRestriction] public NativeArray<TripleEntry> entries;
+
+            public void Execute(int i)
+            {
+                int4 p = parents[i];
+                int baseIdx = i * 4;
+
+                entries[baseIdx + 0] = new TripleEntry { key = HashTriple(p.x, p.y, p.z), sphere = i };
+                entries[baseIdx + 1] = new TripleEntry { key = HashTriple(p.x, p.y, p.w), sphere = i };
+                entries[baseIdx + 2] = new TripleEntry { key = HashTriple(p.x, p.z, p.w), sphere = i };
+                entries[baseIdx + 3] = new TripleEntry { key = HashTriple(p.y, p.z, p.w), sphere = i };
+            }
+
+            private static uint HashTriple(int a, int b, int c)
+            {
+                if (a > b) (a, b) = (b, a);
+                if (b > c) (b, c) = (c, b);
+                if (a > b) (a, b) = (b, a);
+                return (uint)math.hash(new int3(a, b, c));
+            }
+        }
+
+        private List<List<int>> ClusterSpheresByAdjacencyFPocketDirJobs(List<FPocketAlphaSphere> spheres, float dist)
+        {
+            int n = spheres.Count;
+            if (n == 0)
+                return new List<List<int>>();
+
+            float distSqr = dist * dist;
+
+            NativeArray<int4> parentsNA = new NativeArray<int4>(n, Allocator.TempJob);
+            for (int i = 0; i < n; i++)
+            {
+                int[] pa = spheres[i].parent_atoms;
+                if (pa != null && pa.Length >= 4)
+                    parentsNA[i] = new int4(pa[0], pa[1], pa[2], pa[3]);
+                else
+                    parentsNA[i] = new int4(-1, -1, -1, -1);
+            }
+
+            NativeArray<TripleEntry> entriesNA = new NativeArray<TripleEntry>(n * 4, Allocator.TempJob);
+            var job = new BuildTripleEntriesJob { parents = parentsNA, entries = entriesNA };
+            job.Schedule(n, 64).Complete();
+
+            TripleEntry[] entries = entriesNA.ToArray();
+            entriesNA.Dispose();
+            parentsNA.Dispose();
+
+            Array.Sort(entries, (a, b) => a.key.CompareTo(b.key));
+
+            int[] parent = new int[n];
+            int[] rank = new int[n];
+            for (int i = 0; i < n; i++) parent[i] = i;
+
+            int Find(int x)
+            {
+                while (parent[x] != x)
+                {
+                    parent[x] = parent[parent[x]];
+                    x = parent[x];
+                }
+                return x;
+            }
+
+            void Union(int a, int b)
+            {
+                int ra = Find(a);
+                int rb = Find(b);
+                if (ra == rb) return;
+                if (rank[ra] < rank[rb]) parent[ra] = rb;
+                else if (rank[ra] > rank[rb]) parent[rb] = ra;
+                else
+                {
+                    parent[rb] = ra;
+                    rank[ra]++;
+                }
+            }
+
+            int start = 0;
+            while (start < entries.Length)
+            {
+                uint key = entries[start].key;
+                int end = start + 1;
+                while (end < entries.Length && entries[end].key == key) end++;
+
+                int groupSize = end - start;
+                if (groupSize > 1)
+                {
+                    for (int i = start; i < end - 1; i++)
+                    {
+                        int si = entries[i].sphere;
+                        Vector3 ci = spheres[si].center;
+                        for (int j = i + 1; j < end; j++)
+                        {
+                            int sj = entries[j].sphere;
+                            Vector3 delta = ci - spheres[sj].center;
+                            if (delta.sqrMagnitude <= distSqr)
+                                Union(si, sj);
+                        }
+                    }
+                }
+
+                start = end;
+            }
+
+            Dictionary<int, List<int>> clustersByRoot = new Dictionary<int, List<int>>();
+            for (int i = 0; i < n; i++)
+            {
+                int r = Find(i);
+                if (!clustersByRoot.TryGetValue(r, out List<int> lst))
+                {
+                    lst = new List<int>();
+                    clustersByRoot[r] = lst;
+                }
+                lst.Add(i);
+            }
+
+            return clustersByRoot.Values.ToList();
+        }
+
+        private List<List<int>> RefineClustersByBarycenter(List<FPocketAlphaSphere> spheres, List<List<int>> clusters, float dist)
+        {
+            int m = clusters.Count;
+            if (m <= 1)
+                return clusters;
+
+            float distSqr = dist * dist;
+            Vector3[] bary = new Vector3[m];
+            for (int i = 0; i < m; i++)
+                bary[i] = ComputeClusterCenter(spheres, clusters[i]);
+
+            List<List<int>> work = new List<List<int>>(m);
+            for (int i = 0; i < m; i++)
+                work.Add(new List<int>(clusters[i]));
+
+            bool[] alive = new bool[m];
+            for (int i = 0; i < m; i++)
+                alive[i] = work[i].Count > 0;
+
+            for (int i = 0; i < m; i++)
+            {
+                if (!alive[i]) continue;
+
+                for (int j = i + 1; j < m; j++)
+                {
+                    if (!alive[j]) continue;
+
+                    Vector3 delta = bary[i] - bary[j];
+                    if (delta.sqrMagnitude < distSqr)
+                    {
+                        work[i].AddRange(work[j]);
+                        work[j].Clear();
+                        alive[j] = false;
+                    }
+                }
+            }
+
+            List<List<int>> merged = new List<List<int>>();
+            for (int i = 0; i < m; i++)
+            {
+                if (alive[i] && work[i].Count > 0)
+                    merged.Add(work[i]);
+            }
+
+            return merged;
         }
 
         private struct PocketPair
@@ -1105,7 +2043,7 @@ namespace AIDrugDiscovery
             int nApol = 0;
             float mlhdSum = 0f;
 
-            HashSet<int> contactedAtoms = new HashSet<int>();
+            Dictionary<int, int> residueAaIndex = new Dictionary<int, int>();
 
             for (int i = 0; i < nvert; i++)
             {
@@ -1123,7 +2061,9 @@ namespace AIDrugDiscovery
                         {
                             bary += atoms[atomIdx].pos;
                             bc++;
-                            contactedAtoms.Add(atomIdx);
+                            int resId = atoms[atomIdx].res_id;
+                            if (!residueAaIndex.ContainsKey(resId))
+                                residueAaIndex[resId] = atoms[atomIdx].aaIndex;
                         }
                     }
                     if (bc > 0)
@@ -1187,9 +2127,9 @@ namespace AIDrugDiscovery
             else
                 d.as_density = 0f;
 
-            foreach (int atomIdx in contactedAtoms)
+            foreach (var kvp in residueAaIndex)
             {
-                int aa = atoms[atomIdx].aaIndex;
+                int aa = kvp.Value;
                 if (aa < 0) continue;
                 if (AAPropsByIndex.TryGetValue(aa, out AAProps props))
                 {
@@ -1197,6 +2137,10 @@ namespace AIDrugDiscovery
                     d.polarity_score += props.polarity;
                 }
             }
+
+            int nbResIds = residueAaIndex.Count;
+            if (nbResIds > 0)
+                d.hydrophobicity_score /= nbResIds;
 
             if (doVolume)
                 d.volume = GetVertsVolumePtr(spheres, clusterIndices, FPocketDirDefaults.McIter, FPocketDirDefaults.VolumeCorrect);
@@ -1332,17 +2276,17 @@ namespace AIDrugDiscovery
             return ((float)nbIn / niter) * vbox;
         }
 
-        private void BuildNeighborBuffers(List<FPocketAtom> sourceAtoms, out int[] neighborCounts, out int[] neighborIndices, int maxNeighbors)
+        private void BuildNeighborBuffers(List<FPocketAtom> sourceAtoms, out int[] neighborCounts, out int[] neighborIndices, float cutoff, int maxNeighbors)
         {
             neighborCounts = new int[sourceAtoms.Count];
             neighborIndices = Enumerable.Repeat(-1, sourceAtoms.Count * maxNeighbors).ToArray();
 
-            Dictionary<Vector3Int, List<int>> spatialHash = BuildAtomSpatialHash(sourceAtoms, FPocketDirDefaults.MaxAsphereRadius);
+            Dictionary<Vector3Int, List<int>> spatialHash = BuildAtomSpatialHash(sourceAtoms, cutoff);
             for (int atomIdx = 0; atomIdx < sourceAtoms.Count; atomIdx++)
             {
-                List<int> nearby = GetNearbyAtomIndices(atomIdx, sourceAtoms, spatialHash, FPocketDirDefaults.MaxAsphereRadius);
+                List<int> nearby = GetNearbyAtomIndices(atomIdx, sourceAtoms, spatialHash, cutoff);
                 if (nearby.Count > maxNeighbors)
-                    nearby = nearby.Take(maxNeighbors).ToList();
+                    nearby = nearby.OrderBy(i => (sourceAtoms[i].pos - sourceAtoms[atomIdx].pos).sqrMagnitude).Take(maxNeighbors).ToList();
 
                 neighborCounts[atomIdx] = nearby.Count;
                 for (int j = 0; j < nearby.Count; j++)
@@ -2076,10 +3020,13 @@ namespace AIDrugDiscovery
                         float x = float.Parse(line.Substring(30, 8).Trim());
                         float y = float.Parse(line.Substring(38, 8).Trim());
                         float z = float.Parse(line.Substring(46, 8).Trim());
-                        string atomNameRaw = line.Substring(12, 2).Trim().ToUpper();
+                        string atomNameRaw = line.Length >= 16 ? line.Substring(12, 4).Trim().ToUpperInvariant() : line.Substring(12).Trim().ToUpperInvariant();
                         string atomSymbol = ExtractAtomSymbol(atomNameRaw);
                         string resName = line.Length >= 20 ? line.Substring(17, 3).Trim().ToUpperInvariant() : "";
                         int aaIndex = GetAaIndex(resName);
+                        int resId = 0;
+                        if (line.Length >= 26)
+                            int.TryParse(line.Substring(22, 4).Trim(), out resId);
 
                         
                         float vdwRadius = FPocketConstants.VdwRadii.ContainsKey(atomSymbol)
@@ -2098,8 +3045,7 @@ namespace AIDrugDiscovery
                             name = atomSymbol,
                             vdw_radius = vdwRadius,
                             hydrophobicity = hydro,
-                            res_id = 0
-                            ,
+                            res_id = resId,
                             aaIndex = aaIndex,
                             electroneg = GetElectronegativity(atomSymbol)
                         });
