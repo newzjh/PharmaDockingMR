@@ -6,6 +6,8 @@
 
 #include "AtomCommon.hlsl"
 
+//#define SMILES_GRAPH_DEBUG 0
+
 // Batch mode parses SMILES on the GPU in two preprocessing stages.
 int batchSize;
 int selectedCount;
@@ -18,7 +20,9 @@ float atomRadius;
 float bondRadius;
 int maxBondCount;
 int vertexCapacity;
+#if SMILES_GRAPH_DEBUG
 int enableGraphDebug;
+#endif
 
 StructuredBuffer<int> smilesInputBuffer;
 Texture2D<float4> smilesInputTexture;
@@ -33,7 +37,9 @@ RWStructuredBuffer<int2> bondInputBuffer;
 RWStructuredBuffer<float3> vertexPosNormalBuffer;
 RWStructuredBuffer<float4> vertexOutputBuffer_color;
 RWStructuredBuffer<int> indexOutputBuffer;
+#if SMILES_GRAPH_DEBUG
 RWStructuredBuffer<int> graphDebugBuffer;
+#endif
 
 bool TryMapSimpleAtom(int c0, int c1, out int atomType, out int consumed)
 {
@@ -161,7 +167,9 @@ static const int PACKED_PLACED_WORDS = (MAX_ATOM_COUNT + 31) / 32;
 static const int PACKED_CHILD_WORDS = (MAX_GRAPH_NEIGHBORS + 3) / 4;
 static const int RING_SLOT_COUNT = 16;
 static const int MAX_RING_ID = 100;
+#if SMILES_GRAPH_DEBUG
 static const int GRAPH_DEBUG_STRIDE = 16;
+#endif
 
 int PackedByteGet(int packed[PACKED_ATOM_WORDS], int idx)
 {
@@ -231,10 +239,12 @@ void CSBuildBallStickGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
     int writeBondCount = 0;
     int currentAtom = -1;
     int pendingBond = 0;
+#if SMILES_GRAPH_DEBUG
     int dbgDigitToken = 0;
     int dbgPercentToken = 0;
     int dbgRingOpen = 0;
     int dbgRingClose = 0;
+#endif
     int molIdx = selectedMolIndexBuffer[meshIdx];
     if (molIdx < 0 || molIdx >= batchSize)
     {
@@ -258,7 +268,9 @@ void CSBuildBallStickGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
         else if (c0 == 47 || c0 == 92 || c0 == 64) { i++; continue; } // '/', '\\', '@'
         else if (c0 == '%')
         {
+#if SMILES_GRAPH_DEBUG
             dbgPercentToken++;
+#endif
             int d1 = ReadSmilesChar(molIdx, i + 1);
             int d2 = ReadSmilesChar(molIdx, i + 2);
             if (d1 >= '0' && d1 <= '9' && d2 >= '0' && d2 <= '9')
@@ -274,12 +286,16 @@ void CSBuildBallStickGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
                             if (a != currentAtom && writeBondCount < maxBondCount)
                                 bondInputBuffer[bondStart + writeBondCount++] = int2(a, currentAtom);
                             ringAtomById[ringNumber] = -1;
+#if SMILES_GRAPH_DEBUG
                             dbgRingClose++;
+#endif
                         }
                         else
                         {
                             ringAtomById[ringNumber] = currentAtom;
+#if SMILES_GRAPH_DEBUG
                             dbgRingOpen++;
+#endif
                         }
                     }
                 }
@@ -317,7 +333,9 @@ void CSBuildBallStickGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
 #endif
         else if (c0 >= '0' && c0 <= '9')
         {
+#if SMILES_GRAPH_DEBUG
             dbgDigitToken++;
+#endif
             int ringNumber = c0 - '0';
             if (currentAtom >= 0)
             {
@@ -329,12 +347,16 @@ void CSBuildBallStickGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
                                 if (a != currentAtom && writeBondCount < localBondCap)
                                     localBonds[writeBondCount++] = int2(a, currentAtom);
                         ringAtomById[ringNumber] = -1;
+#if SMILES_GRAPH_DEBUG
                         dbgRingClose++;
+#endif
                     }
                     else
                     {
                         ringAtomById[ringNumber] = currentAtom;
+#if SMILES_GRAPH_DEBUG
                         dbgRingOpen++;
+#endif
                     }
                 }
             }
@@ -368,22 +390,36 @@ void CSBuildBallStickGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
         atomPositionInputBuffer[atomStart + atomIdx] = float3(0, 0, 0);
     }
 
+#if SMILES_GRAPH_DEBUG
     int dbgBondPreCompact = writeBondCount;
     int dbgSkipSelf = 0;
     int dbgSkipRange = 0;
     int dbgSkipDup = 0;
     int dbgMinEnd = 2147483647;
     int dbgMaxEnd = -2147483647;
+#endif
     int compactBondCount = 0;
     for (int bi = 0; bi < writeBondCount; bi++)
     {
         int2 b = localBonds[bi];
         int a = b.x;
         int c = b.y;
+#if SMILES_GRAPH_DEBUG
         dbgMinEnd = min(dbgMinEnd, min(a, c));
         dbgMaxEnd = max(dbgMaxEnd, max(a, c));
-        if (a == c) { dbgSkipSelf++; continue; }
-        if (a < 0 || c < 0 || a >= atomCount || c >= atomCount) { dbgSkipRange++; continue; }
+#endif
+        if (a == c) { 
+#if SMILES_GRAPH_DEBUG
+            dbgSkipSelf++; 
+#endif
+            continue; 
+        }
+        if (a < 0 || c < 0 || a >= atomCount || c >= atomCount) { 
+#if SMILES_GRAPH_DEBUG
+            dbgSkipRange++; 
+#endif
+            continue; 
+        }
         int lo = min(a, c);
         int hi = max(a, c);
 
@@ -395,13 +431,20 @@ void CSBuildBallStickGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
             int phi = max(p.x, p.y);
             if (plo == lo && phi == hi) { dup = true; break; }
         }
-        if (dup) { dbgSkipDup++; continue; }
+        if (dup) { 
+#if SMILES_GRAPH_DEBUG
+            dbgSkipDup++; 
+#endif
+            continue; 
+        }
 
         if (compactBondCount < localBondCap)
             localBonds[compactBondCount++] = int2(lo, hi);
     }
     writeBondCount = compactBondCount;
+#if SMILES_GRAPH_DEBUG
     int dbgBondPostCompact = writeBondCount;
+#endif
 
     if (atomCount > 1 && writeBondCount == 0)
     {
@@ -482,7 +525,9 @@ void CSBuildBallStickGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
             }
         }
     }
+#if SMILES_GRAPH_DEBUG
     int dbgBondPostConnectivity = writeBondCount;
+#endif
 
     int outCount = min(writeBondCount, maxBondCount);
     for (int bondIdx = 0; bondIdx < maxBondCount; bondIdx++)
@@ -495,6 +540,7 @@ void CSBuildBallStickGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     meshAtomCountInputBuffer[meshIdx] = atomCount;
     meshBondCountInputBuffer[meshIdx] = outCount;
+#if SMILES_GRAPH_DEBUG
     if (enableGraphDebug != 0)
     {
         int baseIdx = meshIdx * GRAPH_DEBUG_STRIDE;
@@ -515,6 +561,7 @@ void CSBuildBallStickGraphBatch(uint3 dispatchThreadID : SV_DispatchThreadID)
         graphDebugBuffer[baseIdx + 14] = bondStart;
         graphDebugBuffer[baseIdx + 15] = maxBondCount;
     }
+#endif
 }
 
 [numthreads(32, 1, 1)]

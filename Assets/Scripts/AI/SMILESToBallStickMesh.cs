@@ -34,8 +34,10 @@ namespace AIDrugDiscovery
         public int maxExtraBondCount = 12;
         public bool useSelectedSubsetDispatch = true;
         public bool useLegacySmilesTextureInput = false;
+#if SMILES_GRAPH_DEBUG
         public bool enableGraphDebugProbe = false;
         public int debugProbeMeshCount = 4;
+#endif
 
         private ComputeBuffer vertexBufferPosition;
         private ComputeBuffer vertexBufferColor;
@@ -50,15 +52,21 @@ namespace AIDrugDiscovery
         private ComputeBuffer atomTypeInputBuffer;
         private ComputeBuffer atomPositionInputBuffer;
         private ComputeBuffer bondInputBuffer;
+#if SMILES_GRAPH_DEBUG
         private ComputeBuffer graphDebugBuffer;
+#endif
         private ComputeBuffer dummySmilesInputBuffer;
+#if SMILES_GRAPH_DEBUG
         private ComputeBuffer dummyGraphDebugBuffer;
+#endif
         private Texture2D dummySmilesInputTexture;
         private int maxVertexCount;
         private int maxIndexCount;
         private int allocatedBatchSize;
         private int maxBondLimit;
+#if SMILES_GRAPH_DEBUG
         private const int GraphDebugStride = 16;
+#endif
 
         private int[] BuildSmilesData(string smiles)
         {
@@ -77,8 +85,10 @@ namespace AIDrugDiscovery
             EnsureBuffers(batchSize);
             dummySmilesInputBuffer = new ComputeBuffer(1, sizeof(int));
             dummySmilesInputBuffer.SetData(new[] { 0 });
+#if SMILES_GRAPH_DEBUG
             dummyGraphDebugBuffer = new ComputeBuffer(1, sizeof(int));
             dummyGraphDebugBuffer.SetData(new[] { 0 });
+#endif
             dummySmilesInputTexture = new Texture2D(1, 1, TextureFormat.RGBA32, false);
             dummySmilesInputTexture.SetPixel(0, 0, Color.clear);
             dummySmilesInputTexture.Apply();
@@ -127,7 +137,9 @@ namespace AIDrugDiscovery
             atomTypeInputBuffer?.Release();
             atomPositionInputBuffer?.Release();
             bondInputBuffer?.Release();
+#if SMILES_GRAPH_DEBUG
             graphDebugBuffer?.Release();
+#endif
         }
 
         private void AllocateBatchGraphBuffers(int meshCount)
@@ -149,7 +161,9 @@ namespace AIDrugDiscovery
             atomTypeInputBuffer = new ComputeBuffer(Mathf.Max(1, meshCount * maxAtomLimit), sizeof(int));
             atomPositionInputBuffer = new ComputeBuffer(Mathf.Max(1, meshCount * maxAtomLimit), Marshal.SizeOf(typeof(Vector3)));
             bondInputBuffer = new ComputeBuffer(Mathf.Max(1, meshCount * maxBondLimit), sizeof(int) * 2);
+#if SMILES_GRAPH_DEBUG
             graphDebugBuffer = new ComputeBuffer(Mathf.Max(1, meshCount * GraphDebugStride), sizeof(int));
+#endif
 
             meshAtomStartBuffer.SetData(atomStarts);
             meshAtomCountInputBuffer.SetData(new int[meshCount]);
@@ -158,7 +172,9 @@ namespace AIDrugDiscovery
             atomTypeInputBuffer.SetData(new int[Mathf.Max(1, meshCount * maxAtomLimit)]);
             atomPositionInputBuffer.SetData(new Vector3[Mathf.Max(1, meshCount * maxAtomLimit)]);
             bondInputBuffer.SetData(new SmilesMeshBondIndex[Mathf.Max(1, meshCount * maxBondLimit)]);
+#if SMILES_GRAPH_DEBUG
             graphDebugBuffer.SetData(new int[Mathf.Max(1, meshCount * GraphDebugStride)]);
+#endif
         }
 
         public bool test = true;
@@ -213,7 +229,6 @@ namespace AIDrugDiscovery
                 ballStickCS.SetFloat("bondRadius", config.bondRadius);
                 ballStickCS.SetInt("maxBondCount", maxBondLimit);
                 ballStickCS.SetInt("vertexCapacity", maxVertexCount);
-                ballStickCS.SetInt("enableGraphDebug", enableGraphDebugProbe ? 1 : 0);
                 ballStickCS.SetBuffer(kernelId, "smilesInputBuffer", smilesBuffer ?? dummySmilesInputBuffer);
                 ballStickCS.SetTexture(kernelId, "smilesInputTexture", legacySmilesTexture ?? dummySmilesInputTexture);
                 ballStickCS.SetBuffer(kernelId, "selectedMolIndexBuffer", selectedIndexBuffer);
@@ -224,7 +239,10 @@ namespace AIDrugDiscovery
                 ballStickCS.SetBuffer(kernelId, "atomTypeInputBuffer", atomTypeInputBuffer);
                 ballStickCS.SetBuffer(kernelId, "atomPositionInputBuffer", atomPositionInputBuffer);
                 ballStickCS.SetBuffer(kernelId, "bondInputBuffer", bondInputBuffer);
+#if SMILES_GRAPH_DEBUG
+                ballStickCS.SetInt("enableGraphDebug", enableGraphDebugProbe ? 1 : 0);
                 ballStickCS.SetBuffer(kernelId, "graphDebugBuffer", graphDebugBuffer ?? dummyGraphDebugBuffer);
+#endif
             }
 
             ballStickCS.SetBuffer(kernelMesh, "vertexPosNormalBuffer", vertexBufferPosition);
@@ -233,6 +251,7 @@ namespace AIDrugDiscovery
 
             ballStickCS.Dispatch(kernelGraph, threadGroupX, 1, 1);
 
+#if SMILES_GRAPH_DEBUG
             if (enableGraphDebugProbe)
             {
                 List<string> decodedSmiles = null;
@@ -611,6 +630,7 @@ namespace AIDrugDiscovery
                     Debug.Log($"[BallStickGraphProbe] mesh={m} molIdx={molIdxDbg} atomCount={atomCountDbg} bondCount={bondCountDbg} validBond={validBond} selfBond={selfBond} reachableFrom0={reachable}/{atomCountDbg} cycleEdge={cycleEdge} headTypes={t0},{t1},{t2} hasDigit={hasDigit} hasPercentRing={hasPercentRing} hasBranch={hasBranch} ringTokenCount={ringTokenCount} ringPairedCount={ringPairedCount} ringUnpairedLabels={ringUnpairedLabels} cpuAtomCount={cpuAtomCount} cpuBondCount={cpuBondCount} cpuCycleEdge={cpuCycleEdge} cpuRingClose={cpuRingClose} cpuRingCloseUnique={cpuRingCloseUnique} gpuDigitToken={dbgDigitToken} gpuPercentToken={dbgPercentToken} gpuRingOpen={dbgRingOpen} gpuRingClose={dbgRingClose} gpuBondPreCompact={dbgBondPreCompact} gpuBondPostCompact={dbgBondPostCompact} gpuBondPostConn={dbgBondPostConn} gpuSkipSelf={dbgSkipSelf} gpuSkipRange={dbgSkipRange} gpuSkipDup={dbgSkipDup} gpuMinEnd={dbgMinEnd} gpuMaxEnd={dbgMaxEnd} gpuAtomStart={dbgAtomStart} gpuBondStart={dbgBondStart} gpuMaxBondCount={dbgMaxBondCount} smilesHead={smilesHead} firstBonds={firstBonds}");
                 }
             }
+#endif
 
             ballStickCS.Dispatch(kernelLayout, threadGroupX, 1, 1);
             ballStickCS.Dispatch(kernelMesh, threadGroupX, 1, 1);
@@ -818,7 +838,9 @@ namespace AIDrugDiscovery
             bondCountBuffer?.Release();
             ReleaseInputBuffers();
             dummySmilesInputBuffer?.Release();
+#if SMILES_GRAPH_DEBUG
             dummyGraphDebugBuffer?.Release();
+#endif
             if (dummySmilesInputTexture != null)
                 Destroy(dummySmilesInputTexture);
         }
