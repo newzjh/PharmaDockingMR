@@ -32,7 +32,6 @@ namespace AIDrugDiscovery
         public int smilesMaxLength = 256;  
         public int maxAtomLimit = 60;
         public int maxExtraBondCount = 12;
-        public bool useSelectedSubsetDispatch = true;
         public bool useLegacySmilesTextureInput = false;
 #if SMILES_GRAPH_DEBUG
         public bool enableGraphDebugProbe = false;
@@ -184,7 +183,7 @@ namespace AIDrugDiscovery
             if ((smilesBuffer == null && !(useLegacySmilesTextureInput && legacySmilesTexture != null)) || runtimeBatchSize <= 0 || filteredIndices == null || filteredIndices.Count == 0)
                 return molMeshes;
 
-            int generatedMeshCount = useSelectedSubsetDispatch ? filteredIndices.Count : runtimeBatchSize;
+            int generatedMeshCount = filteredIndices.Count;
             if (generatedMeshCount == 0)
                 return molMeshes;
 
@@ -197,16 +196,9 @@ namespace AIDrugDiscovery
 
             selectedIndexBuffer = new ComputeBuffer(generatedMeshCount, sizeof(int));
             int[] selectedIndices = new int[generatedMeshCount];
-            if (useSelectedSubsetDispatch)
-            {
-                for (int i = 0; i < generatedMeshCount; i++)
-                    selectedIndices[i] = filteredIndices[i];
-            }
-            else
-            {
-                for (int i = 0; i < generatedMeshCount; i++)
-                    selectedIndices[i] = i;
-            }
+            for (int i = 0; i < generatedMeshCount; i++)
+                selectedIndices[i] = filteredIndices[i];
+
             selectedIndexBuffer.SetData(selectedIndices);
 
             int threadGroupX = Mathf.CeilToInt(generatedMeshCount / 32f);
