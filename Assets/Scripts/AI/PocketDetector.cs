@@ -873,7 +873,7 @@ namespace AIDrugDiscovery
                         - ((double)p1.x * p1.x + (double)p1.y * p1.y + (double)p1.z * p1.z);
 
             double det = a11 * (a22 * a33 - a23 * a32) - a12 * (a21 * a33 - a23 * a31) + a13 * (a21 * a32 - a22 * a31);
-            if (Math.Abs(det) < 1e-12)
+            if (Math.Abs(det) < 1e-18)
             {
                 cx = default;
                 cy = default;
