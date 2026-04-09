@@ -184,6 +184,9 @@ namespace AIDrugDiscovery
         private List<FPocketAtom> atoms;
         private List<FPocketAlphaSphere> alphaSpheres;
         private int4[] fpocketDirVneigh;
+        private int fpocketDirLastHeavyAtomCount;
+        private int fpocketDirLastTetCount;
+        private int fpocketDirLastValidTetCount;
         [ContextMenu("Run FPocket CPU Version")]
         public void RunFPocketCPU()
         {
@@ -371,7 +374,7 @@ namespace AIDrugDiscovery
 
             alphaSpheres = GenerateAlphaSpheresFPocketDirCPU(atoms);
             var pockets = DetectPocketsFPocketDir(alphaSpheres);
-            PrintPocketResults(pockets);
+            PrintPocketResults(pockets, flipZ: true);
         }
 
         public async void RunFPocketOfficialGPU()
@@ -389,7 +392,32 @@ namespace AIDrugDiscovery
                 return;
             }
 
-            int atomCount = atoms.Count;
+            alphaSpheres = GenerateAlphaSpheresFPocketDirCPU(atoms);
+            var cpuPockets = DetectPocketsFPocketDir(alphaSpheres);
+            PrintPocketResults(cpuPockets, flipZ: true);
+            return;
+
+            List<FPocketAtom> heavyAtoms = new List<FPocketAtom>(atoms.Count);
+            List<int> heavyToAtom = new List<int>(atoms.Count);
+            for (int i = 0; i < atoms.Count; i++)
+            {
+                string an = atoms[i].name;
+                if (!string.IsNullOrEmpty(an) && (an[0] == 'H' || an[0] == 'h'))
+                    continue;
+                heavyToAtom.Add(i);
+                heavyAtoms.Add(atoms[i]);
+            }
+
+            if (heavyAtoms.Count < 4)
+            {
+                Debug.LogError("Not enough heavy atoms to build alpha spheres.");
+                return;
+            }
+
+            fpocketDirLastHeavyAtomCount = heavyAtoms.Count;
+            fpocketDirLastTetCount = -1;
+
+            int atomCount = heavyAtoms.Count;
             int threadGroups = Mathf.CeilToInt((float)atomCount / 256f);
 
             ComputeBuffer atomBuffer = null;
@@ -402,8 +430,8 @@ namespace AIDrugDiscovery
 
             try
             {
-                atomBuffer = InitAtomBuffer(atoms);
-                BuildNeighborBuffers(atoms, out int[] neighborCounts, out int[] neighborIndices, FPocketDirDefaults.MaxAsphereRadius * 2f, FPocketDirDefaults.MaxNeighbors);
+                atomBuffer = InitAtomBuffer(heavyAtoms);
+                BuildNeighborBuffers(heavyAtoms, out int[] neighborCounts, out int[] neighborIndices, FPocketDirDefaults.MaxAsphereRadius * 2f, FPocketDirDefaults.MaxNeighbors);
                 neighborCountsBuffer = new ComputeBuffer(atomCount, sizeof(int), ComputeBufferType.Structured);
                 neighborIndicesBuffer = new ComputeBuffer(atomCount * FPocketDirDefaults.MaxNeighbors, sizeof(int), ComputeBufferType.Structured);
                 neighborCountsBuffer.SetData(neighborCounts);
@@ -430,6 +458,7 @@ namespace AIDrugDiscovery
                 int[] generatedCountData = { 0 };
                 sphereCountBuffer.GetData(generatedCountData);
                 int generatedSphereCount = Mathf.Clamp(generatedCountData[0], 0, FPocketConstants.MAX_ALPHA_SPHERES);
+                fpocketDirLastValidTetCount = generatedSphereCount;
                 SetShaderConstantsFPocketDir(fpocketComputeShader, atomCount, generatedSphereCount);
 
                 FPocketAlphaSphereCS[] data = null;
@@ -446,6 +475,16 @@ namespace AIDrugDiscovery
                     if (sphere.radius <= 0)
                         continue;
 
+                    int p1 = sphere.parent_atom1;
+                    int p2 = sphere.parent_atom2;
+                    int p3 = sphere.parent_atom3;
+                    int p4 = sphere.parent_atom4;
+
+                    int a1 = (p1 >= 0 && p1 < heavyToAtom.Count) ? heavyToAtom[p1] : -1;
+                    int a2 = (p2 >= 0 && p2 < heavyToAtom.Count) ? heavyToAtom[p2] : -1;
+                    int a3 = (p3 >= 0 && p3 < heavyToAtom.Count) ? heavyToAtom[p3] : -1;
+                    int a4 = (p4 >= 0 && p4 < heavyToAtom.Count) ? heavyToAtom[p4] : -1;
+
                     validSpheres.Add(new FPocketAlphaSphere
                     {
                         center = sphere.center,
@@ -454,12 +493,12 @@ namespace AIDrugDiscovery
                         hydrophobicity = sphere.hydrophobicity,
                         polarity = sphere.polarity,
                         visited = sphere.visited,
-                        parent_atoms = new[] { sphere.parent_atom1, sphere.parent_atom2, sphere.parent_atom3, sphere.parent_atom4 }
+                        parent_atoms = new[] { a1, a2, a3, a4 }
                     });
                 }
 
                 List<FPocketResult> pockets = DetectPocketsFPocketDir(validSpheres);
-                PrintPocketResults(pockets);
+                PrintPocketResults(pockets, flipZ: true);
             }
             catch (Exception e)
             {
@@ -530,6 +569,9 @@ namespace AIDrugDiscovery
         private List<FPocketAlphaSphere> GenerateAlphaSpheresFPocketDirCPU(List<FPocketAtom> atoms)
         {
             fpocketDirVneigh = null;
+            fpocketDirLastHeavyAtomCount = 0;
+            fpocketDirLastTetCount = 0;
+            fpocketDirLastValidTetCount = 0;
             if (atoms == null || atoms.Count < 4)
                 return new List<FPocketAlphaSphere>();
 
@@ -550,12 +592,18 @@ namespace AIDrugDiscovery
             if (heavyAtoms.Count < 4)
                 return new List<FPocketAlphaSphere>();
 
+            fpocketDirLastHeavyAtomCount = heavyAtoms.Count;
             BuildDelaunayTetrahedra(heavyAtoms, out List<int4> tetVerts, out List<int4> tetNeigh);
+            fpocketDirLastTetCount = tetVerts.Count;
             if (tetVerts.Count == 0)
+            {
+                Debug.Log($"FPocketDirCPU: heavy_atoms={fpocketDirLastHeavyAtomCount}, tets=0 (delaunay failed), spheres=0");
                 return new List<FPocketAlphaSphere>();
+            }
 
             int atomCount = heavyAtoms.Count;
             int tetCount = tetVerts.Count;
+            fpocketDirLastTetCount = tetCount;
 
             NativeArray<float3> positions = new NativeArray<float3>(atomCount, Allocator.TempJob);
             NativeArray<float> electroneg = new NativeArray<float>(atomCount, Allocator.TempJob);
@@ -594,6 +642,17 @@ namespace AIDrugDiscovery
                 tetToSphere[i] = sphereCount;
                 sphereCount++;
             }
+            fpocketDirLastValidTetCount = sphereCount;
+            if (sphereCount == 0)
+            {
+                Debug.Log($"FPocketDirCPU: heavy_atoms={fpocketDirLastHeavyAtomCount}, tets={fpocketDirLastTetCount}, kept_spheres=0 (all filtered), spheres=0");
+                tetNeighNA.Dispose();
+                tetVertsNA.Dispose();
+                electroneg.Dispose();
+                positions.Dispose();
+                validNA.Dispose();
+                return new List<FPocketAlphaSphere>();
+            }
 
             NativeArray<int> tetToSphereNA = new NativeArray<int>(tetToSphere, Allocator.TempJob);
             NativeArray<float3> sphereCentersNA = new NativeArray<float3>(sphereCount, Allocator.TempJob);
@@ -616,6 +675,18 @@ namespace AIDrugDiscovery
                 sphereParents = sphereParentsNA
             };
             writeSpheresJob.Schedule(tetCount, 64).Complete();
+
+            NativeArray<int4> sphereVneighNA = new NativeArray<int4>(sphereCount, Allocator.TempJob);
+            for (int i = 0; i < sphereCount; i++)
+                sphereVneighNA[i] = new int4(-1, -1, -1, -1);
+
+            var writeVneighJob = new WriteVoronoiVneighJob
+            {
+                tetNeigh = tetNeighNA,
+                tetToSphere = tetToSphereNA,
+                outVneigh = sphereVneighNA
+            };
+            writeVneighJob.Schedule(tetCount, 64).Complete();
 
             List<FPocketAlphaSphere> spheres = new List<FPocketAlphaSphere>(sphereCount);
             for (int i = 0; i < sphereCount; i++)
@@ -640,8 +711,9 @@ namespace AIDrugDiscovery
                 });
             }
 
-            fpocketDirVneigh = BuildVneighFromSphereParents(spheres);
+            fpocketDirVneigh = sphereVneighNA.ToArray();
 
+            sphereVneighNA.Dispose();
             sphereParentsNA.Dispose();
             sphereApolarNA.Dispose();
             sphereRadiiNA.Dispose();
@@ -860,6 +932,182 @@ namespace AIDrugDiscovery
             pts[s2] = new Vector3(mid.x - d, mid.y + d, mid.z + d);
             pts[s3] = new Vector3(mid.x + d, mid.y + d, mid.z - d);
 
+            List<int4> tets = new List<int4>(Mathf.Max(16, n * 4));
+            int4 super = new int4(s0, s1, s2, s3);
+            if (Orient3D(pts[super.x], pts[super.y], pts[super.z], pts[super.w]) < 0.0)
+                super = new int4(super.x, super.z, super.y, super.w);
+            tets.Add(super);
+
+            int[] order = new int[n];
+            for (int i = 0; i < n; i++) order[i] = i;
+            var rng = new System.Random(1337);
+            for (int i = n - 1; i > 0; i--)
+            {
+                int j = rng.Next(i + 1);
+                (order[i], order[j]) = (order[j], order[i]);
+            }
+
+            for (int oi = 0; oi < n; oi++)
+            {
+                int pi = order[oi];
+                Vector3 p = pts[pi];
+                bool[] bad = new bool[tets.Count];
+                int badCount = 0;
+
+                for (int ti = 0; ti < tets.Count; ti++)
+                {
+                    int4 tv = tets[ti];
+                    double val = InSphere(pts[tv.x], pts[tv.y], pts[tv.z], pts[tv.w], p);
+                    if (val > 0.0 || Math.Abs(val) <= 1e-12)
+                    {
+                        bad[ti] = true;
+                        badCount++;
+                    }
+                }
+
+                if (badCount == 0)
+                    continue;
+
+                Dictionary<FaceKey, FaceInfo> boundary = new Dictionary<FaceKey, FaceInfo>(badCount * 4);
+
+                void ToggleFace(int a, int b, int c)
+                {
+                    FaceKey k = new FaceKey(a, b, c);
+                    if (boundary.ContainsKey(k))
+                        boundary.Remove(k);
+                    else
+                        boundary.Add(k, new FaceInfo { v0 = a, v1 = b, v2 = c });
+                }
+
+                for (int ti = 0; ti < tets.Count; ti++)
+                {
+                    if (!bad[ti]) continue;
+                    int4 v = tets[ti];
+                    ToggleFace(v.y, v.z, v.w);
+                    ToggleFace(v.x, v.z, v.w);
+                    ToggleFace(v.x, v.y, v.w);
+                    ToggleFace(v.x, v.y, v.z);
+                }
+
+                List<int4> newTets = new List<int4>(tets.Count - badCount + boundary.Count);
+                for (int ti = 0; ti < tets.Count; ti++)
+                {
+                    if (!bad[ti]) newTets.Add(tets[ti]);
+                }
+
+                foreach (FaceInfo f in boundary.Values)
+                {
+                    int4 tv = new int4(f.v0, f.v1, f.v2, pi);
+                    if (Orient3D(pts[tv.x], pts[tv.y], pts[tv.z], pts[tv.w]) < 0.0)
+                        tv = new int4(tv.x, tv.z, tv.y, tv.w);
+                    newTets.Add(tv);
+                }
+
+                tets = newTets;
+            }
+
+            List<int4> finalVerts = new List<int4>(tets.Count);
+            for (int i = 0; i < tets.Count; i++)
+            {
+                int4 v = tets[i];
+                if (v.x >= n || v.y >= n || v.z >= n || v.w >= n)
+                    continue;
+                if (v.x < 0 || v.y < 0 || v.z < 0 || v.w < 0)
+                    continue;
+                finalVerts.Add(v);
+            }
+
+            if (finalVerts.Count == 0)
+            {
+                BuildDelaunayTetrahedraCircumsphere(atoms, out tetVerts, out tetNeigh);
+                return;
+            }
+
+            int4[] neighArr = new int4[finalVerts.Count];
+            for (int i = 0; i < neighArr.Length; i++) neighArr[i] = new int4(-1, -1, -1, -1);
+            Dictionary<FaceKey, (int tet, int slot)> faceMap = new Dictionary<FaceKey, (int, int)>(finalVerts.Count * 2);
+
+            void SetNeighbor(int tetIdx, int slot, int neighborTet)
+            {
+                int4 n4 = neighArr[tetIdx];
+                if (slot == 0) n4.x = neighborTet;
+                else if (slot == 1) n4.y = neighborTet;
+                else if (slot == 2) n4.z = neighborTet;
+                else n4.w = neighborTet;
+                neighArr[tetIdx] = n4;
+            }
+
+            for (int ti = 0; ti < finalVerts.Count; ti++)
+            {
+                int4 v = finalVerts[ti];
+                int3 f0 = new int3(v.y, v.z, v.w);
+                int3 f1 = new int3(v.x, v.z, v.w);
+                int3 f2 = new int3(v.x, v.y, v.w);
+                int3 f3 = new int3(v.x, v.y, v.z);
+
+                void ProcessFace(int3 f, int slot)
+                {
+                    FaceKey k = new FaceKey(f.x, f.y, f.z);
+                    if (faceMap.TryGetValue(k, out var other))
+                    {
+                        SetNeighbor(ti, slot, other.tet);
+                        SetNeighbor(other.tet, other.slot, ti);
+                        faceMap.Remove(k);
+                    }
+                    else
+                    {
+                        faceMap.Add(k, (ti, slot));
+                    }
+                }
+
+                ProcessFace(f0, 0);
+                ProcessFace(f1, 1);
+                ProcessFace(f2, 2);
+                ProcessFace(f3, 3);
+            }
+
+            tetVerts.AddRange(finalVerts);
+            tetNeigh.AddRange(neighArr);
+        }
+
+        private void BuildDelaunayTetrahedraCircumsphere(List<FPocketAtom> atoms, out List<int4> tetVerts, out List<int4> tetNeigh)
+        {
+            tetVerts = new List<int4>();
+            tetNeigh = new List<int4>();
+
+            int n = atoms.Count;
+            if (n < 4)
+                return;
+
+            Vector3 min = atoms[0].pos;
+            Vector3 max = atoms[0].pos;
+            for (int i = 1; i < n; i++)
+            {
+                Vector3 p = atoms[i].pos;
+                min = Vector3.Min(min, p);
+                max = Vector3.Max(max, p);
+            }
+
+            Vector3 mid = (min + max) * 0.5f;
+            float dx = max.x - min.x;
+            float dy = max.y - min.y;
+            float dz = max.z - min.z;
+            float delta = Mathf.Max(dx, Mathf.Max(dy, dz));
+            if (delta <= 0f) delta = 1f;
+            float d = delta * 16f;
+
+            int s0 = n;
+            int s1 = n + 1;
+            int s2 = n + 2;
+            int s3 = n + 3;
+
+            Vector3[] pts = new Vector3[n + 4];
+            for (int i = 0; i < n; i++) pts[i] = atoms[i].pos;
+            pts[s0] = new Vector3(mid.x - d, mid.y - d, mid.z - d);
+            pts[s1] = new Vector3(mid.x + d, mid.y - d, mid.z + d);
+            pts[s2] = new Vector3(mid.x - d, mid.y + d, mid.z + d);
+            pts[s3] = new Vector3(mid.x + d, mid.y + d, mid.z - d);
+
             List<BowyerTetra> tets = new List<BowyerTetra>(Mathf.Max(16, n * 4));
             if (!TryCircumsphere4Double(pts[s0], pts[s1], pts[s2], pts[s3], out Vector3 sc, out double sr2))
                 return;
@@ -898,7 +1146,6 @@ namespace AIDrugDiscovery
                     continue;
 
                 Dictionary<FaceKey, FaceInfo> boundary = new Dictionary<FaceKey, FaceInfo>(badCount * 4);
-
                 void ToggleFace(int a, int b, int c)
                 {
                     FaceKey k = new FaceKey(a, b, c);
@@ -994,6 +1241,55 @@ namespace AIDrugDiscovery
 
             tetVerts.AddRange(finalVerts);
             tetNeigh.AddRange(neighArr);
+        }
+
+        private static double Orient3D(Vector3 a, Vector3 b, Vector3 c, Vector3 d)
+        {
+            double adx = (double)a.x - d.x;
+            double ady = (double)a.y - d.y;
+            double adz = (double)a.z - d.z;
+            double bdx = (double)b.x - d.x;
+            double bdy = (double)b.y - d.y;
+            double bdz = (double)b.z - d.z;
+            double cdx = (double)c.x - d.x;
+            double cdy = (double)c.y - d.y;
+            double cdz = (double)c.z - d.z;
+            return adx * (bdy * cdz - bdz * cdy) - ady * (bdx * cdz - bdz * cdx) + adz * (bdx * cdy - bdy * cdx);
+        }
+
+        private static double Det3(double ax, double ay, double az, double bx, double by, double bz, double cx, double cy, double cz)
+        {
+            return ax * (by * cz - bz * cy) - ay * (bx * cz - bz * cx) + az * (bx * cy - by * cx);
+        }
+
+        private static double InSphere(Vector3 a, Vector3 b, Vector3 c, Vector3 d, Vector3 e)
+        {
+            double aex = (double)a.x - e.x;
+            double aey = (double)a.y - e.y;
+            double aez = (double)a.z - e.z;
+            double bex = (double)b.x - e.x;
+            double bey = (double)b.y - e.y;
+            double bez = (double)b.z - e.z;
+            double cex = (double)c.x - e.x;
+            double cey = (double)c.y - e.y;
+            double cez = (double)c.z - e.z;
+            double dex = (double)d.x - e.x;
+            double dey = (double)d.y - e.y;
+            double dez = (double)d.z - e.z;
+
+            double alift = aex * aex + aey * aey + aez * aez;
+            double blift = bex * bex + bey * bey + bez * bez;
+            double clift = cex * cex + cey * cey + cez * cez;
+            double dlift = dex * dex + dey * dey + dez * dez;
+
+            double det = alift * Det3(bex, bey, bez, cex, cey, cez, dex, dey, dez)
+                         - blift * Det3(aex, aey, aez, cex, cey, cez, dex, dey, dez)
+                         + clift * Det3(aex, aey, aez, bex, bey, bez, dex, dey, dez)
+                         - dlift * Det3(aex, aey, aez, bex, bey, bez, cex, cey, cez);
+
+            double orient = Orient3D(a, b, c, d);
+            if (orient < 0.0) det = -det;
+            return det;
         }
 
         private static Vector3 Joggle3(int i, float scale)
@@ -1578,7 +1874,10 @@ namespace AIDrugDiscovery
         {
             List<FPocketResult> pockets = new List<FPocketResult>();
             if (spheres == null || spheres.Count == 0)
+            {
+                Debug.Log($"FPocketDir: no spheres (heavy_atoms={fpocketDirLastHeavyAtomCount}, tets={fpocketDirLastTetCount}, kept_spheres={fpocketDirLastValidTetCount})");
                 return pockets;
+            }
 
             if (fpocketDirVneigh == null || fpocketDirVneigh.Length != spheres.Count)
                 fpocketDirVneigh = BuildVneighFromSphereParents(spheres);
@@ -1689,7 +1988,7 @@ namespace AIDrugDiscovery
                 }
 
                 float avgDeg = rawDegNonNeg > 0 ? (float)rawDegSum / rawDegNonNeg : 0f;
-                Debug.Log($"FPocketDir: spheres={spheres.Count}, clusters={clusters.Count}, max_nb_asph={maxAsph}, geMin={geMin}, minRequired={FPocketDirDefaults.MinPocketNbAsph}, vneigh_len={(fpocketDirVneigh == null ? -1 : fpocketDirVneigh.Length)}, avg_deg={avgDeg:F2}, filtered_edges={filteredEdges}, shared_face_pairs={sharedFacePairs}, has_any_vneigh={vneighAny}");
+                Debug.Log($"FPocketDir: heavy_atoms={fpocketDirLastHeavyAtomCount}, tets={fpocketDirLastTetCount}, kept_spheres={fpocketDirLastValidTetCount}, spheres={spheres.Count}, clusters={clusters.Count}, max_nb_asph={maxAsph}, geMin={geMin}, minRequired={FPocketDirDefaults.MinPocketNbAsph}, vneigh_len={(fpocketDirVneigh == null ? -1 : fpocketDirVneigh.Length)}, avg_deg={avgDeg:F2}, filtered_edges={filteredEdges}, shared_face_pairs={sharedFacePairs}, has_any_vneigh={vneighAny}");
             }
 
             return pockets;
@@ -3275,7 +3574,7 @@ namespace AIDrugDiscovery
             }
             return Mathf.Clamp01(minDist / 10f);
         }
-        private void PrintPocketResults(List<FPocketResult> pockets)
+        private void PrintPocketResults(List<FPocketResult> pockets, bool flipZ = false)
         {
             var validPockets = pockets.OrderByDescending(_ => _.score).ToList();
 
@@ -3283,7 +3582,9 @@ namespace AIDrugDiscovery
 
             foreach (var p in validPockets)
             {
-                Debug.Log($"Pocket {p.id}: score={p.score:F3}, volume={p.volume:F2}, alphaSpheres={p.nb_alpha_spheres}, atoms={p.nb_atoms}, center={p.center}");
+                Vector3 c = p.center;
+                if (flipZ) c.z = -c.z;
+                Debug.Log($"Pocket {p.id}: score={p.score:F3}, volume={p.volume:F2}, alphaSpheres={p.nb_alpha_spheres}, atoms={p.nb_atoms}, center={c}");
                 Debug.Log($"  hydrophobic={p.hydrophobic_score:F3}, polar={p.polar_score:F3}, depth={p.depth_score:F3}, density={p.density:F3}");
             }
         }
