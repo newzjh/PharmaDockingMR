@@ -15,7 +15,6 @@ namespace AIDrugDiscovery
     {
         LegacyGPU = 0,
         OfficialStyleCPU = 1,
-        OfficialStyleGPU = 2,
         LegacyCPU = 3,
     }
 
@@ -177,7 +176,7 @@ namespace AIDrugDiscovery
         public bool useGeneratedSphereCountDispatch = true;
         public bool onlyProcessGeneratedSphereRange = true;
         public bool useSpatialHashDbscan = true;
-        public FPocketImplementationMode implementationMode = FPocketImplementationMode.LegacyGPU;
+        public FPocketImplementationMode implementationMode = FPocketImplementationMode.OfficialStyleCPU;
         public float singleLinkageThreshold = 4.5f;
 
         
@@ -377,138 +376,6 @@ namespace AIDrugDiscovery
             PrintPocketResults(pockets, flipZ: true);
         }
 
-        public async void RunFPocketOfficialGPU()
-        {
-            if (fpocketComputeShader == null)
-            {
-                Debug.LogError("Compute shader is not assigned.");
-                return;
-            }
-
-            atoms = LoadAtomsFromPDBQT(pdbqtFilePath);
-            if (atoms.Count < 4)
-            {
-                Debug.LogError("Not enough atoms to build alpha spheres.");
-                return;
-            }
-
-            alphaSpheres = GenerateAlphaSpheresFPocketDirCPU(atoms);
-            var cpuPockets = DetectPocketsFPocketDir(alphaSpheres);
-            PrintPocketResults(cpuPockets, flipZ: true);
-            return;
-
-            List<FPocketAtom> heavyAtoms = new List<FPocketAtom>(atoms.Count);
-            List<int> heavyToAtom = new List<int>(atoms.Count);
-            for (int i = 0; i < atoms.Count; i++)
-            {
-                string an = atoms[i].name;
-                if (!string.IsNullOrEmpty(an) && (an[0] == 'H' || an[0] == 'h'))
-                    continue;
-                heavyToAtom.Add(i);
-                heavyAtoms.Add(atoms[i]);
-            }
-
-            if (heavyAtoms.Count < 4)
-            {
-                Debug.LogError("Not enough heavy atoms to build alpha spheres.");
-                return;
-            }
-
-            fpocketDirLastHeavyAtomCount = heavyAtoms.Count;
-            fpocketDirLastTetCount = -1;
-
-            int atomCount = heavyAtoms.Count;
-            int threadGroups = Mathf.CeilToInt((float)atomCount / 256f);
-
-            ComputeBuffer atomBuffer = null;
-            ComputeBuffer neighborCountsBuffer = null;
-            ComputeBuffer neighborIndicesBuffer = null;
-            ComputeBuffer alphaSphereBuffer = null;
-            ComputeBuffer pocketResultBuffer = null;
-            ComputeBuffer sphereCountBuffer = null;
-            ComputeBuffer clusterCountBuffer = null;
-
-            try
-            {
-                atomBuffer = InitAtomBuffer(heavyAtoms);
-                BuildNeighborBuffers(heavyAtoms, out int[] neighborCounts, out int[] neighborIndices, FPocketDirDefaults.MaxAsphereRadius * 2f, FPocketDirDefaults.MaxNeighbors);
-                neighborCountsBuffer = new ComputeBuffer(atomCount, sizeof(int), ComputeBufferType.Structured);
-                neighborIndicesBuffer = new ComputeBuffer(atomCount * FPocketDirDefaults.MaxNeighbors, sizeof(int), ComputeBufferType.Structured);
-                neighborCountsBuffer.SetData(neighborCounts);
-                neighborIndicesBuffer.SetData(neighborIndices);
-                alphaSphereBuffer = InitAlphaSphereBuffer();
-                pocketResultBuffer = InitPocketResultBuffer();
-                sphereCountBuffer = new ComputeBuffer(1, sizeof(int));
-                clusterCountBuffer = new ComputeBuffer(1, sizeof(int));
-                int[] initCount = { 0 };
-                sphereCountBuffer.SetData(initCount);
-                clusterCountBuffer.SetData(initCount);
-                SetShaderConstantsFPocketDir(fpocketComputeShader, atomCount, 0);
-
-                int kernel1 = fpocketComputeShader.FindKernel("CSGenerateAlphaSpheresFPocketDir");
-                fpocketComputeShader.SetBuffer(kernel1, "atomBuffer", atomBuffer);
-                fpocketComputeShader.SetBuffer(kernel1, "atomNeighborCounts", neighborCountsBuffer);
-                fpocketComputeShader.SetBuffer(kernel1, "atomNeighborIndices", neighborIndicesBuffer);
-                fpocketComputeShader.SetBuffer(kernel1, "alphaSphereBuffer", alphaSphereBuffer);
-                fpocketComputeShader.SetBuffer(kernel1, "pocketResultBuffer", pocketResultBuffer);
-                fpocketComputeShader.SetBuffer(kernel1, "sphereCountBuffer", sphereCountBuffer);
-                fpocketComputeShader.SetBuffer(kernel1, "clusterCountBuffer", clusterCountBuffer);
-                fpocketComputeShader.Dispatch(kernel1, threadGroups, 1, 1);
-
-                int[] generatedCountData = { 0 };
-                sphereCountBuffer.GetData(generatedCountData);
-                int generatedSphereCount = Mathf.Clamp(generatedCountData[0], 0, FPocketConstants.MAX_ALPHA_SPHERES);
-                fpocketDirLastValidTetCount = generatedSphereCount;
-                SetShaderConstantsFPocketDir(fpocketComputeShader, atomCount, generatedSphereCount);
-
-                FPocketAlphaSphereCS[] data = null;
-                var request = await AsyncGPUReadback.RequestAsync(alphaSphereBuffer);
-                if (!request.hasError)
-                    data = request.GetData<FPocketAlphaSphereCS>().ToArray();
-                if (data == null)
-                    return;
-
-                List<FPocketAlphaSphere> validSpheres = new List<FPocketAlphaSphere>();
-                for (int sphereIdx = 0; sphereIdx < generatedSphereCount && sphereIdx < data.Length; sphereIdx++)
-                {
-                    var sphere = data[sphereIdx];
-                    if (sphere.radius <= 0)
-                        continue;
-
-                    int p1 = sphere.parent_atom1;
-                    int p2 = sphere.parent_atom2;
-                    int p3 = sphere.parent_atom3;
-                    int p4 = sphere.parent_atom4;
-
-                    int a1 = (p1 >= 0 && p1 < heavyToAtom.Count) ? heavyToAtom[p1] : -1;
-                    int a2 = (p2 >= 0 && p2 < heavyToAtom.Count) ? heavyToAtom[p2] : -1;
-                    int a3 = (p3 >= 0 && p3 < heavyToAtom.Count) ? heavyToAtom[p3] : -1;
-                    int a4 = (p4 >= 0 && p4 < heavyToAtom.Count) ? heavyToAtom[p4] : -1;
-
-                    validSpheres.Add(new FPocketAlphaSphere
-                    {
-                        center = sphere.center,
-                        radius = sphere.radius,
-                        nb_atoms = sphere.nb_atoms,
-                        hydrophobicity = sphere.hydrophobicity,
-                        polarity = sphere.polarity,
-                        visited = sphere.visited,
-                        parent_atoms = new[] { a1, a2, a3, a4 }
-                    });
-                }
-
-                List<FPocketResult> pockets = DetectPocketsFPocketDir(validSpheres);
-                PrintPocketResults(pockets, flipZ: true);
-            }
-            catch (Exception e)
-            {
-                Debug.LogError($"Official-style GPU fpocket failed: {e.Message}\n{e.StackTrace}");
-            }
-            finally
-            {
-                ReleaseBuffers(atomBuffer, neighborCountsBuffer, neighborIndicesBuffer, alphaSphereBuffer, pocketResultBuffer, sphereCountBuffer, clusterCountBuffer);
-            }
-        }
         private List<FPocketAlphaSphere> GenerateAlphaSpheresFromAtomTriples(List<FPocketAtom> atoms)
         {
             List<FPocketAlphaSphere> alphaSpheres = new List<FPocketAlphaSphere>();

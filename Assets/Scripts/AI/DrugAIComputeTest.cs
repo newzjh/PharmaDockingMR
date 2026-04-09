@@ -85,8 +85,6 @@ namespace AIDrugDiscovery
                 pocketdetector.pdbqtFilePath = pdbqtFullPath;
                 if (pocketdetector.implementationMode == FPocketImplementationMode.OfficialStyleCPU)
                     pocketdetector.RunFPocketOfficialCPU();
-                else if (pocketdetector.implementationMode == FPocketImplementationMode.OfficialStyleGPU)
-                    pocketdetector.RunFPocketOfficialGPU();
                 else if (pocketdetector.implementationMode == FPocketImplementationMode.LegacyCPU)
                     pocketdetector.RunFPocketCPU();
                 else
