@@ -265,9 +265,9 @@ RectTransform:
   m_Father: {fileID: 1330789598}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0, y: 0}
-  m_AnchorMax: {x: 0, y: 0}
+  m_AnchorMax: {x: 1, y: 0}
   m_AnchoredPosition: {x: 0, y: 0}
-  m_SizeDelta: {x: 0, y: 20}
+  m_SizeDelta: {x: -17, y: 20}
   m_Pivot: {x: 0, y: 0}
 --- !u!114 &95243315
 MonoBehaviour:
@@ -1061,12 +1061,12 @@ MonoBehaviour:
   isTerminated: 0
   currentBatch: 0
   templateMat: {fileID: 2100000, guid: 26695abc36ac7b141ad14c66a9c0a5eb, type: 2}
-  detectPocket: 1
-  generateMeshSingle: 0
-  generateMeshBatch: 1
+  detectPocket: 0
+  generateMeshSingle: 1
+  generateMeshBatch: 0
   renderMode: 1
   FlipPageView: {fileID: 2117598675}
-  useDynamicUIToolkitDisplay: 0
+  useDynamicUIToolkitDisplay: 1
   dynamicAnimationMode: 1
   dynamicSmilesView: {fileID: 56779893}
 --- !u!4 &1149687865
@@ -1138,9 +1138,9 @@ RectTransform:
   m_Father: {fileID: 1330789598}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0, y: 0}
-  m_AnchorMax: {x: 0, y: 0}
+  m_AnchorMax: {x: 1, y: 1}
   m_AnchoredPosition: {x: 0, y: 0}
-  m_SizeDelta: {x: 0, y: 0}
+  m_SizeDelta: {x: -17, y: 0}
   m_Pivot: {x: 0, y: 1}
 --- !u!114 &1265958807
 MonoBehaviour:
@@ -1652,7 +1652,7 @@ RectTransform:
   m_Father: {fileID: 2068795516}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0, y: 0}
-  m_AnchorMax: {x: 0, y: 0}
+  m_AnchorMax: {x: 1, y: 1}
   m_AnchoredPosition: {x: 0, y: 0}
   m_SizeDelta: {x: 20, y: 20}
   m_Pivot: {x: 0.5, y: 0.5}
@@ -2003,7 +2003,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!114 &2002570448
 MonoBehaviour:
   m_ObjectHideFlags: 0
